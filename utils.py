@@ -39,3 +39,5 @@ def fill_fsf(to_fill_dict, design_path, design_modified_path):
     # Write the modified lines back to the design.fsf file or a new file
     with open(design_modified_path, 'w') as file:
         file.writelines(modified_lines)
+    # print name of output file
+    print('Output file: ' + design_modified_path)
