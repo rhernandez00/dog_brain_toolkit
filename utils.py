@@ -41,8 +41,8 @@ def fill_fsf(to_fill_dict, design_path, design_modified_path):
     with open(design_modified_path, 'w') as file:
         file.writelines(modified_lines)
     # print name of output file
-    print('Output file: ' + design_modified_path)
-
+    print('Output design file: ' + design_modified_path)
+    
 def extract_params(input_file):
     """
     Gets the TR and number of volumes of a file using fslinfo
@@ -55,6 +55,11 @@ def extract_params(input_file):
     volumes - number of volumes
     
     """
+    # Check if the os is windows, if it is means that this is a test without actually running
+    if os.name == 'nt':
+        print('This is a test, no actual fslinfo command will be run, giving back random values')
+        return 2.0, 100
+
     # Construct the command to run
     command = f"fslinfo {input_file}"
     
@@ -87,3 +92,30 @@ def extract_params(input_file):
             break
     
     return TR,volumes
+
+def reorient_file(input_file, output_file, combination):
+    # This function reorients the input file using fsl and the combination of rotations
+    """"
+    input_file: str, path to the input file
+    output_file: str, path to the output file
+    combination: list of strings, combination of rotations to apply (e.g. ['-x', 'z', '-y'])
+    """
+    print('Working with ' + input_file)
+    # create copy of input file to output file
+    print('Creating ' + output_file + '...')
+    shutil.copyfile(input_file, output_file)
+    
+    # delete orientation
+    print('Deleting orientation...')
+    command = f"fslorient -deleteorient {output_file}"
+    os.system(command)
+    # swap axes
+    print('Swapping axes...')
+    command = f"fslswapdim {output_file} {combination[0]} {combination[1]} {combination[2]} {output_file}"
+    os.system(command)
+    # adding labels
+    print('Adding labels...')
+    command = f"fslorient -setqformcode 1 -setqformcode 1 {output_file}"
+    os.system(command)
+
+    print('Reorientation done!')
