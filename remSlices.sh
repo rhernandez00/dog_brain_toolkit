@@ -15,8 +15,14 @@ finaly=$6
 initialz=$7
 finalz=$8
 
+# determine current folder
+currentFolder=$(pwd)
+
 # determine working folder based on output file
 workingFolder=$(dirname ${outputfile})
+# go to working folder
+cd workingFolder
+
 echo ${workingFolder}
 
 echo cutting down x
@@ -73,6 +79,9 @@ do
 	rm ${fileR}
 done
 
-# move the final file to the output file
-#cp cut_${inputfile} ${outputfile}
-#rm cut_${inputfile}
+# remove merged file
+rm mergedFile.nii.gz
+# go back to original folder
+cd ${currentFolder}
+
+echo "Done! file saved as ${outputfile}" 
