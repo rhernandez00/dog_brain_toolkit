@@ -60,7 +60,7 @@ do
 	names+=${file}" "
 done
 
-fslmerge -z cut_${inputfile}.nii.gz ${names}
+fslmerge -z cut_${inputfile} ${names}
 
 filesToRemove=($(ls slice*))
 for fileR in "${filesToRemove[@]}"
@@ -70,5 +70,5 @@ do
 done
 
 # move the final file to the output file
-cp cut_${inputfile}.nii.gz ${outputfile}.nii.gz
-rm cut_${inputfile}.nii.gz
+cp cut_${inputfile} ${outputfile}
+rm cut_${inputfile}
