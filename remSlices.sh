@@ -15,6 +15,10 @@ finaly=$6
 initialz=$7
 finalz=$8
 
+# determine working folder based on output file
+workingFolder=$(dirname ${outputfile})
+echo ${workingFolder}
+
 echo cutting down x
 fslsplit ${inputfile} slice -x
 names=""
