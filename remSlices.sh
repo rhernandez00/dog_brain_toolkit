@@ -21,7 +21,7 @@ currentFolder=$(pwd)
 # determine working folder based on output file
 workingFolder=$(dirname ${outputfile})
 # go to working folder
-cd workingFolder
+cd ${workingFolder}
 
 echo ${workingFolder}
 
