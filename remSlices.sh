@@ -1,9 +1,8 @@
 #!/bin/bash
-# Author: Raul Hernandez
 # This script will remove slices from a 3D image using fslroi.
 # Usage: ./remSlices.sh <inputfile> <outputfile> <initialx> <finalx> <initialy> <finaly> <initialz> <finalz>
-# Assumes .nii.gz files
-# Example: ./remSlices.sh 3Dimage 0 100 0 100 0 100
+# Example: ./remSlices.sh 3Dimage.nii.gz 3Dimage_cut.nii.gz 0 100 0 100 0 100
+# Author: Raul Hernandez
 
 inputfile=$1
 outputfile=$2
