@@ -1,18 +1,17 @@
 #!/bin/bash
 # This script will remove slices from a 3D image using fslroi.
-# Usage: ./remSlices.sh <inputfile> <outputfile> <initialx> <finalx> <initialy> <finaly> <initialz> <finalz>
-# Example: ./remSlices.sh 3Dimage.nii.gz 3Dimage_cut.nii.gz 0 100 0 100 0 100
+# Usage: ./remSlices.sh <inputfile> <outputfile> <paramsfile>
+# The script will obtain the cutting parameters from paramsfile
+# Example: ./remSlices.sh 3Dimage.nii.gz 3Dimage_cut.nii.gz 3Dimage.txt
 # Author: Raul Hernandez
 
 inputfile=$1
 outputfile=$2
+paramsfile=$3
 
-initialx=$3
-finalx=$4
-initialy=$5
-finaly=$6
-initialz=$7
-finalz=$8
+# read paramsfile and load variables in the file, will read:
+# initialx, finalx, initialy, finaly, initialz, finalz
+source ${paramsfile}
 
 # determine current folder
 currentFolder=$(pwd)

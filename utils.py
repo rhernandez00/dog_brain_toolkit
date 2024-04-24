@@ -119,3 +119,24 @@ def reorient_file(input_file, output_file, combination):
     os.system(command)
 
     print('Reorientation done!')
+
+def write_params(filename, x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
+    '''
+    the function will write a txt file with the limits to be loaded in a bash script
+    initialx=x_lim1
+    finalx=x_lim2
+    initialy=y_lim1
+    finaly=y_lim2
+    initialz=z_lim1
+    finalz=z_lim2
+    '''
+
+    with open(filename, 'w') as f:
+        f.write(f'initialx={x_lim1}\n')
+        f.write(f'finalx={x_lim2}\n')
+        f.write(f'initialy={y_lim1}\n')
+        f.write(f'finaly={y_lim2}\n')
+        f.write(f'initialz={z_lim1}\n')
+        f.write(f'finalz={z_lim2}\n')
+
+    print('cutting parameters file saved as ' + filename)
