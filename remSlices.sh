@@ -13,6 +13,13 @@ paramsfile=$3
 # initialx, finalx, initialy, finaly, initialz, finalz
 source ${paramsfile}
 
+echo "Initial x: $initialx"
+echo "Final x: $finalx"
+echo "Initial y: $initialy"
+echo "Final y: $finaly"
+echo "Initial z: $initialz"
+echo "Final z: $finalz"
+
 # determine current folder
 currentFolder=$(pwd)
 
