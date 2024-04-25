@@ -19,13 +19,13 @@ bet ${inputfile} ${workingFolder}/mask1.nii.gz -f ${thr_1} -g 0 -c ${betx_1} ${b
 cp ${workingFolder}/mask1.nii.gz ${outputfile}
 
 # if thr2 > 0, create mask2 and add to outputfile
-if [ $thr_2 -gt 0 ]; then
+if [ $(echo "$thr_2 > 0" | bc) -eq 1 ]; then
     bet ${inputfile} ${workingFolder}/mask2.nii.gz -f ${thr_2} -g 0 -c ${betx_2} ${bety_2} ${betz_2} -m
     fslmaths ${outputfile} -add ${workingFolder}/mask2.nii.gz ${outputfile}
 fi
 
 # if thr3 > 0, create mask3 and add to outputfile
-if [ $thr_3 -gt 0 ]; then
+if [ $(echo "$thr_3 > 0" | bc) -eq 1 ]; then
     bet ${inputfile} ${workingFolder}/mask3.nii.gz -f ${thr_3} -g 0 -c ${betx_3} ${bety_3} ${betz_3} -m
     fslmaths ${outputfile} -add ${workingFolder}/mask3.nii.gz ${outputfile}
 fi
