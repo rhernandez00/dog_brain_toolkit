@@ -16,7 +16,7 @@ source ${params_file}
 echo "Initial x: $x_lim1"
 echo "Final x: $x_lim2"
 echo "Initial y: $y_lim1"
-echo "Final y: $x_lim2"
+echo "Final y: $y_lim2"
 echo "Initial z: $z_lim1"
 echo "Final z: $z_lim2"
 echo "output file: $output_file"
