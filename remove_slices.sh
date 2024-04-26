@@ -51,7 +51,7 @@ done
 echo cutting down y
 fslsplit mergedFile.nii.gz slice -y
 names=""
-for fileNum in $(seq -f "%04g" ${y_lim1} ${y_lim1})
+for fileNum in $(seq -f "%04g" ${y_lim1} ${y_lim2})
 do
 	file=slice${fileNum}
 	names+=${file}" "
