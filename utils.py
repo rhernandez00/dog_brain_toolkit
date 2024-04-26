@@ -139,8 +139,10 @@ def write_params(params_file, x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
         f.write(f'initialz={z_lim1}\n')
         f.write(f'finalz={z_lim2}\n')
 
-    print('cutting parameters file saved as ' + filename)
+    print('cutting parameters file saved as ' + params_file)
 
+
+# change to dictionary, include output file and name of each mask
 def write_params_bet(params_file, betx_1, bety_1, betz_1, thr_1, betx_2, bety_2, betz_2, thr_2, betx_3, bety_3, betz_3, thr_3):
     '''
     the function will write a txt file with BET parameters to be loaded in a bash script
@@ -162,3 +164,15 @@ def write_params_bet(params_file, betx_1, bety_1, betz_1, thr_1, betx_2, bety_2,
         f.write(f'thr_3={thr_3}\n')
 
     print('BET parameters file saved as ' + params_file)
+
+def write_params_file(params_file, params_dict):
+    '''
+    the function will write a txt file with the parameters to be loaded in a bash script
+    params_dict: dictionary with the parameters to be written
+    '''
+
+    with open(params_file, 'w') as f:
+        for key in params_dict:
+            f.write(f'{key}={params_dict[key]}\n')
+
+    print('Parameters file saved as ' + params_file)
