@@ -43,7 +43,7 @@ if [ $(echo "$thr_2 > 0" | bc) -eq 1 ]; then
     # add mask_file2 to output_file
     fslmaths ${output_file} -add ${mask_file2} ${output_file}
     # remove mask file created
-    rm ${filename}_mask.nii.gz
+    rm ${workingFolder}/${filename}_mask.nii.gz
 
 fi
 
@@ -60,7 +60,7 @@ if [ $(echo "$thr_3 > 0" | bc) -eq 1 ]; then
     # add mask_file3 to output_file
     fslmaths ${output_file} -add ${mask_file3} ${output_file}
     # remove mask file created
-    rm ${filename}_mask.nii.gz
+    rm ${workingFolder}/${filename}_mask.nii.gz
 fi
 
 # binarize output_file
