@@ -120,51 +120,6 @@ def reorient_file(input_file, output_file, combination):
 
     print('Reorientation done!')
 
-def write_params(params_file, x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
-    '''
-    the function will write a txt file with the limits to be loaded in a bash script
-    initialx=x_lim1
-    finalx=x_lim2
-    initialy=y_lim1
-    finaly=y_lim2
-    initialz=z_lim1
-    finalz=z_lim2
-    '''
-
-    with open(params_file, 'w') as f:
-        f.write(f'initialx={x_lim1}\n')
-        f.write(f'finalx={x_lim2}\n')
-        f.write(f'initialy={y_lim1}\n')
-        f.write(f'finaly={y_lim2}\n')
-        f.write(f'initialz={z_lim1}\n')
-        f.write(f'finalz={z_lim2}\n')
-
-    print('cutting parameters file saved as ' + params_file)
-
-
-# change to dictionary, include output file and name of each mask
-def write_params_bet(params_file, betx_1, bety_1, betz_1, thr_1, betx_2, bety_2, betz_2, thr_2, betx_3, bety_3, betz_3, thr_3):
-    '''
-    the function will write a txt file with BET parameters to be loaded in a bash script
-    betx_1, bety_1, betz_1, thr_1, betx_2, bety_2, betz_2, thr_2, betx_3, bety_3, betz_3, thr_3
-    '''
-
-    with open(params_file, 'w') as f:
-        f.write(f'betx_1={betx_1}\n')
-        f.write(f'bety_1={bety_1}\n')
-        f.write(f'betz_1={betz_1}\n')
-        f.write(f'thr_1={thr_1}\n')
-        f.write(f'betx_2={betx_2}\n')
-        f.write(f'bety_2={bety_2}\n')
-        f.write(f'betz_2={betz_2}\n')
-        f.write(f'thr_2={thr_2}\n')
-        f.write(f'betx_3={betx_3}\n')
-        f.write(f'bety_3={bety_3}\n')
-        f.write(f'betz_3={betz_3}\n')
-        f.write(f'thr_3={thr_3}\n')
-
-    print('BET parameters file saved as ' + params_file)
-
 def write_params_file(params_file, params_dict):
     '''
     the function will write a txt file with the parameters to be loaded in a bash script
