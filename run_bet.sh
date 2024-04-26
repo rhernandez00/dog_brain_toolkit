@@ -24,11 +24,11 @@ filename=$(basename ${mask_file1} .nii.gz)
 # erase mask_file1
 rm ${mask_file1}
 # copy mask_file1 to output_file
-cp ${filename}_mask.nii.gz ${output_file}
+cp ${workingFolder}/${filename}_mask.nii.gz ${output_file}
 # copy mask file created to mask_file1
-cp ${filename}_mask.nii.gz ${mask_file1}
+cp ${workingFolder}/${filename}_mask.nii.gz ${mask_file1}
 # remove mask file created
-rm ${filename}_mask.nii.gz
+rm ${workingFolder}/${filename}_mask.nii.gz
 
 # if thr2 > 0, create mask2 and add to output_file
 if [ $(echo "$thr_2 > 0" | bc) -eq 1 ]; then
@@ -39,7 +39,7 @@ if [ $(echo "$thr_2 > 0" | bc) -eq 1 ]; then
     # erase mask_file2
     rm ${mask_file2}
     # copy mask file created to mask_file2
-    cp ${filename}_mask.nii.gz ${mask_file2}
+    cp ${workingFolder}/${filename}_mask.nii.gz ${mask_file2}
     # add mask_file2 to output_file
     fslmaths ${output_file} -add ${mask_file2} ${output_file}
     # remove mask file created
@@ -56,7 +56,7 @@ if [ $(echo "$thr_3 > 0" | bc) -eq 1 ]; then
     # erase mask_file3
     rm ${mask_file3}
     # copy mask file created to mask_file3
-    cp ${filename}_mask.nii.gz ${mask_file3}
+    cp ${workingFolder}/${filename}_mask.nii.gz ${mask_file3}
     # add mask_file3 to output_file
     fslmaths ${output_file} -add ${mask_file3} ${output_file}
     # remove mask file created
