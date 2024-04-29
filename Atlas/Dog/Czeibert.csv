@@ -1,0 +1,92 @@
+Number,Region
+1,No label
+2,frontal gyrus L
+3,frontal gyrus R
+4,proreus gyrus L
+5,proreus gyrus R
+6,composite gyrus L rCG
+7,composite gyrus R rCG
+8,precruciate gyrus L
+9,precruciate gyrus R
+10,postcruciate gyrus L
+11,postcruciate gyrus R
+12,marginal gyrus L MG
+13,marginal gyrus R MG
+14,ectomarginal gyrus L EMG
+15,ectomarginal gyrus R EMG
+16,occipital gyrus L
+17,occipital gyrus R
+18,rostral suprasylvian gyrus L rSSG
+19,rostral suprasylvian gyrus R rSSG
+20,mid suprasylvian gyrus L mSSG
+21,mid suprasylvian gyrus R mSSG
+22,caudal suprasylvian gyrus L cSSG
+23,caudal suprasylvian gyrus R cSSG
+24,rostral ectosylvian gyrus L rESG
+25,rostral ectosylvian gyrus R rESG
+26,mid ectosylvian gyrus L mESG
+27,mid ectosylvian gyrus R mESG
+28,caudal ectosylvian gyrus L cESG
+29,caudal ectosylvian gyrus R cESG
+30,rostral sylvian gyrus L SG
+31,rostral sylvian gyrus R SG
+32,caudal sylvian gyrus L cSG
+33,caudal sylvian gyrus R cSG
+34,caudal composite gyrus L
+35,caudal composite gyrus R
+36,rectus gyrus L RG
+37,rectus gyrus R RG
+38,genual gyrus L
+39,genual gyrus R
+40,subcallosa area L
+41,subcallosa area R
+42,cingulate gyrus L CG
+43,cingulate gyrus R CG
+44,presplenial gyrus L
+45,presplenial gyrus R
+46,splenial gyrus L SpG
+47,splenial gyrus R SpG
+48,parahippocampal gyrus L
+49,parahippocampal gyrus R
+50,hippocampus  L
+51,hippocampus  R
+52,piriform lobe L
+53,piriform lobe R
+54,olfactory tubercle L
+55,olfactory tubercle R
+56,diagonal gyrus L
+57,diagonal gyrus R
+58,paraterminal gyrus L
+59,paraterminal gyrus R
+60,lateral olfactory gyrus L
+61,lateral olfactory gyrus R
+62,thalamus  L
+63,thalamus  R
+64,olfactory bulb L
+65,olfactory bulb R
+66,caudate nucleus L
+67,caudate nucleus R
+68,insular cortex L
+69,insular cortex R
+70,hypophysis 
+71,cerebellar vermis 
+72,pons 
+73,medulla oblongata 
+74,medulla spinal 
+75,mesencephalon 
+76,diencephalon 
+77,optic nerve 
+78,cerebellar hemisphere L
+79,cerebellar hemisphere R
+80,rostral commissura 
+81,olfactory peduncle L
+82,olfactory peduncle R
+83,septal area L
+84,septal area R
+85,spinal tract of the trigemini nervi nucleus L
+86,spinal tract of the trigemini nervi nucleus R
+87,ventral caudal thalami pars medial nucleus L
+88,ventral caudal thalami pars medial nucleus R
+89,amygdala  L
+90,amygdala  R
+91,encephalon 

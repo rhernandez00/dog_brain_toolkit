@@ -1,0 +1,20 @@
+There is a good template article published in 2018, 
+   "A stereotaxic breed-averaged, symmetric T2w canine brain atlas including detailed morphological and volumetrical data sets", https://www.ncbi.nlm.nih.gov/pubmed/29407456)
+
+and it's associated website where templates can be download from:
+  http://animal-brain-mapping.com
+
+As till this time we don't have a paper about our normalization process (based on Barney's brain), if one would like to refer to a brain area (or a reviewer requires a published reference), there is a choice:
+
+You can find on the NAS a folder (Z:\fMRI\fájlok_scanner\3. Barney template) which is called "Nitzsche_dog_template", and I put into this folder:
+  - the above mentioned article from Björn Nitzsche;
+  - the dog template which is available on their website (I named it "Nitzsche_dog_template (NDT).nii");
+  - and our Barney template file, which I normalized to the NDT template: "TPL_Barney_transformed_to_NDT.nii"
+
+So in this way if you want to refer an MNI coordinate which is in accordance with the Nitzsche's tempalte, you can use this  transformed Barney file during the normalization process.
+
+I hope it helps.
+If you have any question regarding to it, feel free to ask :)
+Best,
+
+K

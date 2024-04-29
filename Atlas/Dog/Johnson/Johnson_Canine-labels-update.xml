@@ -1,0 +1,251 @@
+<?xml version="1.0" encoding="ISO-8859-1"?>
+<atlas version="1.0">
+  <header>
+    <name>Canine 30N-Johnson-Barry Atlas-Labels Update</name>
+    <shortname>C30_JB</shortname>
+    <type>Label</type>
+    <images>
+        <imagefile>/Canine_population_template.nii.gz</imagefile>
+      <summaryimagefile>/whole_atlas_cortical_subcortical</summaryimagefile>
+    </images>
+  </header>
+  <data>
+<label index="0" x="0" y="0" z="0">Non-Cortical</label>
+<label index="1" x="56.8" y="63.9" z="98.5">Calloso-marginal fissure L</label>
+<label index="2" x="64.7" y="64" z="98.9">Calloso-marginal fissure R</label>
+<label index="3" x="58.6" y="59.1" z="125.9">Genualis gyrus II L</label>
+<label index="4" x="63.4" y="59.2" z="125.8">Genualis gyrus II R</label>
+<label index="5" x="58.6" y="46.05" z="133.25">Genualis gyrus I L</label>
+<label index="6" x="63.5" y="46.01" z="133.01">Genualis gyrus I R</label>
+<label index="7" x="56.7" y="69.7" z="112.3">Limbica anterior dorsalis II L</label>
+<label index="8" x="65.2" y="69.9" z="112.4">Limbica anterior dorsalis II R</label>
+<label index="9" x="58.5" y="71.05" z="119.6">Limbica anterior dorsalis I L</label>
+<label index="10" x="63.3" y="71.08" z="119.7">Limbica anterior dorsalis I R</label>
+<label index="11" x="52.5" y="68.6" z="117.17">Limbica anterior lateralis L</label>
+<label index="12" x="69.3" y="68.6" z="117.12">Limbica anterior lateralis R</label>
+<label index="13" x="58.7" y="63.2" z="114.06">Limbica anterior ventralis L</label>
+<label index="14" x="63.05" y="63.1" z="114.5">Limbica anterior ventralis R</label>
+<label index="15" x="57.8" y="71.1" z="101.1">Limbica media L</label>
+<label index="16" x="63.8" y="71.3" z="101.4">Limbica media R</label>
+<label index="17" x="56.3" y="75.6" z="65.7">Limbica posterior dorsalis II L</label>
+<label index="18" x="64.07" y="75.2" z="65.05">Limbica posterior dorsalis II R</label>
+<label index="19" x="57.9" y="77.7" z="85.6">Limbica posterior dorsalis I L</label>
+<label index="20" x="62.7" y="77.6" z="85.6">Limbica posterior dorsalis I R</label>
+<label index="21" x="52.1" y="76.5" z="73.7">Limbica posterior lateralis L</label>
+<label index="22" x="68.05" y="76.9" z="74.8">Limbica posterior lateralis R</label>
+<label index="23" x="56.03" y="60" z="62.6">Limbica posterior ventralis II L</label>
+<label index="24" x="64.9" y="60.02" z="62.5">Limbica posterior ventralis II R</label>
+<label index="25" x="58.6" y="68.7" z="76.48">Limbica posterior ventralis I L</label>
+<label index="26" x="62.2" y="68.68" z="76.49">Limbica posterior ventralis I R</label>
+<label index="27" x="58.45" y="25.63" z="122.35">Subcallosa II L</label>
+<label index="28" x="63.79" y="25.77" z="122.39">Subcallosa II R</label>
+<label index="29" x="59" y="37.34" z="120.63">Subcallosa I L</label>
+<label index="30" x="62.92" y="37.47" z="120.65">Subcallosa I R</label>
+<label index="31" x="52" y="42.79" z="150.28">Fissure orbitalis L</label>
+<label index="32" x="70.88" y="43.35" z="150.20">Fissure orbitalis R</label>
+<label index="33" x="38.5" y="41.4" z="132.14">Orbitalis II L</label>
+<label index="34" x="84.05" y="42.32" z="131.86">Orbitalis II R</label>
+<label index="35" x="42.79" y="45.99" z="153.45">Orbitalis I L</label>
+<label index="36" x="76.97" y="46.69" z="153.80">Orbitalis I R</label>
+<label index="37" x="58.25" y="46.22" z="147.03">Pregenualis III L</label>
+<label index="38" x="64.05" y="46.26" z="147.07">Pregenualis III R</label>
+<label index="39" x="59.27" y="41" z="154.75">Pregenualis II L</label>
+<label index="40" x="64.03" y="40.93" z="155.13">Pregenualis II R</label>
+<label index="41" x="58.19" y="55.66" z="153.15">Pregenualis I L</label>
+<label index="42" x="63.97" y="55.53" z="153.41">Pregenualis I R</label>
+<label index="43" x="56.79" y="47.87" z="168.50">Polaris L</label>
+<label index="44" x="65.65" y="47.90" z="168.66">Polaris R</label>
+<label index="45" x="48.41" y="55.5" z="139.81">Paraorbitalis dorsalis L</label>
+<label index="46" x="74.23" y="55.51" z="139.68">Paraorbitalis dorsalis R</label>
+<label index="47" x="49.58" y="38.03" z="148.84">Paraorbitalis ventralis L</label>
+<label index="48" x="73.59" y="38.35" z="148.85">Paraorbitalis ventralis R</label>
+<label index="49" x="73.59" y="38.35" z="148.85">Prorealis L</label>
+<label index="50" x="73.59" y="38.35" z="148.85">Prorealis R</label>
+<label index="51" x="50.24" y="65.46" z="144.30">Prorealis lateralis II L</label>
+<label index="52" x="71.69" y="65.80" z="144.28">Prorealis lateralis II R</label>
+<label index="53" x="49.42" y="62" z="150.77">Prorealis lateralis I L</label>
+<label index="54" x="72.73" y="62.21" z="150.79">Prorealis lateralis I R</label>
+<label index="55" x="59.08" y="35.46" z="138.28">Subgenualis L</label>
+<label index="56" x="64.05" y="38.05" z="137.92">Subgenualis R</label>
+<label index="57" x="59.31" y="23.02" z="136.86">Subprorealis II L</label>
+<label index="58" x="64.23" y="22.86" z="136.80">Subprorealis II R</label>
+<label index="59" x="58.13" y="27.95" z="152.98">Subprorealis I L</label>
+<label index="60" x="65.36" y="28.32" z="153.81">Subprorealis I R</label>
+<label index="61" x="54.38" y="32.5" z="141.69">Subprorealis lateralis II L</label>
+<label index="62" x="68.84" y="32.6" z="142.63">Subprorealis lateralis II R</label>
+<label index="63" x="54.06" y="38.37" z="156.02">Subprorealis lateralis I L</label>
+<label index="64" x="69.04" y="38.72" z="156.07">Subprorealis lateralis I R</label>
+<label index="65" x="43.34" y="83.79" z="60.13">Entolateralis posterior L</label>
+<label index="66" x="77.17" y="83.49" z="58.16">Entolateralis posterior R</label>
+<label index="67" x="43" y="85" z="64">Fissure lateralis Occipital L</label>
+<label index="68" x="76" y="86" z="64">Fissure lateralis Occipital R</label>
+<label index="69" x="54.1" y="88.08" z="63.34">Fissure suprasplenialis L</label>
+<label index="70" x="66.31" y="88.28" z="63.44">Fissure suprasplenialis R</label>
+<label index="71" x="35.27" y="80.67" z="61.89">Fissure ectolateralis posterior L</label>
+<label index="72" x="84.26" y="81.55" z="63.20">Fissure ectolateralis posterior R</label>
+<label index="73" x="25.24" y="55.11" z="50.92">Fissure ectolateralis L</label>
+<label index="74" x="94.44" y="56.94" z="49.90">Fissure ectolateralis R</label>
+<label index="75" x="43.36" y="61.55" z="57.04">Fissure retrospenialis L</label>
+<label index="76" x="77.6" y="61.40" z="56.72">Fissure retrospenialis R</label>
+<label index="77" x="26.27" y="30.98" z="69.92">Fissure recurrentis L</label>
+<label index="78" x="94.24" y="33.36" z="68.88">Fissure recurrentis R</label>
+<label index="79" x="38" y="70" z="85">Fissure suprasylviae anterior L</label>
+<label index="80" x="83" y="72" z="85">Fissure suprasylviae anterior R</label>
+<label index="81" x="48.54" y="74.93" z="75.23">Fissure splenialis L</label>
+<label index="82" x="71.84" y="75.65" z="74.82">Fissure splenialis R</label>
+<label index="83" x="55" y="97" z="63">Marginalis posterior L</label>
+<label index="84" x="65" y="97" z="63">Marginalis posterior R</label>
+<label index="85" x="58" y="93" z="73">Splenialis II L</label>
+<label index="86" x="63" y="93" z="73">Splenialis II R</label>
+<label index="87" x="54.84" y="82.77" z="66.73">Splenialis I L</label>
+<label index="88" x="65.19" y="82.64" z="66.64">Splenialis I R</label>
+<label index="89" x="13.29" y="38.56" z="55.38">Recurrens lateralis L</label>
+<label index="90" x="107.69" y="38.48" z="55.16">Recurrens lateralis R</label>
+<label index="91" x="16.67" y="33.53" z="55.04">Recurrens medialis L</label>
+<label index="92" x="102.53" y="35.36" z="54.49">Recurrens medialis R</label>
+<label index="93" x="19.24" y="47.72" z="48.22">Recurrens ventralis lateralis L</label>
+<label index="94" x="103.88" y="47.31" z="46.82">Recurrens ventralis lateralis R</label>
+<label index="95" x="19.76" y="42.21" z="47.35">Recurrens ventralis medialis L</label>
+<label index="96" x="100.3" y="42.96" z="47.73">Recurrens ventralis medialis R</label>
+<label index="97" x="37" y="92" z="71">Ectolateralis posterior L</label>
+<label index="98" x="82" y="93" z="71">Ectolateralis posterior R</label>
+<label index="99" x="44.79" y="57.56" z="51.3">Retrosplenialis L</label>
+<label index="100" x="75.22" y="58.63" z="50.87">Retrosplenialis R</label>
+<label index="101" x="28.23" y="80.22" z="69.03">Suprasylvian medialis L</label>
+<label index="102" x="91.78" y="81.14" z="67.64">Suprasylvian medialis R</label>
+<label index="103" x="20.33" y="59.44" z="56.64">Suprasylvian posterior L</label>
+<label index="104" x="100.51" y="60.19" z="56.72">Suprasylvian posterior R</label>
+<label index="105" x="14.34" y="46.94" z="55.35">Suprasylvian ventralis L</label>
+<label index="106" x="106.56" y="47.21" z="55.68">Suprasylvian ventralis R</label>
+<label index="107" x="24.44" y="38.32" z="56.18">Pararecurrens anterior L</label>
+<label index="108" x="95.87" y="40.16" z="56.41">Pararecurrens anterior R</label>
+<label index="109" x="25.1" y="47.47" z="45.47">Pararecurrens lateralis L</label>
+<label index="110" x="95.44" y="47.77" z="44.63">Pararecurrens lateralis R</label>
+<label index="111" x="89" y="51" z="44">Pararecurrens medialis L</label>
+<label index="112" x="31" y="50" z="44">Pararecurrens medials R</label>
+<label index="113" x="48" y="83" z="104">Entolateralis anterior lateralis L</label>
+<label index="114" x="73" y="84" z="104">Entolateralis anterior lateralis R</label>
+<label index="115" x="48" y="89" z="105">Entolateralis anterior L</label>
+<label index="116" x="72" y="90" z="105">Entolateralis anterior R</label>
+<label index="117" x="49" y="82" z="115">Fissure ansata L</label>
+<label index="118" x="72" y="82" z="113">Fissure ansata R</label>
+<label index="119" x="51.5" y="94.19" z="102.65">Fissure entolateralis pars anterior L</label>
+<label index="120" x="69.45" y="94.95" z="102.38">Fissure entolateralis pars anterior R</label>
+<label index="121" x="45" y="76" z="103">Fissure lateralis Parietal L</label>
+<label index="122" x="75" y="77" z="103">Fissure lateralis Parietal R</label>
+<label index="123" x="57.25" y="84.98" z="108.73">Fissure suprasplenialis L</label>
+<label index="124" x="63.27" y="85.07" z="108.52">Fissure suprasplenialis R</label>
+<label index="125" x="50" y="66" z="108">Fissure presylviae lateralis L</label>
+<label index="126" x="71" y="67" z="108">Fissure presylviae lateralis R</label>
+<label index="127" x="27.79" y="71.28" z="105.23">Coronalis posterior lateralis L</label>
+<label index="128" x="93.23" y="72.88" z="104.94">Coronalis posterior lateralis R</label>
+<label index="129" x="43" y="81" z="101">Coronalis posterior medialis L</label>
+<label index="130" x="78" y="81" z="102">Coronalis posterior medialis R</label>
+<label index="131" x="28.48" y="78.79" z="101.25">Coronalis posterior L</label>
+<label index="132" x="92.38" y="80.01" z="101.21">Coronalis posterior R</label>
+<label index="133" x="55.85" y="91.44" z="106.63">Marginalis anterior L</label>
+<label index="134" x="64.61" y="91.53" z="106.42">Marginalis anterior R</label>
+<label index="135" x="50.23" y="83.55" z="110.57">Marginalis lateralis L</label>
+<label index="136" x="70.61" y="85.27" z="109.99">Marginalis lateralis R</label>
+<label index="137" x="56.68" y="81.03" z="103.73">Presplenialis dorsalis L</label>
+<label index="138" x="64.15" y="80.64" z="104.59">Presplenialis dorsalis R</label>
+<label index="139" x="51.83" y="72.03" z="108.99">Presplenialis ventralis L</label>
+<label index="140" x="69.66" y="72.33" z="108.88">Presplenialis ventralis L</label>
+<label index="141" x="38.55" y="86.91" z="102.75">Ectolateralis anterior L</label>
+<label index="142" x="82.85" y="87.98" z="102.55">Ectolateralis anterior R</label>
+<label index="143" x="26" y="85" z="76">Suprasylvian accessoria L</label>
+<label index="144" x="94" y="86" z="76">Suprasylvian accessoria R</label>
+<label index="145" x="15.52" y="28.93" z="72.26">Composita posterior lateralis I  L</label>
+<label index="146" x="105.98" y="30.04" z="71.42">Composita posterior lateralis I  R</label>
+<label index="147" x="23" y="14" z="84">Composita medialis I L</label>
+<label index="148" x="99" y="17" z="84">Composita medialis I R</label>
+<label index="149" x="29" y="46" z="86">Claustrum L</label>
+<label index="150" x="92" y="50" z="86">Claustrum R</label>
+<label index="151" x="19.36" y="67.84" z="100.42">Ectosylvia accessoria L</label>
+<label index="152" x="101.38" y="70.08" z="100.27">Ectosylvia accessoria R</label>
+<label index="153" x="28" y="72" z="80">Paraectosylvia dorsalis II L</label>
+<label index="154" x="92" y="73" z="80">Paraectosylvia dorsalis II R</label>
+<label index="155" x="16.20" y="68.67" z="73.90">Ectosylvia medialis L</label>
+<label index="156" x="104.38" y="69.85" z="73.49">Ectosylvia medialis R</label>
+<label index="157" x="12.64" y="37.47" z="76.51">Ectosylvia posterior I L</label>
+<label index="158" x="108.69" y="37.65" z="76.92">Ectosylvia posterior I R</label>
+<label index="159" x="22.82" y="62.42" z="89.04">Paraectosylvia ventralis L</label>
+<label index="160" x="97.46" y="64.47" z="89.56">Paraectosylvia ventralis R</label>
+<label index="161" x="29" y="60" z="94">Fissure ectosylvia L</label>
+<label index="162" x="92" y="61" z="94">Fissure ectosylvia R</label>
+<label index="163" x="24.91" y="41.97" z="91.04">Fissure sylvia L</label>
+<label index="164" x="96.16" y="43.45" z="90.82">Fissure sylvia R</label>
+<label index="165" x="22.92" y="54.85" z="99.34">Sylvia insularis L</label>
+<label index="166" x="96.91" y="56.79" z="100">Sylvia insularis R</label>
+<label index="167" x="25.75" y="36.51" z="111.29">Parasylvian dorsalisL</label>
+<label index="168" x="95.97" y="37.76" z="111.03">Parasylvian dorsalis R</label>
+<label index="169" x="17.16" y="49.45" z="93.98">Sylvia L</label>
+<label index="170" x="103.61" y="51.27" z="94.09">Sylvia R</label>
+<label index="171" x="45.57" y="71.99" z="143.03">Composita anterior L</label>
+<label index="172" x="76.25" y="72.34" z="143.11">Composita anterior R</label>
+<label index="173" x="23.39" y="51.27" z="122.58">Composita ectosylvia L</label>
+<label index="174" x="99.02" y="54.59" z="122.58">Composita ectosylvia R</label>
+<label index="175" x="36.92" y="50.61" z="133.58">Composita interna L</label>
+<label index="176" x="85.85" y="50.93" z="132.67">Composita interna R</label>
+<label index="177" x="34.93" y="64.29" z="133.91">Composita signmoidea lateralis L</label>
+<label index="178" x="87.29" y="66.14" z="132.79">Composita signmoidea lateralis R</label>
+<label index="179" x="32.52" y="72.93" z="137.32">Composita sigmoid L</label>
+<label index="180" x="88.53" y="74.28" z="137.25">Composita sigmoid R</label>
+<label index="181" x="41.29" y="76.86" z="138.97">Composita precruciata L</label>
+<label index="182" x="80.43" y="76.83" z="139.27">Composita precruciata R</label>
+<label index="183" x="45.41" y="86.45" z="121.4">Centralis L</label>
+<label index="184" x="76.92" y="86.09" z="120.95">Centralis R</label>
+<label index="185" x="35" y="70" z="115">Fissure coronalis L</label>
+<label index="186" x="86.39" y="67.31" z="122.19">Fissure coronalis R</label>
+<label index="187" x="57.06" y="60.08" z="138.79">Fissure pregenualis L</label>
+<label index="188" x="65.02" y="59.72" z="139.02">Fissure pregenualis R</label>
+<label index="189" x="40.63" y="54.06" z="127.24">Fissure presylviae L</label>
+<label index="190" x="81.35" y="54.94" z="127.09">Fissure presylviae R</label>
+<label index="191" x="43.59" y="68.49" z="125.23">Fissure splenialis SM L</label>
+<label index="192" x="77.94" y="68.79" z="125.09">Fissure splenialis SM R</label>
+<label index="193" x="25.71" y="66.07" z="126.59">Coronalis anterior L</label>
+<label index="194" x="95.42" y="67.79" z="127.34">Coronalis anterior R</label>
+<label index="195" x="30.87" y="65.32" z="126.90">Coronalis medialis L</label>
+<label index="196" x="90.69" y="65.69" z="127.47">Coronalis medialis R</label>
+<label index="197" x="39.14" y="84.43" z="114.75">Postcentralis I L</label>
+<label index="198" x="81.85" y="85.25" z="114.16">Postcentralis I R</label>
+<label index="199" x="34.86" y="80.52" z="127.08">Precentralis I/II L</label>
+<label index="200" x="85.81" y="81.98" z="127.39">Precentralis I/II R</label>
+<label index="201" x="53.78" y="85.97" z="123.39">Precentralis III L</label>
+<label index="202" x="67.26" y="86.32" z="122.95">Precentralis III R</label>
+<label index="203" x="47.34" y="76.03" z="122.98">Precentralis interna L</label>
+<label index="204" x="74.07" y="76.24" z="122.87">Precentralis interna R</label>
+<label index="205" x="33.68" y="70.49" z="123.24">Precentral lateralis L</label>
+<label index="206" x="87.01" y="72.12" z="123.13">Precentral lateralis R</label>
+<label index="207" x="55.42" y="81.61" z="135.68">Precruciata centralis L</label>
+<label index="208" x="66.39" y="82.06" z="135.71">Precruciata centralis R</label>
+<label index="209" x="49.61" y="72.84" z="128.57">Precruciata lateralis L</label>
+<label index="210" x="72.15" y="72.63" z="127.97">Precruciata lateralis R</label>
+<label index="211" x="57.76" y="56.06" z="137.67">Precruciata medialis II L</label>
+<label index="212" x="64.23" y="55.22" z="137.91">Precruciata medialis II R</label>
+<label index="213" x="57.85" y="68.21" z="138.33">Precruciata medialis I L</label>
+<label index="214" x="63.77" y="68.50" z="138.06">Precruciata medialis I R</label>
+<label index="215" x="57.17" y="75.49" z="126.84">Precruciata posterior L</label>
+<label index="216" x="64.74" y="75.88" z="126.86">Precruciata posterior R</label>
+<label index="217" x="36.33" y="20.92" z="97.35">Amygdala L</label>
+<label index="218" x="86.21" y="21.98" z="97.36">Amygdala R</label>
+<label index="219" x="49.14" y="47.44" z="115.16">Caudate nucleas L</label>
+<label index="220" x="73.22" y="47.96" z="114.98">Caudate nucleas R</label>
+<label index="221" x="49.44" y="42.19" z="62.92">Caudal colliculus L</label>
+<label index="222" x="71.88" y="42.27" z="62.86">Caudal colliculus R</label>
+<label index="223" x="46.19" y="41.80" z="38.92">Cerebellum L</label>
+<label index="224" x="74.99" y="41.60" z="39.33">Cerebellum R</label>
+<label index="225" x="38" y="53" z="71">Hippocampus L</label>
+<label index="226" x="82" y="53" z="71">Hippocampus R</label>
+<label index="227" x="39.22" y="46.05" z="80.28">Lateral geniculate L</label>
+<label index="228" x="82.84" y="47.48" z="79.63">Lateral geniculate R</label>
+<label index="229" x="41.63" y="38.33" z="76.49">Medial geniculate L</label>
+<label index="230" x="80.19" y="39.34" z="75.92">Medial geniculate R</label>
+<label index="231" x="54.42" y="26.94" z="166.92">Olfactory bulb L</label>
+<label index="232" x="69.72" y="27.85" z="166.97">Olfactory bulb R</label>
+<label index="233" x="54.63" y="46.52" z="71.38">Rostral colliculus L</label>
+<label index="234" x="66.53" y="47.07" z="71.40">Rostral colliculus R</label>
+  </data>
+</atlas>
+
+

@@ -1,0 +1,118 @@
+﻿Abbrev.,Full Name,Gyri,Lobe,Left Volume (mm^3),Right Volume (mm^3)
+FCM,Area fissurae calloso-marginalis,,Cingulate,274,280
+GII,Area genualis II,Genualis Gyrus,Cingulate,934,972
+GI,Area genualis I,Genualis Gyrus,Cingulate,175,179
+LADII,Area limbica anterior dorsalis II,Anterior Cingulate Gyrus,Cingulate,195,189
+LADI,Area limbica anterior dorsalis I,Anterior Cingulate Gyrus,Cingulate,310,310
+LAL,Area limbica anterior lateralis,Cingulate Gyrus,Cingulate,474,473
+LAV,Area limbica anterior ventralis,Anterior Cingulate Gyrus,Cingulate,527,504
+LM,Area limbica media,Cingulate Gyrus,Cingulate,819,651
+LPDII,Area limbica posterior dorsalis II,Posterior Cingulate Gyrus,Cingulate,905,828
+LPDI,Area limbica posterior dorsalis I,Posterior Cingulate Gyrus,Cingulate,1023,968
+LPL,Area limbica posterior lateralis,Posterior Cingulate Gyrus,Cingulate,511,496
+LPVII,Area limbica posterior ventralis II,Posterior Cingulate Gyrus,Cingulate,539,551
+LPVI,Area limbica posterior ventralis I,Posterior Cingulate Gyrus,Cingulate,599,621
+SCII,Area subcallosa II,Subcallosus Gyrus,Cingulate,216,205
+SCI,Area subcallosa I,Subcallosus Gyrus,Cingulate,553,569
+FRh,Area fissurae orbitalis,Orbital Gyrus,Frontal,555,651
+ORBII,Area orbitalis II,Orbital Gyrus,Frontal,2561,2599
+ORBI,Area orbitalis I,Orbital Gyrus,Frontal,3353,3170
+PGIII,Area pregenualis III,Pregenual Gyrus,Frontal,826,807
+PGII,Area pregenualis II,Pregenual Gyrus,Frontal,983,834
+PGI,Area pregenualis I,Pregenual Gyrus,Frontal,150,162
+POL,Area Polaris,Gyrus Proreus,Frontal,784,832
+PORD,Area paraorbitalis dorsalis,Orbital Gyrus,Frontal,713,743
+PORV,Area paraorbitalis ventralis,Orbital Gyrus,Frontal,563,555
+PRLII,Area prorealis lateralis II,Gyrus Proreus,Frontal,2838,3042
+PRLI,Area Prorealis lateralis I,Gyrus Proreus,Frontal,459,508
+PR,area prorealis,Gyrus Proreus,Frontal,457,464
+SG,Area subgenualis ,Pregenual Gyrus,Frontal,737,617
+SPRII,Area Subprorealis II,Gyrus Subproreus,Frontal,1343,1376
+SPRI,Area Subprorealis I,Gyrus Subproreus,Frontal,664,617
+SPRLII,Area Subprorealis Lateralis II,Gyrus Subproreus,Frontal,436,495
+SPRLI,Area Subprorealis lateralis I,Gyrus Subproreus,Frontal,272,274
+BP,Area entolateralis posterior,Entolateral Gyrus,Occiptal,4891,4818
+FLO,Area fissurae lateralis occipital,Lateral Fissure ,Occiptal,2173,1993
+FO,Area fissurae suprasplenialis,Marginal Gyrus,Occiptal,732,577
+FQP,Area fissurea ectolateralis,Ectolateral Gyrus,Occiptal,1004,830
+FQ,Area fissurea ectolateralis posterior,Ectolateral Gyrus,Occiptal,608,659
+FR,Area fissurea retrosplenialis,Medial Occipital Gyrus,Occiptal,3164,3199
+FRc,Area fissurea recurrentis,Medial Occipital Gyrus,Occiptal,1591,1346
+FSSA,Area fissurea splenialis,Medial Occipital Gyrus,Occiptal,1762,1588
+FSp,Area fissurea suprasylviae anterior,Suprasylvian Gyrus,Occiptal,2123,2075
+MP,Area marginalis posterior,Marginal Gyrus,Occiptal,7131,7710
+OII,Area splenialis II,Marginal Gyrus,Occiptal,3669,3769
+OI,Area splenialis I,Marginal Gyrus,Occiptal,926,859
+ORL,Area recurrens lateralis,Recurrens,Occiptal,464,548
+ORM,Area recurrens medialis,Recurrens,Occiptal,735,756
+OVL,Area recurrens ventralis lateralis,Recurrens,Occiptal,324,294
+OVM,Area recurrens ventralis medialis,Recurrens,Occiptal,419,382
+QP,Area ectolateralis posterior,Ectolateral Gyrus,Occiptal,7130,7541
+R,Area retrospenialis,Medial Occipital Gyrus,Occiptal,4523,4308
+SSM,Area suprasylvian medialis,Suprasylvian Gyrus,Occiptal,7012,7392
+SSP,Area suprasylvian posterior,Suprasylvian Gyrus,Occiptal,3871,3483
+SSV,Area suprasylvian ventralis,Suprasylvian Gyrus,Occiptal,1246,1356
+ZA,Area pararecurrens anterior,Pararecurrens Gyrus,Occiptal,1423,1549
+ZL,Area pararecurrens lateralis,Pararecurrens Gyrus,Occiptal,430,484
+ZM,Area pararecurrens medialis,Pararecurrens Gyrus,Occiptal,320,266
+BAL,Area entolateralis anterior,Entolateral Gyrus,Parietal,236,223
+BA,Area entolateralis anterior lateralis,Entolateral Gyrus,Parietal,717,684
+FA,Area fissurae ansata,Marginal Gyrus,Parietal,284,313
+FBA,Area fissurae entolateralis pars anterior,Entolateral Gyrus,Parietal,52,42
+FLP,Area fissurae lateralis parietal,Lateral Fissure ,Parietal,304,244
+FN,Area fissurae suprasplenialis,Marginal Gyrus,Parietal,154,153
+FSPL,Area fissurae presylviae lateralis,Marginal Gyrus,Parietal,471,463
+KPL,Area coronalis posterior,Coronal Gyrus,Parietal,351,359
+KPM,Area coronalis posterior lateralis,Coronal Gyrus,Parietal,622,690
+KP,Area coronalis posterior medialis,Coronal Gyrus,Parietal,1515,1503
+MA,Area marginalis anterior,Marginal Gyrus,Parietal,1283,1339
+ML,Area marginalis lateralis,Marginal Gyrus,Parietal,198,161
+ND,Area presplenialis dorsalis,Presplenial Gyrus,Parietal,1226,1252
+NV,Area presplenialis ventralis,Presplenial Gyrus,Parietal,431,405
+QA,Area ectolateralis anterior,Ectolateral Gyrus,Parietal,813,718
+SSm,Area suprasylvian accessoria,Suprasylvian Gyrus,Parietal,106,123
+CPLI,Area composita posterior lateralis I,Posterior Compositus Gyrus,Temporal,4397,3986
+CPM,Area composita medialis I,Posterior Compositus Gyrus,Temporal,727,844
+Cl,Centralis I,Pre/postcentral Gyrus ,Temporal,2177,1902
+EAc,Area ectosylvia accessoria,Ectosylvian Gyrus,Temporal,2301,2466
+EDII,Area paraectosylvia dorsalis II,Ectosylvian Gyrus,Temporal,3973,3565
+EM,Area ectosylvia medialis,Ectosylvian Gyrus,Temporal,5434,5741
+EPI,Area ectosylvia posterior I,Ectosylvian Gyrus,Temporal,2990,3148
+EV,Area paraectosylvia ventralis,Ectosylvian Gyrus,Temporal,1879,1892
+FE,Area fissurae ectosylvia,Ectosylvian Gyrus,Temporal,2220,2366
+FS,Area fissurae sylvia,Sylvian Gyrus,Temporal,2760,2604
+SD,Area parasylvian dorsalis,Sylvian Gyrus,Temporal,1624,1452
+SJ,Area sylvia insularis,Sylvian Gyrus,Temporal,6092,6572
+S,Area sylvia,Sylvian Gyrus,Temporal,1100,912
+CA,Area composita anterior,Anterior Compositus Gyrus,Sensory-motor,2251,2663
+CE,Area composita ectosylvia,Anterior Compositus Gyrus,Sensory-motor,2783,2746
+CJ,Area composita interna ,Anterior Compositus Gyrus,Sensory-motor,364,375
+CSL,Area composita sigmoidea lateralis,Anterior Compositus Gyrus,Sensory-motor,1724,1660
+CS,Area composita sigmoid,Anterior Compositus Gyrus,Sensory-motor,990,1117
+CX,Area composita precruciata,Precruciate Gyrus,Sensory-motor,365,356
+C,Area centralis,Central Gyrus,Sensory-motor,569,588
+FK,Area fissurae coronalis,Coronal Gyrus,Sensory-motor,1419,1469
+FPG,Area fissurae pregenualis,Coronal Gyrus,Sensory-motor,372,372
+FPS,Area fissurae presylviae,Anterior Compositus Gyrus,Sensory-motor,1345,1375
+FSSM,Area fissurae splenialis,Precruciate Gyrus,Sensory-motor,1038,929
+KA,Area coronalis anterior,Coronal Gyrus,Sensory-motor,5189,4987
+KM,Area coronalis medialis,Coronal Gyrus,Sensory-motor,717,600
+PoC,Area postcentralis I,Postcentral Gyrus,Sensory-motor,1803,1976
+PrCI:II,Area precentralis I/II,Precentral Gyrus,Sensory-motor,1532,1462
+PrCIII,Area precentralis III,Precentral Gyrus,Sensory-motor,1124,1230
+PrCJ,Area precentralis interna,Precentral Gyrus,Sensory-motor,1244,1246
+PrCL,Area precentral lateralis,Precentral Gyrus,Sensory-motor,306,268
+XC,Area precruciata centralis,Precruciate Gyrus,Sensory-motor,730,799
+XL,Area precruciata lateralis,Precruciate Gyrus,Sensory-motor,766,732
+XMII,Area precruciata medialis II,Precruciate Gyrus,Sensory-motor,1111,1046
+XMI,Area precruciata medialis I,Precruciate Gyrus,Sensory-motor,642,611
+XP,Area precruciata posterior,Precruciate Gyrus,Sensory-motor,649,620
+Amyg,Amygdala,Subcortical Regions,Subcortical,1228,1148
+CaudN,Caudate Nucleas,Subcortical Regions,Subcortical,5195,5100
+CdColl,Caudal Colliculus,Subcortical Regions,Subcortical,929,964
+Cere,Cerebellum,Subcortical Regions,Subcortical,39456,39058
+Hippo,Hippocampus,Subcortical Regions,Subcortical,5625,5937
+LatGen,Lateral Geniculate,Subcortical Regions,Subcortical,483,554
+MedGen,Medial Geniculate,Subcortical Regions,Subcortical,333,330
+Olf,Olfactory Bulb,Olfactory Bulbs,Subcortical,8810,8337
+RostColl,Rostral Colliculus,Subcortical Regions,Subcortical,411,426

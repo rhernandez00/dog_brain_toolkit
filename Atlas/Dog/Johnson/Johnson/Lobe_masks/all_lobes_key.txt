@@ -1,0 +1,6 @@
+1 Frontal lobe
+2 Occipital lobe
+3 Parietal lobe
+4 Perisylvian (Temporal) lobe
+5 Sensory-motor lobe
+6 Subcortical
