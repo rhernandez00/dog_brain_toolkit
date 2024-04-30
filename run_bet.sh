@@ -10,7 +10,7 @@ params_file=$2
 # read params_file and load variables in the file, will read:
 # betx_1, bety_1, betz_1, thr_1, betx_2, bety_2, betz_2, thr_2, 
 # betx_3, bety_3, betz_3, thr_3, 
-# output_file, mask_file1, mask_file2, mask_file3
+# output_file, mask_file1, mask_file2, mask_file3, masked_file
 source ${params_file}
 
 # get working folder
@@ -65,3 +65,5 @@ fi
 
 # binarize output_file
 fslmaths ${output_file} -bin ${output_file}
+# multiply for the mask and get final file
+fslmaths ${input_file} -mul ${output_file} ${masked_file}
