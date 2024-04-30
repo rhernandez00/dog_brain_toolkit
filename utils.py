@@ -131,3 +131,17 @@ def write_params_file(params_file, params_dict):
             f.write(f'{key}={params_dict[key]}\n')
 
     print('Parameters file saved as ' + params_file)
+
+def read_params_file(params_file):
+    '''
+    the function will read a txt file with the parameters to be loaded in a bash script
+    params_file: path to the file with the parameters
+    '''
+    params_dict = {}
+    with open(params_file, 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            key, value = line.split('=')
+            params_dict[key] = value.strip()
+
+    return params_dict
