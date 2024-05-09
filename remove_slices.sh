@@ -7,6 +7,7 @@
 
 input_file=$1
 params_file=$2
+mask_file=0
 
 # read params_file and load variables in the file, will read:
 # x_lim1, x_lim2, y_lim1, x_lim2, z_lim1, z_lim2
@@ -89,5 +90,13 @@ done
 rm mergedFile.nii.gz
 # go back to original folder
 cd ${currentFolder}
+
+# check if mask_file is not 0
+if [ ${mask_file} != 0 ]
+then
+	# print that a mask will be applied, indicate the name of the mask_file
+	echo "Applying mask: ${mask_file}"
+	fslmaths ${output_file} -mul ${mask_file} ${output_file}
+fi
 
 echo "Done! file saved as ${output_file}" 
