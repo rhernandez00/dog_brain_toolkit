@@ -30,7 +30,7 @@ workingFolder=$(dirname ${output_file})
 # go to working folder
 cd ${workingFolder}
 
-echo ${workingFolder}
+echo "Working folder is:" ${workingFolder}
 
 echo cutting down x
 fslsplit ${input_file} slice -x
