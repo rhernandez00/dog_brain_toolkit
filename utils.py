@@ -100,6 +100,10 @@ def reorient_file(input_file, output_file, combination):
     output_file: str, path to the output file
     combination: list of strings, combination of rotations to apply (e.g. ['-x', 'z', '-y'])
     """
+    # check if the os is windows
+    if os.name == 'nt':
+        print('The system is windows, this is a test, no actual fsl commands will be run')
+
     print('Working with ' + input_file)
     # create copy of input file to output file
     print('Creating ' + output_file + '...')
@@ -108,15 +112,22 @@ def reorient_file(input_file, output_file, combination):
     # delete orientation
     print('Deleting orientation...')
     command = f"fslorient -deleteorient {output_file}"
-    os.system(command)
+    # if the system is windows, print the command, if not, run it
+    print(command)
+    if os.name != 'nt':
+        os.system(command)
     # swap axes
     print('Swapping axes...')
     command = f"fslswapdim {output_file} {combination[0]} {combination[1]} {combination[2]} {output_file}"
-    os.system(command)
+    print(command)
+    if os.name != 'nt':
+        os.system(command)
     # adding labels
     print('Adding labels...')
     command = f"fslorient -setqformcode 1 -setqformcode 1 {output_file}"
-    os.system(command)
+    print(command)
+    if os.name != 'nt':
+        os.system(command)
 
     print('Reorientation done!')
 
