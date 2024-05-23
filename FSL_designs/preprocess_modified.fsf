@@ -30,7 +30,7 @@ set fmri(featwatcher_yn) 1
 set fmri(sscleanup_yn) 0
 
 # Output directory
-set fmri(outputdir) "P:\userdata\raulh87\data\Complex\preprocessing\D-sub-001_task-visual_run-01"
+set fmri(outputdir) "P:\userdata\raulh87\data\Complex\preprocessing\D-sub-002\D-sub-002_task-visual_run-02"
 
 # TR(s)
 set fmri(tr) 2.0
@@ -267,7 +267,7 @@ set fmri(totalVoxels) 8192000
 set fmri(ncopeinputs) 0
 
 # 4D AVW data or FEAT directory (1)
-set feat_files(1) "P:\userdata\raulh87\data\Complex\BIDS\D-sub-001\func\D-sub-001_task-visual_run-01_bold.nii.gz"
+set feat_files(1) "P:\userdata\raulh87\data\Complex\BIDS\D-sub-002\func\D-sub-002_task-visual_run-02_bold.nii.gz"
 
 # Add confound EVs text file
 set fmri(confoundevs) 0

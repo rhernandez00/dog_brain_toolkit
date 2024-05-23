@@ -33,7 +33,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     if session != '':
         outputdir += '_ses-' + session
     
-    fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3) + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
     # check if session is not empty
     if session != '':
         fsl_outputdir += '_ses-' + session
