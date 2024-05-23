@@ -129,7 +129,7 @@ def get_mean_fct(sub_N, runs_to_use, base_run, dataset, task, specie, datafolder
         print('The system is Windows, this is a test, no actual system or FSL commands will be run')
 
     # output directory where the fsl output will be saved (preprocessed data)
-    outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3) + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
     # check if session is not empty
     if session != '':
         outputdir += '_ses-' + session
