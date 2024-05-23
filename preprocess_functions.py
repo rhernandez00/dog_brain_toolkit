@@ -281,10 +281,10 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session=''
     if session != '':
         mean_fct_file += '_ses-' + session
     cut_mean_fct_file = mean_fct_file + '_task-' + task + '_mean_fct.nii.gz'
-    mean_fct_file += '_task-' + task + '_mean_fct_uncut.nii.gz'
+    mean_fct_file += '_task-' + task + '_mean_fct.nii.gz'
     masked_mean_fct_file = mean_fct_file[:-7] + '_brain.nii.gz'
     mean_fct_file_STD = mean_fct_file[:-7] + '_STD.nii.gz'
-    mean_fct2STD_mat = mean_fct_file[:-7] + '_2STD.mat'
+    mean_fct2STD_mat = mean_fct_file[:-7] + '2STD.mat'
 
 
     if specie == 'D':
@@ -301,6 +301,81 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session=''
     # if the system is windows, don't run the command, just write it down
     print(command)
     if os.name == 'nt': # Windows
-        print("system is windows, command not executed. Command is:")
+        print("System is Windows, command not executed")
     else:
         os.system(command)
+
+def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_type='brain2mm', session=''):
+
+    # if the system is windows
+    if os.name == 'nt':
+        print('The system is Windows, FSL functions ans bash scripts will not be executed')
+
+    # working directories
+    std_dir = datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+
+    # cutting parameters file
+    params_file = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(3) 
+    # adding session if there is one
+    if session != '':
+        params_file += '_ses-' + session
+
+    params_file += '_task-' + task + '_mean_fct_uncut_cut_params.txt'
+
+    filename = specie + '-sub-' + str(sub_N).zfill(3)
+    # adding session if there is one
+    if session != '':
+        filename += '_ses-' + session
+    # name for STD file
+    std_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '.nii.gz'
+    # name for reoriented and motion corrected file
+    preprocessed_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented_mc.nii.gz'
+    cut_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented_mc_cut.nii.gz'
+    
+    #print('STD file saved as ' + std_dir + os.sep + std_file)
+    #print('preprocessed file is ' + preprocess_dir + os.sep + preprocessed_file)
+    
+    # updating output params_file
+    params_dict = utils.read_params_file(params_file)
+    params_dict['output_file'] = preprocess_dir + os.sep + cut_file
+    params_file_current = params_file[:-30] + '_run-' + str(run_N).zfill(2) + '_cut_params.txt'
+    # add mask file to parameters
+    params_dict['mask_file'] = preprocess_dir + os.sep + filename + '_task-' + task + '_mean_fct_mask.nii.gz'
+
+    # save the cutting parameters
+    utils.write_params_file(params_file_current, params_dict)
+
+    # cut preprocessed file and apply BET
+    command = f"./remove_slices.sh {preprocess_dir + os.sep + preprocessed_file} {params_file_current}"
+    
+    print(command)
+    if os.name != 'nt': # Windows
+        os.system(command)
+
+    # apply transformation to STD
+    mean_fct2STD_mat = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    # adding session if there is one
+    if session != '':
+        mean_fct2STD_mat += '_ses-' + session
+    mean_fct2STD_mat += '_task-' + task + '_mean_fct2STD.mat'
+    
+    # determine folder for the atlas    
+    if specie == 'D':
+        specieS = 'Dog'
+    elif specie == 'H':
+        specieS = 'Hum'
+    atlas_file = os.getcwd() + os.sep + "Atlas" + os.sep + specieS + os.sep + atlas_type + os.sep + img_type + ".nii.gz"
+    
+    # if normalized directory does not exist, create it
+    if not os.path.exists(std_dir):
+        os.makedirs(std_dir)
+        print('Directory ' + std_dir + ' created')
+    else:
+        print('Directory ' + std_dir + ' already exists')
+
+    command = f"flirt -in {preprocess_dir + os.sep + cut_file} -ref {atlas_file} -applyxfm -init {mean_fct2STD_mat} -out {std_dir + os.sep + std_file}"
+    print(command)
+    if os.name != 'nt': # Windows
+        os.system(command)
+    print('done')

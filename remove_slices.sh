@@ -2,6 +2,7 @@
 # This script will remove slices from a 3D image using fslroi.
 # Usage: ./remSlices.sh <input_file> <output_file> <params_file>
 # The script will obtain the cutting parameters from params_file
+# If the parameters include a mask file, the mask will be applied to the output file
 # Example: ./remSlices.sh 3Dimage.nii.gz 3Dimage_cut.nii.gz 3Dimage.txt
 # Author: Raul Hernandez
 
