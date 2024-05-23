@@ -306,6 +306,19 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session=''
         os.system(command)
 
 def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_type='brain2mm', session=''):
+    """
+    This function will take a semi-processed run of a participant 
+    cut it, apply BET and transform it to the space of the atlas.
+    sub_N: subject number
+    run_N: run number
+    dataset: dataset name
+    task: task name
+    specie: specie name
+    datafolder: path to the data folder
+    atlas_type: type of atlas to use
+    img_type: type of image to use, default is 'brain2mm'
+    session: session number (in case there is one)
+    """
 
     # if the system is windows
     if os.name == 'nt':
