@@ -1,5 +1,6 @@
 import os
 import utils
+import shutil
 
 # Description: Functions to preprocess fMRI data using FSL
 # Author: Raul Hernandez
@@ -98,9 +99,10 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     # oriented file
     reoriented_file = base_filename + '_reoriented.nii.gz'
 
+    preprocessed_file = fsl_outputdir + '.feat' + os.sep + 'filtered_func_data.nii.gz'
     #copy preprocessed_file to non_oriented_file
-    #shutil.copyfile(outputdir + os.sep + preprocessed_file, outputdir + os.sep + non_oriented_file)
-    #print(non_oriented_file + ' created')
+    shutil.copyfile(fsl_outputdir + os.sep + preprocessed_file, outputdir + os.sep + non_oriented_file)
+    print(non_oriented_file + ' created')
     print('FSL output directory: ' + fsl_outputdir)
 
     # check if system is windows, if so, do not execute command
