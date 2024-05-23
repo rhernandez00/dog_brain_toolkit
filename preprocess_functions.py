@@ -75,6 +75,11 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     design_modified_path = os.path.join(os.getcwd(), 'FSL_designs'  + os.sep + 'preprocess_modified.fsf')
 
     utils.fill_fsf(to_fill_dict, design_path, design_modified_path)
+    
+    # check if previous feat preprocessing directory exists, if so, delete it
+    if os.path.exists(fsl_outputdir + '.feat'):
+        shutil.rmtree(fsl_outputdir + '.feat')
+
 
     # run feat
     command = 'feat ' + design_modified_path
@@ -101,7 +106,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
 
     preprocessed_file = fsl_outputdir + '.feat' + os.sep + 'filtered_func_data.nii.gz'
     #copy preprocessed_file to non_oriented_file
-    shutil.copyfile(fsl_outputdir + os.sep + preprocessed_file, outputdir + os.sep + non_oriented_file)
+    shutil.copyfile(preprocessed_file, outputdir + os.sep + non_oriented_file)
     print(non_oriented_file + ' created')
     print('FSL output directory: ' + fsl_outputdir)
 
