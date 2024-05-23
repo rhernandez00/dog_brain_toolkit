@@ -76,7 +76,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     utils.fill_fsf(to_fill_dict, design_path, design_modified_path)
 
     # run feat
-    command = './feat ' + design_modified_path
+    command = 'feat ' + design_modified_path
 
     # check if system is windows, if so, do not execute command
     print(command)
@@ -159,6 +159,7 @@ def get_mean_fct(sub_N, runs_to_use, base_run, dataset, task, specie, datafolder
         # check if base_vol exists
         if not os.path.exists(outputdir + os.sep + 'base_vol.nii.gz'):
             print('base_vol.nii.gz does not exist, run the code with first_time = True')
+            print('path: ' + outputdir + os.sep + 'base_vol.nii.gz')
             raise ValueError('base_vol.nii.gz does not exist, run the code with first_time = True')
     ## ----- ##
 
@@ -286,11 +287,10 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session=''
     # generate path to atlas. The atlas is in the same folder as the script
     atlas_file = os.getcwd() + os.sep + "Atlas" + os.sep + specieS + os.sep + atlas_type + os.sep + img_type + ".nii.gz"
 
-    command = f"./flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12  -interp trilinear"
+    command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12  -interp trilinear"
     # if the system is windows, don't run the command, just write it down
-
+    print(command)
     if os.name == 'nt': # Windows
         print("system is windows, command not executed. Command is:")
-        print(command)
     else:
         os.system(command)
