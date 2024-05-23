@@ -160,8 +160,11 @@ def get_mean_fct(sub_N, runs_to_use, base_run, dataset, task, specie, datafolder
     if first_time: # get the volume
         # get the first volume of the first run to use as base volume
         command = f"fslroi {outputdir + os.sep + filename} {outputdir + os.sep + 'base_vol.nii.gz'} 0 1"
-        os.system(command)
-        first_time = False
+        # print commmand
+        print(command)
+        # if the system is not windows, run the command
+        if os.name != 'nt':
+            os.system(command)
     else:
         # check if base_vol exists
         if not os.path.exists(outputdir + os.sep + 'base_vol.nii.gz'):
