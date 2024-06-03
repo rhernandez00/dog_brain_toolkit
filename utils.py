@@ -13,21 +13,21 @@ def job_list_to_table(job_list):
                  'Process': {'label': 'Process'},
                  'Status': {'label': 'Status'}}
 
-    # Initialize scheduler_table
-    scheduler_table = pd.DataFrame(columns=[column_id[key]['label'] for key in column_id.keys()])
+    # Initialize schedule_table
+    schedule_table = pd.DataFrame(columns=[column_id[key]['label'] for key in column_id.keys()])
 
     # List to hold new rows
     rows = []
 
-    # Populate scheduler_table with job_list
+    # Populate schedule_table with job_list
     for job in job_list:
         new_row = {column_id[key]['label']: job[key] for key in column_id.keys()}
         rows.append(new_row)
 
     # Convert list of rows to DataFrame and concatenate
-    scheduler_table = pd.concat([scheduler_table, pd.DataFrame(rows)], ignore_index=True)
+    schedule_table = pd.concat([schedule_table, pd.DataFrame(rows)], ignore_index=True)
 
-    return scheduler_table
+    return schedule_table
 
 def fill_fsf(to_fill_dict, design_path, design_modified_path):
     """"
