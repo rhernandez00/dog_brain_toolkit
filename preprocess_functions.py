@@ -5,6 +5,77 @@ import shutil
 # Description: Functions to preprocess fMRI data using FSL
 # Author: Raul Hernandez
 
+def run_process(job):
+    '''
+    Will select the variables from the schedule_table and the project_dict to run the process
+    Can run: 
+    preprocess_run
+    get_mean_fct
+    crop_interface
+    bet_interface
+    mean_to_STD
+    run_to_STD
+    '''
+    # get the process to run
+    
+    # get the other variables of the job
+    # user = job['User']
+    dataset = job['Dataset']
+    session = job['Session']
+    task = job['Task']
+    sub_N = job['sub_N']
+    
+    specie = job['Specie']
+    process = job['Process']
+    datafolder = job['Datafolder']
+    job_status = job['Status']
+    combination = job['Combination']
+    smooth = job['Smooth']
+    atlas_type = job['Atlas_type']
+    base_run = 1
+    img_type = 'brain2mm'
+
+    print(f"Running process: {process}")
+    # run the adecuate process
+    match process:
+        case 'Preprocess':
+            print('Running preprocess')
+            for run_N in job['run_N']:
+                preprocess_run(
+                    sub_N, run_N, dataset, task, specie,
+                    datafolder, session, smooth,
+                        combination)
+        case 'Mean fct':
+            print('Running get_mean_fct')
+            runs_to_use =  job['run_N']
+            get_mean_fct(
+                sub_N, runs_to_use, base_run, dataset, 
+                task, specie, datafolder, session, first_time=True)
+        case 'Crop':
+            print('Running crop_interface')
+            #crop_interface(job)
+        case 'BET':
+            print('Running bet_interface')
+            #bet_interface(job)
+        case 'Mean to atlas':
+            print('Running mean_to_STD')
+            mean_to_STD(
+                sub_N, dataset, task, specie, datafolder, 
+                atlas_type, session, img_type)
+        case 'Runs to atlas':
+            print('Running run_to_STD')
+            for run_N in job['run_N']:
+                run_to_STD(
+                    sub_N, run_N, dataset, task, 
+                    specie, datafolder, atlas_type, 
+                    img_type, session=session)
+        case 'Motion':
+            print('Running process_motion')
+            #process_motion(job)
+        case _:
+            print('Process not found')
+
+
 def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', smooth=0, combination=['-x','z','-y']):
     """
     Preprocesses a single run of a single subject.
@@ -105,10 +176,16 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     reoriented_file = base_filename + '_reoriented.nii.gz'
 
     preprocessed_file = fsl_outputdir + '.feat' + os.sep + 'filtered_func_data.nii.gz'
-    #copy preprocessed_file to non_oriented_file
-    shutil.copyfile(preprocessed_file, outputdir + os.sep + non_oriented_file)
-    print(non_oriented_file + ' created')
-    print('FSL output directory: ' + fsl_outputdir)
+    # check if the system is windows
+    if os.name == 'nt':
+        print('A copy should have been created, but this is Windows')
+        print(non_oriented_file + ' a copy of this file here:')
+        print('FSL output directory: ' + fsl_outputdir)
+    else:
+        #copy preprocessed_file to non_oriented_file
+        shutil.copyfile(preprocessed_file, outputdir + os.sep + non_oriented_file)
+        print(non_oriented_file + ' created')
+        print('FSL output directory: ' + fsl_outputdir)
 
     # check if system is windows, if so, do not execute command
     if os.name == 'nt': # Windows

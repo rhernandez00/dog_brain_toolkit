@@ -131,7 +131,8 @@ def reorient_file(input_file, output_file, combination):
     print('Working with ' + input_file)
     # create copy of input file to output file
     print('Creating ' + output_file + '...')
-    shutil.copyfile(input_file, output_file)
+    if os.name != 'nt': # the system is not windows, create the copy
+        shutil.copyfile(input_file, output_file)
     
     # delete orientation
     print('Deleting orientation...')
