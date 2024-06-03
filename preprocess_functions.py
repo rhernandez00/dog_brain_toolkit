@@ -389,7 +389,7 @@ def crop_app(project_dict, sub_N):
         col3.children[0].value, col3.children[1].value, col3.children[2].value,
     ))
 
-    tab_crop_app = HBox([col1,col2,col3,col4])
+    tab_crop_app = VBox([HBox([col1,col2,col3]),col4])
 
     return tab_crop_app,out
 
