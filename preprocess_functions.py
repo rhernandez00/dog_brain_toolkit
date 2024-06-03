@@ -2,8 +2,156 @@ import os
 import utils
 import shutil
 
+from nilearn.plotting import plot_anat, show
+import ipywidgets as widgets
+import utils
+import os
+from importlib import reload
+from nilearn import plotting
+from nilearn import image as nli
+import nibabel as nib
+import numpy as np
+from ipywidgets import HBox, VBox
+import numpy as np
+from nilearn.plotting import plot_anat, show
+import ipywidgets as widgets
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap
+from IPython.display import display, Markdown, clear_output
+
 # Description: Functions to preprocess fMRI data using FSL
 # Author: Raul Hernandez
+
+def crop_app(project_dict, sub_N):
+    def plot_slices(x, y, z, x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
+        """
+        Plot slices from the sagittal, coronal, and axial views side by side.
+        """
+        fig, axes = plt.subplots(1, 3, figsize=(8, 5))
+
+        # Sagittal
+        sagittal_slice = data[x, :, :]
+        axes[0].imshow(sagittal_slice.T, cmap='gray', origin='lower')
+        axes[0].axis('off')
+
+        # Coronal
+        coronal_slice = data[:, y, :]
+        axes[1].imshow(coronal_slice.T, cmap='gray', origin='lower')
+        axes[1].axis('off')
+
+        # Axial
+        axial_slice = data[:, :, z]
+        axes[2].imshow(axial_slice.T, cmap='gray', origin='lower')
+        axes[2].axis('off')
+
+        # make a tight layout
+        plt.tight_layout()
+
+        # make the background black
+        fig.patch.set_facecolor('black')
+
+        
+        # Plotting red lines
+        # plotting lines in sagital slice
+        axes[0].axhline(y=z_lim1, color='red', lw=2)
+        axes[0].axvline(x=y_lim1, color='red', lw=2)
+
+        # plotting lines in coronal slice
+        axes[1].axvline(x=x_lim1, color='red', lw=2)
+        axes[1].axhline(y=z_lim1, color='red', lw=2)
+        
+        # plotting lines in axial slice
+        axes[2].axvline(x=x_lim1, color='red', lw=2)
+        axes[2].axhline(y=y_lim1, color='red', lw=2)
+
+        # Plotting blue lines
+        # plotting lines in sagital slice
+        axes[0].axhline(y=z_lim2, color='blue', lw=2)
+        axes[0].axvline(x=y_lim2, color='blue', lw=2)
+
+        # plotting lines in coronal slice
+        axes[1].axvline(x=x_lim2, color='blue', lw=2)
+        axes[1].axhline(y=z_lim2, color='blue', lw=2)
+
+        # plotting lines in axial slice
+        axes[2].axvline(x=x_lim2, color='blue', lw=2)
+        axes[2].axhline(y=y_lim2, color='blue', lw=2)
+
+        plt.show()
+
+
+    def apply_cut_button(x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
+        # determine name of params_file based on mean_fct_file
+        params_file = mean_fct_file[:-7] + '_cut_params.txt'
+
+        # create a dict with the cutting parameters
+        param_dict = {'x_lim1':x_lim1, 'y_lim1':y_lim1,
+                        'z_lim1':z_lim1, 'x_lim2':x_lim2,
+                        'y_lim2':y_lim2, 'z_lim2':z_lim2, 
+                        'output_file':cut_mean_fct_file,
+                        }
+
+        # save the cutting parameters
+        utils.write_params_file(params_file, param_dict)
+        print('button pressed')
+        command = f"./remove_slices.sh {mean_fct_file} {params_file}"
+        os.system(command)
+
+    dataset = project_dict['Dataset']
+    session = project_dict['Session']
+    task = project_dict['Task']
+    specie = project_dict['Specie']
+    datafolder = project_dict['Datafolder']
+
+
+    # working directory
+    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+
+    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    # adding session if there is one
+    if session != '':
+        mean_fct_file += '_ses-' + session
+    cut_mean_fct_file = mean_fct_file + '_task-' + task + '_mean_fct.nii.gz'
+    mean_fct_file += '_task-' + task + '_mean_fct_uncut.nii.gz'
+
+
+    # determine min and max values for each axis
+    img = nib.load(mean_fct_file)
+
+    # Get the data from the image
+    data = img.get_fdata()
+
+    slider_style = {'description_width': 'initial', 'width': '2px'}
+
+    maxX,maxY,maxZ = img.shape
+    col1 = widgets.VBox([widgets.IntSlider(min=0, max=maxX, step=1, value=np.round(maxX/2), description='X'),
+                        widgets.IntSlider(min=0, max=maxY, step=1, value=np.round(maxY/2), description='Y'),
+                        widgets.IntSlider(min=0, max=maxZ, step=1, value=np.round(maxZ/2), description='Z')])
+
+    col2 = widgets.VBox([widgets.IntSlider(min=0, max=maxX, step=1, value=0, description='lim X'),
+                        widgets.IntSlider(min=0, max=maxY, step=1, value=0, description='lim Y'),
+                        widgets.IntSlider(min=0, max=maxZ, step=1, value=0, description='lim Z')])
+
+    col3 = widgets.VBox([widgets.IntSlider(min=0, max=maxX, step=1, value=maxX, description='lim X'),
+                        widgets.IntSlider(min=0, max=maxY, step=1, value=maxY, description='lim Y'),
+                        widgets.IntSlider(min=0, max=maxZ, step=1, value=maxZ, description='lim Z')])
+
+    col4 = widgets.Button(description='Apply cut')
+
+    out = widgets.interactive_output(plot_slices, {'x':col1.children[0], 'y':col1.children[1], 'z':col1.children[2],
+                                                    'x_lim1':col2.children[0], 'y_lim1':col2.children[1], 'z_lim1':col2.children[2],
+                                                    'x_lim2':col3.children[0], 'y_lim2':col3.children[1], 'z_lim2':col3.children[2],
+                                                    })
+
+    # setting the button to call the function
+    col4.on_click(lambda b: apply_cut_button(
+        col2.children[0].value, col2.children[1].value, col2.children[2].value,
+        col3.children[0].value, col3.children[1].value, col3.children[2].value,
+    ))
+
+    tab_crop_app = HBox([col1,col2,col3,col4])
+
+    return tab_crop_app,out
 
 def check_job_status(job):
     # This function will check if the job finished, failed or is still running
