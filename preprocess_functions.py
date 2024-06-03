@@ -37,43 +37,43 @@ def run_process(job):
 
     print(f"Running process: {process}")
     # run the adecuate process
-    match process:
-        case 'Preprocess':
-            print('Running preprocess')
-            for run_N in job['run_N']:
-                preprocess_run(
-                    sub_N, run_N, dataset, task, specie,
-                    datafolder, session, smooth,
-                        combination)
-        case 'Mean fct':
-            print('Running get_mean_fct')
-            runs_to_use =  job['run_N']
-            get_mean_fct(
-                sub_N, runs_to_use, base_run, dataset, 
-                task, specie, datafolder, session, first_time=True)
-        case 'Crop':
-            print('Running crop_interface')
-            #crop_interface(job)
-        case 'BET':
-            print('Running bet_interface')
-            #bet_interface(job)
-        case 'Mean to atlas':
-            print('Running mean_to_STD')
-            mean_to_STD(
-                sub_N, dataset, task, specie, datafolder, 
-                atlas_type, session, img_type)
-        case 'Runs to atlas':
-            print('Running run_to_STD')
-            for run_N in job['run_N']:
-                run_to_STD(
-                    sub_N, run_N, dataset, task, 
-                    specie, datafolder, atlas_type, 
-                    img_type, session=session)
-        case 'Motion':
-            print('Running process_motion')
-            #process_motion(job)
-        case _:
-            print('Process not found')
+    if process == 'Preprocess':
+        print('Running preprocess')
+        for run_N in job['run_N']:
+            preprocess_run(
+                sub_N, run_N, dataset, task, specie,
+                datafolder, session, smooth,
+                    combination)
+    elif process == 'Mean fct':
+        print('Running get_mean_fct')
+        runs_to_use =  job['run_N']
+        get_mean_fct(
+            sub_N, runs_to_use, base_run, dataset, 
+            task, specie, datafolder, session, first_time=True)
+    elif process == 'Crop':
+        print('Running crop_interface')
+        #crop_interface(job)
+    elif process == 'BET':
+        print('Running bet_interface')
+        #bet_interface(job)
+    elif process == 'Mean to atlas':
+        print('Running mean_to_STD')
+        mean_to_STD(
+            sub_N, dataset, task, specie, datafolder, 
+            atlas_type, session, img_type)
+    elif process == 'Runs to atlas':
+    
+        print('Running run_to_STD')
+        for run_N in job['run_N']:
+            run_to_STD(
+                sub_N, run_N, dataset, task, 
+                specie, datafolder, atlas_type, 
+                img_type, session=session)
+    elif process == 'Motion':
+        print('Running process_motion')
+        #process_motion(job)
+    else:
+        print('Process not found')
 
 
 def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', smooth=0, combination=['-x','z','-y']):
