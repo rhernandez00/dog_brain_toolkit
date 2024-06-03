@@ -22,6 +22,246 @@ from IPython.display import display, Markdown, clear_output
 # Description: Functions to preprocess fMRI data using FSL
 # Author: Raul Hernandez
 
+def bet_app(project_dict, sub_N):
+    # Create a custom colormaps
+    # black
+    black = np.array([0, 0, 0, 0])   # RGBA for black (last value is alpha)
+    # red
+    red = np.array([1, 0, 0, 1])     # RGBA for red
+    # blue
+    blue = np.array([0, 0, 1, 1])    # RGBA for blue
+    # yellow
+    yellow = np.array([1, 1, 0, 1])  # RGBA for yellow (last value is alpha)
+
+    # create a red colormap
+    red_cmap = ListedColormap([black, red])
+    # create a blue colormap
+    blue_cmap = ListedColormap([black, blue])
+    # create a yellow colormap
+    yellow_cmap = ListedColormap([black, yellow])
+    def plot_bet(x,y,z, betx_1, bety_1, betz_1, betx_2, bety_2, betz_2, betx_3, bety_3, betz_3, plot_mask):
+    
+        """
+        Plot slices from the sagittal, coronal, and axial views side by side.
+        """
+        fig, axes = plt.subplots(1, 3, figsize=(8, 5))
+        
+        # Sagittal
+        sagittal_slice = data[x, :, :]
+        axes[0].imshow(sagittal_slice.T, cmap='gray', origin='lower')
+        axes[0].scatter(bety_1,betz_1,s=200, c='red')
+        # plot blue only if betx_2 matches the current slice
+        if betx_2 == x:
+            axes[0].scatter(bety_2,betz_2,s=200, c='blue')
+        axes[0].scatter(bety_3,betz_3,s=200, c='yellow')
+        axes[0].axis('off')
+        # display mask if plot_mask is True
+        if plot_mask:
+            # get mask1 for sagital slice
+            sagital_mask1 = data_mask1[x, :, :]
+            # plot mask1 in red
+            axes[0].imshow(sagital_mask1.T, cmap=red_cmap, origin='lower', alpha=0.5)
+            # get mask2 for sagital slice
+            sagital_mask2 = data_mask2[x, :, :]
+            # plot mask2 in blue
+            axes[0].imshow(sagital_mask2.T, cmap=blue_cmap, origin='lower', alpha=0.5)
+            # get mask3 for sagital slice
+            sagital_mask3 = data_mask3[x, :, :]
+            # plot mask3 in yellow
+            axes[0].imshow(sagital_mask3.T, cmap=yellow_cmap, origin='lower', alpha=0.5)
+
+        # Coronal
+        coronal_slice = data[:, y, :]
+        axes[1].imshow(coronal_slice.T, cmap='gray', origin='lower')
+        # plot red only if bety_1 matches the current slice
+        if bety_1 == y:
+            axes[1].scatter(betx_1,betz_1,s=200, c='red')
+        axes[1].scatter(betx_2,betz_2,s=200, c='blue')
+        axes[1].scatter(betx_3,betz_3,s=200, c='yellow')
+        axes[1].axis('off')
+        # display mask if plot_mask is True
+        if plot_mask:
+            # get mask1 for coronal slice
+            coronal_mask1 = data_mask1[:, y, :]
+            # plot mask1 in red
+            axes[1].imshow(coronal_mask1.T, cmap=red_cmap, origin='lower', alpha=0.5)
+            # get mask2 for coronal slice
+            coronal_mask2 = data_mask2[:, y, :]
+            # plot mask2 in blue
+            axes[1].imshow(coronal_mask2.T, cmap=blue_cmap, origin='lower', alpha=0.5)
+            # get mask3 for coronal slice
+            coronal_mask3 = data_mask3[:, y, :]
+            # plot mask3 in yellow
+            axes[1].imshow(coronal_mask3.T, cmap=yellow_cmap, origin='lower', alpha=0.5)
+
+        # Axial
+        axial_slice = data[:, :, z]
+        axes[2].imshow(axial_slice.T, cmap='gray', origin='lower')
+        axes[2].scatter(betx_1,bety_1,s=200, c='red')
+        axes[2].scatter(betx_2,bety_2,s=200, c='blue')
+        # plot yellow only if betz_3 matches the current slice
+        if betz_3 == z:
+            axes[2].scatter(betx_3,bety_3,s=200, c='yellow')
+        axes[2].axis('off')
+        # display mask if plot_mask is True
+        if plot_mask:
+            # get mask1 for axial slice
+            axial_mask1 = data_mask1[:, :, z]
+            # plot mask1 in red
+            axes[2].imshow(axial_mask1.T, cmap=red_cmap, origin='lower', alpha=0.5)
+            # get mask2 for axial slice
+            axial_mask2 = data_mask2[:, :, z]
+            # plot mask2 in blue
+            axes[2].imshow(axial_mask2.T, cmap=blue_cmap, origin='lower', alpha=0.5)
+            # get mask3 for axial slice
+            axial_mask3 = data_mask3[:, :, z]
+            # plot mask3 in yellow
+            axes[2].imshow(axial_mask3.T, cmap=yellow_cmap, origin='lower', alpha=0.5)
+        
+        # make a tight layout
+        plt.tight_layout()
+
+        # make the background black
+        fig.patch.set_facecolor('black')
+
+        # display the plot
+        plt.show()
+
+    dataset = project_dict['Dataset']
+    session = project_dict['Session']
+    task = project_dict['Task']
+    specie = project_dict['Specie']
+    datafolder = project_dict['Datafolder']
+
+    # working directory
+    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+
+    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    # adding session if there is one
+    if session != '':
+        mean_fct_file += '_ses-' + session
+    cut_mean_fct_file = mean_fct_file + '_task-' + task + '_mean_fct.nii.gz'
+    mask_file = mean_fct_file + '_task-' + task + '_mean_fct_mask.nii.gz'
+    mask_file1 = mean_fct_file + '_task-' + task + '_mean_fct_mask1.nii.gz'
+    mask_file2 = mean_fct_file + '_task-' + task + '_mean_fct_mask2.nii.gz'
+    mask_file3 = mean_fct_file + '_task-' + task + '_mean_fct_mask3.nii.gz'
+    mean_fct_file += '_task-' + task + '_mean_fct.nii.gz'
+    masked_mean_fct_file = mean_fct_file[:-7] + '_brain.nii.gz'
+
+    # load cut_mean_fct_file
+    img = nib.load(cut_mean_fct_file)
+
+    # Get the data from the image
+    data = img.get_fdata()
+
+    # if the mask files exist, load them
+    if os.path.exists(mask_file1):
+        mask_img1 = nib.load(mask_file1)
+        data_mask1 = mask_img1.get_fdata()
+        mask_img2 = nib.load(mask_file2)
+        data_mask2 = mask_img2.get_fdata()
+        mask_img3 = nib.load(mask_file3)
+        data_mask3 = mask_img3.get_fdata()
+
+
+    # determine min and max values for each axis
+    maxX,maxY,maxZ = img.shape
+
+    # define function to apply BET
+    def apply_bet_button(betx_1, bety_1, betz_1, thr_1, betx_2, bety_2, betz_2, thr_2, betx_3, bety_3, betz_3, thr_3):
+        global data_mask1, data_mask2, data_mask3
+        # determine name of params_file based on mean_fct_file
+        params_file = mean_fct_file[:-7] + '_bet_params.txt'
+        # create a dict with the parameters
+        param_dict = {'betx_1':betx_1, 'bety_1':bety_1, 'betz_1':betz_1, 'thr_1':thr_1,
+                        'betx_2':betx_2, 'bety_2':bety_2, 'betz_2':betz_2, 'thr_2':thr_2,
+                        'betx_3':betx_3, 'bety_3':bety_3, 'betz_3':betz_3, 'thr_3':thr_3,
+                        'output_file':mask_file, 'masked_file':masked_mean_fct_file,
+                        'mask_file1':mask_file1, 'mask_file2':mask_file2, 'mask_file3':mask_file3,
+                        }
+
+        # save the cutting parameters
+        utils.write_params_file(params_file, param_dict)
+        print('button pressed')
+        command = f"./run_bet.sh {cut_mean_fct_file} {params_file}"
+        os.system(command)
+
+        # update button description and status
+        col1.children[3].description = 'Display mask'
+        col1.children[3].disabled = False
+        
+        # Load each of the three masks
+        
+        mask_img1 = nib.load(mask_file1)
+        data_mask1 = mask_img1.get_fdata()
+        mask_img2 = nib.load(mask_file2)
+        data_mask2 = mask_img2.get_fdata()
+        mask_img3 = nib.load(mask_file3)
+        data_mask3 = mask_img3.get_fdata()
+
+
+    # create 4 sets of sliders, one for the slice, and 3 for the spheres marking the initial place of the BET sphere
+
+    # check if mask file 1 already exist
+    if os.path.exists(mask_file1):
+        button_description = 'Display mask'
+        button_disabled = False
+    else:
+        button_description = 'Mask not available'
+        button_disabled = True
+
+    # sliders for the slice
+    col1 = widgets.VBox([widgets.IntSlider(min=0, max=maxX, step=1, value=np.round(maxX/2), description='X'),
+                        widgets.IntSlider(min=0, max=maxY, step=1, value=np.round(maxY/2), description='Y'),
+                        widgets.IntSlider(min=0, max=maxZ, step=1, value=np.round(maxZ/2), description='Z'),
+                        widgets.ToggleButton(value=False, description=button_description, button_style='info', disabled=button_disabled),
+                        ])
+
+    # sliders for the spheres
+
+    # first sphere, has 4 values, x,y,z and threshold
+    col2 = widgets.VBox([widgets.IntSlider(min=0, max=maxX, step=1, value=np.round(maxX/2), description='betx_1'),
+                        widgets.IntSlider(min=0, max=maxY, step=1, value=14, description='bety_1'),
+                        widgets.IntSlider(min=0, max=maxZ, step=1, value=11, description='betz_1'),
+                        widgets.FloatSlider(min=0, max=1, step=0.05, value=0.8, description='thr_1'),
+                        ])
+    # second sphere, has 4 values, x,y,z and threshold
+    col3 = widgets.VBox([widgets.IntSlider(min=0, max=maxX, step=1, value=np.round(maxX/2), description='betx_2'),
+                        widgets.IntSlider(min=0, max=maxY, step=1, value=21, description='bety_2'),
+                        widgets.IntSlider(min=0, max=maxZ, step=1, value=18, description='betz_2'),
+                        widgets.FloatSlider(min=0, max=1, step=0.05, value=0.8, description='thr_2'),
+                        ])
+    # third sphere, has 4 values, x,y,z and threshold
+    col4 = widgets.VBox([widgets.IntSlider(min=0, max=maxX, step=1, value=np.round(maxX/2), description='betx_3'),
+                        widgets.IntSlider(min=0, max=maxY, step=1, value=30, description='bety_3'),
+                        widgets.IntSlider(min=0, max=maxZ, step=1, value=6, description='betz_3'),
+                        widgets.FloatSlider(min=0, max=1, step=0.05, value=0.8, description='thr_3'),
+                        ])
+
+    # linkin the sliders to the function
+    bet_app_out = widgets.interactive_output(plot_bet, {'x':col1.children[0], 'y':col1.children[1], 'z':col1.children[2],
+                                                    'betx_1':col2.children[0], 'bety_1':col2.children[1], 'betz_1':col2.children[2],
+                                                    'betx_2':col3.children[0], 'bety_2':col3.children[1], 'betz_2':col3.children[2],
+                                                    'betx_3':col4.children[0], 'bety_3':col4.children[1], 'betz_3':col4.children[2],
+                                                    'plot_mask':col1.children[3],
+                                                    })
+    # button to apply the BET
+    col5 = widgets.Button(description='Apply BET')
+
+    # setting the button to call the function
+    col5.on_click(lambda b: apply_bet_button(
+        col2.children[0].value, col2.children[1].value, col2.children[2].value, col2.children[3].value,
+        col3.children[0].value, col3.children[1].value, col3.children[2].value, col3.children[3].value,
+        col4.children[0].value, col4.children[1].value, col4.children[2].value, col4.children[3].value,
+    ))
+
+
+    row1 = HBox([col1,col2,col3,col4])
+    row2 = HBox([col5])
+
+    bet_app_tab = VBox([row1,row2])
+    return bet_app_tab, bet_app_out
+
 def crop_app(project_dict, sub_N):
     def plot_slices(x, y, z, x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
         """
