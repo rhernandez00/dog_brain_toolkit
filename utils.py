@@ -4,6 +4,30 @@
 import os
 import shutil
 import subprocess
+import pandas as pd
+
+def job_list_to_table(job_list):
+    # Define column_id dictionary with keys for columns and column labels
+    column_id = {'sub_N': {'label': 'Participant'},
+                 'run_N': {'label': 'Run'},
+                 'Process': {'label': 'Process'},
+                 'Status': {'label': 'Status'}}
+
+    # Initialize scheduler_table
+    scheduler_table = pd.DataFrame(columns=[column_id[key]['label'] for key in column_id.keys()])
+
+    # List to hold new rows
+    rows = []
+
+    # Populate scheduler_table with job_list
+    for job in job_list:
+        new_row = {column_id[key]['label']: job[key] for key in column_id.keys()}
+        rows.append(new_row)
+
+    # Convert list of rows to DataFrame and concatenate
+    scheduler_table = pd.concat([scheduler_table, pd.DataFrame(rows)], ignore_index=True)
+
+    return scheduler_table
 
 def fill_fsf(to_fill_dict, design_path, design_modified_path):
     """"
