@@ -5,6 +5,12 @@ import shutil
 # Description: Functions to preprocess fMRI data using FSL
 # Author: Raul Hernandez
 
+def check_job_status(job):
+    # This function will check if the job finished, failed or is still running
+    # Right now it will return 'Finished'
+    job_status = 'Finished'
+    return job_status
+
 def run_process(job):
     '''
     Will select the variables from the schedule_table and the project_dict to run the process
@@ -24,7 +30,6 @@ def run_process(job):
     session = job['Session']
     task = job['Task']
     sub_N = job['sub_N']
-    
     specie = job['Specie']
     process = job['Process']
     datafolder = job['Datafolder']
