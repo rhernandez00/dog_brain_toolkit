@@ -1,7 +1,7 @@
 function tableOut = run_quality_check(project_folder, sub_N, run_N, specie, task, session, thr_fwd, thr_dvars, radius, whichType)
-addpath([pwd,filesep,'functions']);
-addpath([pwd,filesep,'NIfTI_toolbox']);
-% radius some option needed for fwd. Attila shared a script that used 28. FSL uses 55 as default
+addpath([pwd,filesep,'Quality_check', filesep, 'functions']);
+addpath([pwd,filesep,'Quality_check', filesep,'NIfTI_toolbox']);
+% radius FSL uses 55 as default
 
 
 % This script calculates framewise displacement and DVARS using bramila_fwd and bramila_dvars. 
@@ -58,9 +58,7 @@ if ~strcmp(session,'')
 end
 nii_path = [nii_path,filesep,'func',filesep,vol_file];
 
-disp(nii_path)
 vol = load_untouch_nii(nii_path);
-
 
 cfg.vol = vol.img; %assigns the nii file
 [~,img]=bramila_dvars(cfg); %runs dvars as % of change in the whole image
