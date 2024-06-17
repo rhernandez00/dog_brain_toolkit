@@ -262,7 +262,10 @@ def bet_app(project_dict, sub_N):
     bet_app_tab = VBox([row1,row2])
     return bet_app_tab, bet_app_out
 
+
+
 def crop_app(project_dict, sub_N):
+    
     def plot_slices(x, y, z, x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
         """
         Plot slices from the sagittal, coronal, and axial views side by side.
@@ -348,6 +351,7 @@ def crop_app(project_dict, sub_N):
     workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
 
     mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    
     # adding session if there is one
     if session != '':
         mean_fct_file += '_ses-' + session
