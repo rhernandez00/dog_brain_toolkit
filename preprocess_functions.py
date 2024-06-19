@@ -262,7 +262,16 @@ def bet_app(project_dict, sub_N):
     bet_app_tab = VBox([row1,row2])
     return bet_app_tab, bet_app_out
 
-
+def crop_appB(project_dict): ##### Doesn't work#####
+    # create a dropdown menu to select the subject
+    dropdown_sub = widgets.Dropdown(
+        options=project_dict['Participants'],
+        description='Participants',
+        disabled=False,
+    )
+    tab_crop_appB,out = widgets.interactive(crop_app, {'project_dict':project_dict, 'sub_N':dropdown_sub})
+    tab_crop_app = VBox([dropdown_sub, tab_crop_appB])
+    return tab_crop_app,out
 
 def crop_app(project_dict, sub_N):
     
