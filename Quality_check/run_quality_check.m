@@ -29,6 +29,7 @@ movement_file = [movement_file, '_task-', task, '_run-', sprintf('%02d',run_N), 
 cfg.radius = radius; 
 cfg.prepro_suite =  'fsl-fs';
 cfg.motionparam = [project_folder,filesep,'movement',filesep,movement_file];
+parFile = [project_folder,filesep,'movement',filesep,movement_file];
 
 fwd = bramila_framewiseDisplacement(cfg);
 clear cfg
@@ -99,6 +100,9 @@ switch whichType
     case 'and'
         indxOut = logical(indxAnd);
 end
+
+m = readmatrix(parFile,'FileType','text');
+indxOut = [m,indxOut];
 
 
 txt_file = [specie, '-sub-',sprintf('%03d',sub_N)];
