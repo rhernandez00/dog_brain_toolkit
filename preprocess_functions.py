@@ -419,23 +419,34 @@ def crop_app(project_dict, sub_N):
     if os.path.exists(mean_fct_file[:-7] + '_cut_params.txt'):
         param_dict = utils.read_params_file(mean_fct_file[:-7] + '_cut_params.txt')
     else:
-        param_dict = {'lim_x1':0,
-                      'lim_y1':0,
-                      'lim_z1':0,
-                      'lim_x2':maxX,
-                      'lim_y2':maxY,
-                      'lim_z2':maxZ,
+        param_dict = {'x_lim1':0,
+                      'y_lim1':0,
+                      'z_lim1':0,
+                      'x_lim2':maxX,
+                      'y_lim2':maxY,
+                      'z_lim2':maxZ,
                       }
 
+    col2 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value=param_dict['x_lim1'], description='lim X'),
+                        widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['y_lim1'], description='lim Y'),
+                        widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['z_lim1'], description='lim Z')])
 
-    col2 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value=param_dict['lim_x1'], description='lim X'),
-                        widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['lim_y1'], description='lim Y'),
-                        widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['lim_z1'], description='lim Z')])
+    col3 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value=param_dict['x_lim2'], description='lim X'),
+                        widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['y_lim2'], description='lim Y'),
+                        widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['z_lim2'], description='lim Z')])
 
-    col3 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value=param_dict['lim_x2'], description='lim X'),
-                        widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['lim_y2'], description='lim Y'),
-                        widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['lim_z2'], description='lim Z')])
+    # col2 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value= maxX - int(param_dict['x_lim2']), description='lim X'),
+    #                     widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['y_lim1'], description='lim Y'),
+    #                     widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['z_lim1'], description='lim Z')])
 
+    # col3 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value=maxX - int(param_dict['x_lim1']), description='lim X'),
+    #                     widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['y_lim2'], description='lim Y'),
+    #                     widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['z_lim2'], description='lim Z')])
+    
+
+    
+    
+    
     col4 = widgets.Button(description='Apply cut')
 
     out = widgets.interactive_output(plot_slices, {'x':col1.children[0], 'y':col1.children[1], 'z':col1.children[2],
