@@ -97,7 +97,7 @@ set fmri(unwarp_dir) y-
 # 3 : Use slice order file
 # 4 : Use slice timings file
 # 5 : Interleaved (0, 2, 4 ... 1, 3, 5 ... )
-set fmri(st) 0
+set fmri(st) 1
 
 # Slice timings file
 set fmri(st_file) ""

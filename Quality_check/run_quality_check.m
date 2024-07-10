@@ -110,4 +110,8 @@ if ~strcmp(session, '')
     txt_file = [txt_file, '_ses-', session];
 end
 txt_file = [txt_file, '_task-', task, '_run-', sprintf('%02d',run_N)];
-writeTxt([project_folder,filesep,txt_file,'.txt'],indxOut); %
+movement_txt_folder = [project_folder,filesep, 'movement_txt'];
+if ~exist(movement_txt_folder,'dir')
+    mkdir(movement_txt_folder);
+end
+writeTxt([movement_txt_folder,filesep,txt_file,'.txt'],indxOut); %
