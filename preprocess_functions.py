@@ -22,7 +22,7 @@ from IPython.display import display, Markdown, clear_output
 # Description: Functions to preprocess fMRI data using FSL
 # Author: Raul Hernandez
 
-def bet_app(project_dict, sub_N):
+def bet_app(project_dict, sub_N, initial_params=None):
     global data_mask1, data_mask2, data_mask3
     # Create a custom colormaps
     # black
@@ -233,17 +233,32 @@ def bet_app(project_dict, sub_N):
     if os.path.exists(mean_fct_file[:-7] + '_bet_params.txt'):
         param_dict = utils.read_params_file(mean_fct_file[:-7] + '_bet_params.txt')
     else:
-        param_dict = {'betx_1':np.round(maxX/2),
-                      'bety_1':32,
+        if initial_params is not None:
+            param_dict = {'betx_1':np.round(maxX/2),
+                      'bety_1':initial_params['bety_1'],
+                      'betz_1':initial_params['betz_1'],
+                      'thr_1':initial_params['thr_1'],
+                      'betx_2':np.round(maxX/2),
+                      'bety_2':initial_params['bety_2'],
+                      'betz_2':initial_params['betz_2'],
+                      'thr_2':initial_params['thr_2'],
+                      'betx_3':np.round(maxX/2),
+                      'bety_3':initial_params['bety_3'],
+                      'betz_3':initial_params['betz_3'],
+                      'thr_3':initial_params['thr_3'],
+                      }
+        else:
+            param_dict = {'betx_1':np.round(maxX/2),
+                      'bety_1':9,
                       'betz_1':13,
                       'thr_1':0.65,
                       'betx_2':np.round(maxX/2),
-                      'bety_2':52,
-                      'betz_2':12,
+                      'bety_2':14,
+                      'betz_2':28,
                       'thr_2':0.6,
                       'betx_3':np.round(maxX/2),
-                      'bety_3':47,
-                      'betz_3':4,
+                      'bety_3':25,
+                      'betz_3':19,
                       'thr_3':0.75,
                       }
 
@@ -295,23 +310,18 @@ def bet_app(project_dict, sub_N):
     bet_app_tab = VBox([row1,row2])
     return bet_app_tab, bet_app_out
 
-def crop_appB(project_dict): ##### Doesn't work#####
-    # create a dropdown menu to select the subject
-    dropdown_sub = widgets.Dropdown(
-        options=project_dict['Participants'],
-        description='Participants',
-        disabled=False,
-    )
-    tab_crop_appB,out = widgets.interactive(crop_app, {'project_dict':project_dict, 'sub_N':dropdown_sub})
-    tab_crop_app = VBox([dropdown_sub, tab_crop_appB])
-    return tab_crop_app,out
-
 def crop_app(project_dict, sub_N):
     
     def plot_slices(x, y, z, x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
         """
         Plot slices from the sagittal, coronal, and axial views side by side.
         """
+        # get the max in x
+        maxX = data.shape[0]
+        # flip x_lim1 and x_lim2
+        x_lim1 = maxX - x_lim1
+        x_lim2 = maxX - x_lim2
+
         fig, axes = plt.subplots(1, 3, figsize=(8, 5))
 
         # Sagittal
@@ -364,10 +374,18 @@ def crop_app(project_dict, sub_N):
 
         plt.show()
 
-
     def apply_cut_button(x_lim1, y_lim1, z_lim1, x_lim2, y_lim2, z_lim2):
         # determine name of params_file based on mean_fct_file
         params_file = mean_fct_file[:-7] + '_cut_params.txt'
+        # make sure that x_lim1 is smaller than x_lim2, if not invert them
+        if x_lim1 > x_lim2:
+            x_lim1, x_lim2 = x_lim2, x_lim1
+        # make sure that y_lim1 is smaller than y_lim2, if not invert them
+        if y_lim1 > y_lim2:
+            y_lim1, y_lim2 = y_lim2, y_lim1
+        # make sure that z_lim1 is smaller than z_lim2, if not invert them
+        if z_lim1 > z_lim2:
+            z_lim1, z_lim2 = z_lim2, z_lim1
 
         # create a dict with the cutting parameters
         param_dict = {'x_lim1':x_lim1, 'y_lim1':y_lim1,
@@ -438,7 +456,6 @@ def crop_app(project_dict, sub_N):
     # col2 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value= maxX - int(param_dict['x_lim2']), description='lim X'),
     #                     widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['y_lim1'], description='lim Y'),
     #                     widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['z_lim1'], description='lim Z')])
-
     # col3 = widgets.VBox([widgets.IntSlider(min=0, max=maxX-1, step=1, value=maxX - int(param_dict['x_lim1']), description='lim X'),
     #                     widgets.IntSlider(min=0, max=maxY-1, step=1, value=param_dict['y_lim2'], description='lim Y'),
     #                     widgets.IntSlider(min=0, max=maxZ-1, step=1, value=param_dict['z_lim2'], description='lim Z')])
@@ -498,6 +515,8 @@ def run_process(job):
     atlas_type = job['Atlas_type']
     base_run = 1
     img_type = 'brain2mm'
+    run_prepro = job['Full_prepro']
+    variation = job['Variation']
 
     print(f"Running process: {process}")
     # run the adecuate process
@@ -507,7 +526,7 @@ def run_process(job):
             preprocess_run(
                 sub_N, run_N, dataset, task, specie,
                 datafolder, session, smooth,
-                    combination)
+                    combination, run_prepro)
     elif process == 'Mean fct':
         print('Running get_mean_fct')
         runs_to_use =  job['run_N']
@@ -524,10 +543,11 @@ def run_process(job):
         print('Running mean_to_STD')
         mean_to_STD(
             sub_N, dataset, task, specie, datafolder, 
-            atlas_type, session, img_type)
+            atlas_type, session, img_type,variation=variation)
     elif process == 'Runs to atlas':
     
         print('Running run_to_STD')
+        print('Variation:', variation)
         for run_N in job['run_N']:
             run_to_STD(
                 sub_N, run_N, dataset, task, 
@@ -540,7 +560,7 @@ def run_process(job):
         print('Process not found')
 
 
-def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', smooth=0, combination=['-x','z','-y']):
+def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', smooth=0, combination=['-x','z','-y'], run_prepro=True):
     """
     Preprocesses a single run of a single subject.
     Reorients file
@@ -609,23 +629,25 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     design_path = os.path.join(os.getcwd(), 'FSL_designs'  + os.sep + 'preprocess.fsf')
     design_modified_path = os.path.join(os.getcwd(), 'FSL_designs'  + os.sep + 'preprocess_modified.fsf')
 
-    utils.fill_fsf(to_fill_dict, design_path, design_modified_path)
-    
-    # check if previous feat preprocessing directory exists, if so, delete it
-    if os.path.exists(fsl_outputdir + '.feat'):
-        shutil.rmtree(fsl_outputdir + '.feat')
+    if run_prepro:
+        utils.fill_fsf(to_fill_dict, design_path, design_modified_path)
+        
+        # check if previous feat preprocessing directory exists, if so, delete it
+        if os.path.exists(fsl_outputdir + '.feat'):
+            shutil.rmtree(fsl_outputdir + '.feat')
 
 
-    # run feat
-    command = 'feat ' + design_modified_path
+        # run feat
+        command = 'feat ' + design_modified_path
 
-    # check if system is windows, if so, do not execute command
-    print(command)
-    if os.name != 'nt':
-        os.system(command)
+        # check if system is windows, if so, do not execute command
+        print(command)
+        if os.name != 'nt':
+            os.system(command)
+        else:
+            print("The system is windows, command not executed.")
     else:
-        print("The system is windows, command not executed.")
-
+        print('Preprocessing not run, skipping this step')
     ## reorient run ##
 
     base_filename = specie + '-sub-' + str(sub_N).zfill(3)
@@ -798,7 +820,7 @@ def get_mean_fct(sub_N, runs_to_use, base_run, dataset, task, specie, datafolder
 
     print('done')
 
-def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session='', img_type='brain2mm'):
+def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session='', img_type='brain2mm', variation='STD0'):
     """
     This function will take the mean functional image of a subject and transform it to the space of the atlas.
     sub_N: subject number
@@ -811,7 +833,7 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session=''
     img_type: type of image to use, default is 'brain2mm'
 
     """
-    atlas_type='Czeibert'
+    #atlas_type='Czeibert'
     
 
     # working directory
@@ -837,8 +859,18 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session=''
 
     # generate path to atlas. The atlas is in the same folder as the script
     atlas_file = os.getcwd() + os.sep + "Atlas" + os.sep + specieS + os.sep + atlas_type + os.sep + img_type + ".nii.gz"
+    # check which variation to use
+    print('variation: ' + variation)
+    if variation == 'STD0':
+        command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12  -interp trilinear"
+    elif variation == 'STD1':
+        command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 12  -interp trilinear"
+    else: #error, variation not found
+        print('Variation not found')
+        #generate error message
+        return
+        
 
-    command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12  -interp trilinear"
     # if the system is windows, don't run the command, just write it down
     print(command)
     if os.name == 'nt': # Windows
@@ -928,6 +960,7 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
     else:
         print('Directory ' + std_dir + ' already exists')
 
+    
     command = f"flirt -in {preprocess_dir + os.sep + cut_file} -ref {atlas_file} -applyxfm -init {mean_fct2STD_mat} -out {std_dir + os.sep + std_file}"
     print(command)
     if os.name != 'nt': # Windows

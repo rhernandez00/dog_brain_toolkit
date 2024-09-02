@@ -11,7 +11,12 @@ def job_list_to_table(job_list):
     column_id = {'sub_N': {'label': 'Participant'},
                  'run_N': {'label': 'Run'},
                  'Process': {'label': 'Process'},
-                 'Status': {'label': 'Status'}}
+                 'Status': {'label': 'Status'},
+                 'Atlas_type': {'label': 'Atlas_type'},
+                 'Dataset': {'label': 'Dataset'},
+                 'Full_prepro': {'label': 'Full_prepro'},
+                 'Combination': {'label': 'Combination'},
+                 }
 
     # Initialize schedule_table
     schedule_table = pd.DataFrame(columns=[column_id[key]['label'] for key in column_id.keys()])
