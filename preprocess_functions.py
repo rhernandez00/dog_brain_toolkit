@@ -53,7 +53,7 @@ def bet_app(project_dict, sub_N, initial_params=None):
 
     mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
     # adding session if there is one
-    if session != '':
+    if session != '': 
         mean_fct_file += '_ses-' + session
     cut_mean_fct_file = mean_fct_file + '_task-' + task + '_mean_fct.nii.gz'
     mask_file = mean_fct_file + '_task-' + task + '_mean_fct_mask.nii.gz'
