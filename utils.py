@@ -6,6 +6,31 @@ import shutil
 import subprocess
 import pandas as pd
 
+def apply_flirt(input_file, output_file, reference_file, parameters):
+    """
+    This function applies a transformation matrix to an input file using flirt
+    
+    Parameters:
+    - input_file (str): The path to the input file.
+    - output_file (str): The path to the output file.
+    - reference_file (str): The path to the reference file.
+    - parameters (dict): A dictionary containing the parameters for flirt x_min, x_max, y_min, y_max, z_min, z_max
+    
+    Returns:
+    - None
+    """
+    x_min = parameters['x_min']
+    x_max = parameters['x_max']
+    y_min = parameters['y_min']
+    y_max = parameters['y_max']
+    z_min = parameters['z_min']
+    z_max = parameters['z_max']
+    # Construct the command to run
+    command = f"flirt -in {input_file} -ref {reference_file} -out {output_file} -omat {output_file.replace('.nii.gz', '.mat')} -bins 256 -cost corratio -searchrx {x_min} {x_max} -searchry {y_min} {y_max} -searchrz {z_min} {z_max} -dof 12 -interp trilinear"
+    print(command)
+    if os.name != 'nt':
+        os.system(command)
+
 def job_list_to_table(job_list):
     # Define column_id dictionary with keys for columns and column labels
     column_id = {'sub_N': {'label': 'Participant'},
