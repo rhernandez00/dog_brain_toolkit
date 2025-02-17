@@ -1,6 +1,7 @@
-# dog_brain_toolkit
+# Dog brain toolkit
 
 Repository to store dog fMRI preprocessing and analysis app
+![Odin](Odin.jpg)
 
 ## Overview
 
