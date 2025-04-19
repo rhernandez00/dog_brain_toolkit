@@ -580,6 +580,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     if session != '':
         filename += '_ses-' + session
     filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
+    filename_json = filename[:-7] + '_bold.json'
 
     # get TR and number of volumes
     TR,volumes = utils.extract_params(filename)
@@ -595,9 +596,21 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
         fsl_outputdir += '_ses-' + session
     fsl_outputdir += '_task-' + task + '_run-' + str(run_N).zfill(2)
 
+    # slice timing parameters path
+    slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3) + os.sep + 'slice_timming-' + specie + '-sub-' + str(sub_N).zfill(3) + '_task-' + task + '_run-' + str(run_N).zfill(2) + '.txt'
+
+    # get slice timing parameters
+    slice_timming = utils.get_slice_timing(filename_json, slice_timming_path)
+
+    # check if slice_timming is not empty
+    if slice_timming == []:
+        print('No slice timing parameters found')
+        print('File: ' + slice_timming_path + ' empty')
+        return
+
     ## Filling out the design.fsf file ##
     # create list of labels to fill in the design.fsf file
-    label_list = ['Outputdir', 'TR', 'Volumes', 'BET', 'Smooth', 'Input']
+    label_list = ['Outputdir', 'TR', 'Volumes', 'BET', 'Smooth', 'Input', 'SliceTimming']
 
     # create dictionary to fill in the design.fsf file
     to_fill_dict = dict()
@@ -624,6 +637,10 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
         elif label == 'Input':
             to_fill_dict[label]['string_to_find'] = 'set feat_files(1)'
             to_fill_dict[label]['string_to_replace'] = ('set feat_files(1) "' + filename + '"')
+        elif label == 'SliceTimming':
+            to_fill_dict[label]['string_to_find'] = 'set fmri(st_file)'
+            to_fill_dict[label]['string_to_replace'] = ('set fmri(st_file) "' + slice_timming_path + '"')
+            
 
     # fill in the design.fsf file
     design_path = os.path.join(os.getcwd(), 'FSL_designs'  + os.sep + 'preprocess.fsf')

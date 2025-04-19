@@ -6,6 +6,61 @@ import shutil
 import subprocess
 import pandas as pd
 
+import json
+import numpy as np
+
+import json
+import numpy as np
+
+def get_slice_timing(json_path: str, txt_out_path: str):
+    """
+    Load a BIDS JSON sidecar, extract the 'SliceTiming' field, write each
+    timing value to a text file (one per line), and return as a NumPy array.
+
+    Parameters
+    ----------
+    json_path : str
+        Path to the input JSON file.
+    txt_out_path : str
+        Path to the output text file where timings will be written.
+
+    Returns
+    -------
+    np.ndarray
+        1D array of slice timing values.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the JSON file does not exist.
+    KeyError
+        If the 'SliceTiming' key is missing.
+    ValueError
+        If the 'SliceTiming' value is not a list of numbers.
+    """
+    # Load JSON sidecar
+    with open(json_path, 'r') as f:
+        info = json.load(f)
+
+    # Extract and validate SliceTiming
+    try:
+        timings = info['SliceTiming']
+    except KeyError:
+        raise KeyError(f"'SliceTiming' not found in {json_path}")
+
+    if not isinstance(timings, list) or not all(isinstance(t, (int, float)) for t in timings):
+        raise ValueError(f"'SliceTiming' in {json_path} must be a list of numbers")
+
+    # Convert to NumPy array
+    arr = np.array(timings, dtype=float)
+
+    # Write one value per line to the output text file
+    np.savetxt(txt_out_path, arr, fmt='%g')
+
+    return arr
+
+
+
 def apply_flirt(input_file, output_file, reference_file, parameters):
     """
     This function applies a transformation matrix to an input file using flirt
