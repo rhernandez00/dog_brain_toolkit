@@ -522,7 +522,7 @@ def run_process(job):
     # run the adecuate process
     if process == 'Preprocess':
         print('Running preprocess')
-        for run_N in job['run_N']:
+        for run_N, session in zip(job['run_N'], job['Sessions']):
             preprocess_run(
                 sub_N, run_N, dataset, task, specie,
                 datafolder, session, smooth,
@@ -530,9 +530,10 @@ def run_process(job):
     elif process == 'Mean fct':
         print('Running get_mean_fct')
         runs_to_use =  job['run_N']
+        sessions_to_use = job['Sessions']
         get_mean_fct(
-            sub_N, runs_to_use, base_run, dataset, 
-            task, specie, datafolder, session, first_time=True)
+            sub_N, runs_to_use, sessions_to_use, base_run, dataset, 
+            task, specie, datafolder, first_time=True)
     elif process == 'Crop':
         print('Running crop_interface')
         #crop_interface(job)
@@ -543,12 +544,12 @@ def run_process(job):
         print('Running mean_to_STD')
         mean_to_STD(
             sub_N, dataset, task, specie, datafolder, 
-            atlas_type, session, img_type,variation=variation)
+            atlas_type, img_type, variation=variation)
     elif process == 'Runs to atlas':
     
         print('Running run_to_STD')
         print('Variation:', variation)
-        for run_N in job['run_N']:
+        for run_N, session in zip(job['run_N'], job['Sessions']):
             run_to_STD(
                 sub_N, run_N, dataset, task, 
                 specie, datafolder, atlas_type, 
@@ -704,7 +705,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     utils.reorient_file(outputdir + os.sep + non_oriented_file, outputdir + os.sep + reoriented_file, combination)
 
 
-def get_mean_fct(sub_N, runs_to_use, base_run, dataset, task, specie, datafolder, session='', first_time=True):
+def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, specie, datafolder, first_time=True):
     """
     Calculates the mean functional image for a subject and a task.
     The mean functional image is calculated by averaging the mean images of each run.
@@ -760,7 +761,7 @@ def get_mean_fct(sub_N, runs_to_use, base_run, dataset, task, specie, datafolder
     mean_images = ''
 
     ## calculate motion for each run and generate par file ##
-    for n,run_N in enumerate(runs_to_use):
+    for n, (run_N, session) in enumerate(zip(runs_to_use, sessions_to_use)):
         print('processing ' + str(n+1) + ' of ' + str(len(runs_to_use)))
         filename = specie + '-sub-' + str(sub_N).zfill(3)
         # adding session if there is one
@@ -840,7 +841,7 @@ def get_mean_fct(sub_N, runs_to_use, base_run, dataset, task, specie, datafolder
 
     print('done')
 
-def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session='', img_type='brain2mm', variation='STD0'):
+def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='brain2mm', variation='STD0'):
     """
     This function will take the mean functional image of a subject and transform it to the space of the atlas.
     sub_N: subject number
@@ -849,7 +850,6 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, session=''
     specie: specie name
     datafolder: path to the data folder
     atlas_type: type of atlas to use
-    session: session number
     img_type: type of image to use, default is 'brain2mm'
 
     """
