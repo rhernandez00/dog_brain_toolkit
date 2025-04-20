@@ -583,6 +583,9 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
     filename_json = filename[:-7] + '_bold.json'
 
+    # print filename
+    print('Input file: ' + filename)
+
     # get TR and number of volumes
     TR,volumes = utils.extract_params(filename)
 
