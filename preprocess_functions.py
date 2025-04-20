@@ -663,10 +663,13 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
 
         # check if system is windows, if so, do not execute command
         print(command)
-        if os.name != 'nt':
+        if os.name == 'nt':
+            print("The system is windows, command not executed.")
+        elif os.name == 'posix':
             os.system(command)
         else:
-            print("The system is windows, command not executed.")
+            os.system(command)
+            
     else:
         print('Preprocessing not run, skipping this step')
     ## reorient run ##
