@@ -49,9 +49,9 @@ def bet_app(project_dict, sub_N, initial_params=None):
     datafolder = project_dict['Datafolder']
 
     # working directory
-    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
 
-    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     # adding session if there is one
     if session != '': 
         mean_fct_file += '_ses-' + session
@@ -408,9 +408,9 @@ def crop_app(project_dict, sub_N):
 
 
     # working directory
-    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
 
-    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     
     # adding session if there is one
     if session != '':
@@ -573,11 +573,11 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     ## determine input file and output directory ## 
 
     # input directory in BIDS format
-    filename = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(3) + os.sep + 'func' + os.sep
+    filename = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'func' + os.sep
     # check if session is not empty
     if session != '':
         filename += 'ses-' + session + os.sep
-    filename += specie + '-sub-' + str(sub_N).zfill(3)
+    filename += specie + '-sub-' + str(sub_N).zfill(2)
     if session != '':
         filename += '_ses-' + session
     filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
@@ -590,12 +590,12 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     TR,volumes = utils.extract_params(filename)
 
     # create output directory, where the fsl output will be saved (preprocessed data)
-    outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     if session != '':
         outputdir += '_ses-' + session
     
-    fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3) + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
-    slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3) + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+    slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     # check if session is not empty
     if session != '':
         fsl_outputdir += '_ses-' + session
@@ -604,7 +604,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     slice_timming_path += '_task-' + task + '_run-' + str(run_N).zfill(2)
 
     # slice timing parameters path
-    # slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3) + os.sep + 'slice_timming-' + specie + '-sub-' + str(sub_N).zfill(3) + '_task-' + task + '_run-' + str(run_N).zfill(2) + '.txt'
+    # slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'slice_timming-' + specie + '-sub-' + str(sub_N).zfill(2) + '_task-' + task + '_run-' + str(run_N).zfill(2) + '.txt'
 
     # get slice timing parameters
     slice_timming = utils.get_slice_timing(filename_json, slice_timming_path)
@@ -677,7 +677,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
         print('Preprocessing not run, skipping this step')
     ## reorient run ##
 
-    base_filename = specie + '-sub-' + str(sub_N).zfill(3)
+    base_filename = specie + '-sub-' + str(sub_N).zfill(2)
 
     if session != '':
         base_filename += 'ses-' + session + os.sep
@@ -726,7 +726,7 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
         print('The system is Windows, this is a test, no actual system or FSL commands will be run')
 
     # output directory where the fsl output will be saved (preprocessed data)
-    outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     # check if session is not empty
     if session != '':
         outputdir += '_ses-' + session
@@ -741,7 +741,7 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
         os.makedirs(movementdir)
 
     ## obtain volume to be used as base to correct all others ##
-    filename = specie + '-sub-' + str(sub_N).zfill(3)
+    filename = specie + '-sub-' + str(sub_N).zfill(2)
     # adding session if there is one
     if session != '':
         filename += '_ses-' + session
@@ -768,8 +768,8 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
 
     ## calculate motion for each run and generate par file ##
     for n, (run_N, session) in enumerate(zip(runs_to_use, sessions_to_use)):
-        print('processing ' + str(n+1) + ' of ' + str(len(runs_to_use)))
-        filename = specie + '-sub-' + str(sub_N).zfill(3)
+        print('processing ' + str(n+1) + ' of ' + str(runs_to_use))
+        filename = specie + '-sub-' + str(sub_N).zfill(2)
         # adding session if there is one
         if session != '':
             filename += '_ses-' + session
@@ -822,7 +822,7 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
         mean_images += outputdir + os.sep + filename[:-18] + '_mean.nii.gz' + ' '
 
     if first_time: # if yes, calculate mean image
-        mean_fct_file = outputdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+        mean_fct_file = outputdir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         # adding session if there is one
         if session != '':
             mean_fct_file += '_ses-' + session
@@ -863,9 +863,9 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     
 
     # working directory
-    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
 
-    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     # adding session if there is one
     if session != '':
         mean_fct_file += '_ses-' + session
@@ -924,18 +924,18 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
         print('The system is Windows, FSL functions ans bash scripts will not be executed')
 
     # working directories
-    std_dir = datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
-    preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    std_dir = datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+    preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
 
     # cutting parameters file
-    params_file = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(3) 
+    params_file = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(2) 
     # adding session if there is one
     if session != '':
         params_file += '_ses-' + session
 
     params_file += '_task-' + task + '_mean_fct_uncut_cut_params.txt'
 
-    filename = specie + '-sub-' + str(sub_N).zfill(3)
+    filename = specie + '-sub-' + str(sub_N).zfill(2)
     # adding session if there is one
     if session != '':
         filename += '_ses-' + session
@@ -966,7 +966,7 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
         os.system(command)
 
     # apply transformation to STD
-    mean_fct2STD_mat = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(3)
+    mean_fct2STD_mat = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     # adding session if there is one
     if session != '':
         mean_fct2STD_mat += '_ses-' + session
