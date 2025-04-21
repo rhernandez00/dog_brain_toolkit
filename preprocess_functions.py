@@ -641,8 +641,8 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
 
     # create output directory, where the fsl output will be saved (preprocessed data)
     outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    if session != '':
-        outputdir += '_ses-' + session
+    # if session != '':
+    #     outputdir += '_ses-' + session
     
     fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
     slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'slice_timming_' + specie + '-sub-' + str(sub_N).zfill(2)
