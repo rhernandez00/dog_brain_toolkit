@@ -534,12 +534,6 @@ def run_process(job):
         get_mean_fct(
             sub_N, runs_to_use, sessions_to_use, base_run, dataset, 
             task, specie, datafolder, first_time=True)
-    elif process == 'Crop':
-        print('Running crop_interface')
-        #crop_interface(job)
-    elif process == 'BET':
-        print('Running bet_interface')
-        #bet_interface(job)
     elif process == 'Mean to atlas':
         print('Running mean_to_STD')
         mean_to_STD(
@@ -554,11 +548,67 @@ def run_process(job):
                 sub_N, run_N, dataset, task, 
                 specie, datafolder, atlas_type, 
                 img_type, session=session)
-    elif process == 'Motion':
-        print('Running process_motion')
-        #process_motion(job)
+
     else:
         print('Process not found')
+
+def check_file_status(project_dict, sub_N, run_N, session, process):
+    '''
+    Check which files are available for the process
+    returns True if the files are available, False if not
+    '''
+    
+    # get specie from the project_dict
+    specie = project_dict['Specie']
+    # get dataset from the project_dict
+    dataset = project_dict['Dataset']
+    # get task from the project_dict
+    task = project_dict['Task']
+    # get datafolder from the project_dict
+    datafolder = project_dict['Datafolder']
+    
+    if process == 'Preprocess': # check if the preprocess files exist
+        # create the filename
+        filename = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'func' + os.sep
+        # check if session is not empty
+        if session != '':
+            filename += 'ses-' + session + os.sep
+        filename += specie + '-sub-' + str(sub_N).zfill(2)
+        if session != '':
+            filename += '_ses-' + session
+        filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
+        filename_json = filename[:-7] + '_bold.json'
+        # check if filename and filename_json exist
+        if os.path.exists(filename):
+            if os.path.exists(filename_json):
+                return True
+    elif process == 'Mean fct':
+        outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+        filename = specie + '-sub-' + str(sub_N).zfill(2)
+        # adding session if there is one
+        if session != '':
+            filename += '_ses-' + session
+        filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented.nii.gz'
+        # check if the file exists
+        if os.path.exists(outputdir + os.sep + filename):
+            return True
+    elif process == 'Runs to atlas': 
+        preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+        filename = specie + '-sub-' + str(sub_N).zfill(2)
+        # adding session if there is one
+        if session != '':
+            filename += '_ses-' + session
+        preprocessed_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented_mc.nii.gz'
+        # check if the file exists
+        if os.path.exists(preprocess_dir + os.sep + preprocessed_file):
+            return True
+    else:
+        print('Process not found')
+        return False
+    
+        
+    
+
 
 
 def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', smooth=0, combination=['-x','z','-y'], run_prepro=True):
@@ -866,9 +916,7 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
 
     mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    # adding session if there is one
-    if session != '':
-        mean_fct_file += '_ses-' + session
+    
     cut_mean_fct_file = mean_fct_file + '_task-' + task + '_mean_fct.nii.gz'
     mean_fct_file += '_task-' + task + '_mean_fct.nii.gz'
     masked_mean_fct_file = mean_fct_file[:-7] + '_brain.nii.gz'
