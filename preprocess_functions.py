@@ -645,16 +645,16 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
         outputdir += '_ses-' + session
     
     fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+    slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'slice_timming_' + specie + '-sub-' + str(sub_N).zfill(2)
     # check if session is not empty
     if session != '':
         fsl_outputdir += '_ses-' + session
         slice_timming_path += '_ses-' + session
     fsl_outputdir += '_task-' + task + '_run-' + str(run_N).zfill(2)
-    slice_timming_path += '_task-' + task + '_run-' + str(run_N).zfill(2)
-
-    # slice timing parameters path
-    # slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'slice_timming-' + specie + '-sub-' + str(sub_N).zfill(2) + '_task-' + task + '_run-' + str(run_N).zfill(2) + '.txt'
+    slice_timming_path += '_task-' + task + '_run-' + str(run_N).zfill(2) + '.txt'
+    # check that slice_timming_path folder exist
+    if not os.path.exists(os.path.dirname(slice_timming_path)):
+        os.makedirs(os.path.dirname(slice_timming_path))
 
     # get slice timing parameters
     slice_timming = utils.get_slice_timing(filename_json, slice_timming_path)
