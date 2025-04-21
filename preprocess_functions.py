@@ -730,7 +730,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     base_filename = specie + '-sub-' + str(sub_N).zfill(2)
 
     if session != '':
-        base_filename += 'ses-' + session + os.sep
+        base_filename += '_ses-' + session
     base_filename += '_task-' + task + '_run-' + str(run_N).zfill(2)
 
     # non-oriented file
