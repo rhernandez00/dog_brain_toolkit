@@ -577,7 +577,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
         if session != '':
             filename += '_ses-' + session
         filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
-        filename_json = filename[:-7] + '_bold.json'
+        filename_json = filename[:-7] + '.json'
         # check if filename and filename_json exist
         if os.path.exists(filename):
             if os.path.exists(filename_json):
@@ -631,7 +631,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     if session != '':
         filename += '_ses-' + session
     filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
-    filename_json = filename[:-7] + '_bold.json'
+    filename_json = filename[:-7] + '.json'
 
     # print filename
     print('Input file: ' + filename)
