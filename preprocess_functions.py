@@ -580,8 +580,13 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
         filename_json = filename[:-7] + '.json'
         # check if filename and filename_json exist
         if os.path.exists(filename):
+            print('File exists: ' + filename)
             if os.path.exists(filename_json):
+                print('File exists: ' + filename_json)
                 return True
+        else:
+            print('File does not exist: ' + filename)
+            return False
     elif process == 'Mean fct':
         outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = specie + '-sub-' + str(sub_N).zfill(2)
@@ -591,7 +596,11 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
         filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented.nii.gz'
         # check if the file exists
         if os.path.exists(outputdir + os.sep + filename):
+            print('File exists: ' + filename)
             return True
+        else:
+            print('File does not exist: ' + filename)
+            return False
     elif process == 'Runs to atlas': 
         preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = specie + '-sub-' + str(sub_N).zfill(2)
@@ -601,7 +610,11 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
         preprocessed_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented_mc.nii.gz'
         # check if the file exists
         if os.path.exists(preprocess_dir + os.sep + preprocessed_file):
+            print('File exists: ' + preprocessed_file)
             return True
+        else:
+            print('File does not exist: ' + preprocessed_file)
+            return False
     else:
         print('Process not found')
         return False
