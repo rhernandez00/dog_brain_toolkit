@@ -570,14 +570,14 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
     
     if process == 'preprocess_run': # check if the preprocess files exist
         # create the filename
-        filename = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'func' + os.sep
-        # check if session is not empty
-        if session != '':
-            filename += 'ses-' + session + os.sep
-        filename += specie + '-sub-' + str(sub_N).zfill(2)
-        if session != '':
-            filename += '_ses-' + session
-        filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
+        filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 
+                    specie + '-sub-' + str(sub_N).zfill(2) + 
+                    os.sep + 'func' +  os.sep + 
+                    specie + '-sub-' + str(sub_N).zfill(2) + 
+                    '_ses-' + session +
+                    '_task-' + task +
+                    '_run-' + str(run_N).zfill(2) + 
+                    '_bold.nii.gz')
         filename_json = filename[:-7] + '.json'
         # check if filename and filename_json exist
         if os.path.exists(filename):
@@ -604,11 +604,12 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
             return False
     elif process == 'Runs to atlas': 
         preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-        filename = specie + '-sub-' + str(sub_N).zfill(2)
-        # adding session if there is one
-        if session != '':
-            filename += '_ses-' + session
-        preprocessed_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented_mc.nii.gz'
+        filename = (specie + '-sub-' + str(sub_N).zfill(2) +
+                    '_ses-' + session +
+                    '_task-' + task +
+                    '_run-' + str(run_N).zfill(2)
+                    )
+        preprocessed_file = filename + '_reoriented_mc.nii.gz'
         # check if the file exists
         if os.path.exists(preprocess_dir + os.sep + preprocessed_file):
             print('File exists: ' + preprocessed_file)
@@ -627,7 +628,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
 
 
 
-def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', smooth=0, combination=['-x','z','-y'], run_prepro=True):
+def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session, smooth=0, combination=['-x','z','-y'], run_prepro=True):
     """
     Preprocesses a single run of a single subject.
     Reorients file
@@ -639,15 +640,9 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
     ## determine input file and output directory ## 
 
     # input directory in BIDS format
-    filename = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'func' + os.sep
-    # check if session is not empty
-    if session != '':
-        filename += 'ses-' + session + os.sep
-    filename += specie + '-sub-' + str(sub_N).zfill(2)
-    if session != '':
-        filename += '_ses-' + session
-    filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'
-    filename_json = filename[:-7] + '.json'
+    input_folder = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'func' + os.sep 
+    filename = input_folder + os.sep +  specie + '-sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'   
+    filename_json = input_folder + os.sep +  specie + '-sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2) + '._bold.json'
 
     # print filename
     print('Input file: ' + filename)
@@ -657,17 +652,9 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
 
     # create output directory, where the fsl output will be saved (preprocessed data)
     outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    # if session != '':
-    #     outputdir += '_ses-' + session
-    
-    fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'slice_timming_' + specie + '-sub-' + str(sub_N).zfill(2)
-    # check if session is not empty
-    if session != '':
-        fsl_outputdir += '_ses-' + session
-        slice_timming_path += '_ses-' + session
-    fsl_outputdir += '_task-' + task + '_run-' + str(run_N).zfill(2)
-    slice_timming_path += '_task-' + task + '_run-' + str(run_N).zfill(2) + '.txt'
+    fsl_outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2)
+    slice_timming_path = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'slice_timming_' + specie + '-sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2) + '.txt'
+
     # check that slice_timming_path folder exist
     if not os.path.exists(os.path.dirname(slice_timming_path)):
         os.makedirs(os.path.dirname(slice_timming_path))
@@ -743,12 +730,12 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session='', 
         print('Preprocessing not run, skipping this step')
     ## reorient run ##
 
-    base_filename = specie + '-sub-' + str(sub_N).zfill(2)
-
-    if session != '':
-        base_filename += '_ses-' + session
-    base_filename += '_task-' + task + '_run-' + str(run_N).zfill(2)
-
+    base_filename =(
+        specie + '-sub-' + str(sub_N).zfill(2) + 
+        '_ses-' + session + 
+        '_task-' + task + 
+        '_run-' + str(run_N).zfill(2))
+    
     # non-oriented file
     non_oriented_file = base_filename + '_not-oriented.nii.gz'
     # oriented file
@@ -793,25 +780,22 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
 
     # output directory where the fsl output will be saved (preprocessed data)
     outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    # check if session is not empty
-    if session != '':
-        outputdir += '_ses-' + session
-    #run_N = 1
-    #outputdir += '_task-' + task + '_run-' + str(run_N).zfill(2)
-
-
+    
     # movement directory
     movementdir = datafolder + os.sep + dataset + os.sep + 'movement'
     # create movement directory if it does not exist
     if not os.path.exists(movementdir):
         os.makedirs(movementdir)
 
+    initial_run = runs_to_use[0]
+    initial_session = sessions_to_use[0]
     ## obtain volume to be used as base to correct all others ##
-    filename = specie + '-sub-' + str(sub_N).zfill(2)
-    # adding session if there is one
-    if session != '':
-        filename += '_ses-' + session
-    filename += '_task-' + task + '_run-' + str(base_run).zfill(2) + '_reoriented.nii.gz'
+    filename = (specie + '-sub-' + str(sub_N).zfill(2) +
+                '_ses-' + initial_session +
+                '_task-' + task +
+                '_run-' + str(initial_run).zfill(2) +
+                  '_reoriented.nii.gz')
+    
 
     if first_time: # get the volume
         # get the first volume of the first run to use as base volume
@@ -835,11 +819,12 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
     ## calculate motion for each run and generate par file ##
     for n, (run_N, session) in enumerate(zip(runs_to_use, sessions_to_use)):
         print('processing ' + str(n+1) + ' of ' + str(runs_to_use))
-        filename = specie + '-sub-' + str(sub_N).zfill(2)
-        # adding session if there is one
-        if session != '':
-            filename += '_ses-' + session
-        filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented.nii.gz'
+        filename = (specie + '-sub-' + str(sub_N).zfill(2) +
+                '_ses-' + session +
+                '_task-' + task +
+                '_run-' + str(run_N).zfill(2) +
+                  '_reoriented.nii.gz')
+        
         # calculate motion and generate par file
         print('calculating motion...')
         
@@ -888,11 +873,11 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
         mean_images += outputdir + os.sep + filename[:-18] + '_mean.nii.gz' + ' '
 
     if first_time: # if yes, calculate mean image
-        mean_fct_file = outputdir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-        # adding session if there is one
-        if session != '':
-            mean_fct_file += '_ses-' + session
-        mean_fct_file += '_task-' + task + '_mean_fct_uncut.nii.gz'
+        mean_fct_file = (outputdir + os.sep + 
+                         specie + '-sub-' + str(sub_N).zfill(2) + 
+                         '_ses-' + session +
+                         '_task-' + task + '_mean_fct_uncut.nii.gz'
+        )
 
         # append mean images to a single 4D image
         command = f"fslmerge -t {mean_fct_file} {mean_images}"
@@ -989,35 +974,32 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
 
     # working directories
     std_dir = datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-
-    # cutting parameters file
-    params_file = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(2) 
-    # adding session if there is one
-    if session != '':
-        params_file += '_ses-' + session
-
-    params_file += '_task-' + task + '_mean_fct_uncut_cut_params.txt'
-
-    filename = specie + '-sub-' + str(sub_N).zfill(2)
-    # adding session if there is one
-    if session != '':
-        filename += '_ses-' + session
-    # name for STD file
-    std_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '.nii.gz'
-    # name for reoriented and motion corrected file
-    preprocessed_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented_mc.nii.gz'
-    cut_file = filename + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented_mc_cut.nii.gz'
+    preprocess_dir = (datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + 
+                      specie + '-sub-' + str(sub_N).zfill(2)
+    )
     
-    #print('STD file saved as ' + std_dir + os.sep + std_file)
-    #print('preprocessed file is ' + preprocess_dir + os.sep + preprocessed_file)
+    # cutting parameters file
+    params_file = (preprocess_dir + os.sep + 
+                   specie + '-sub-' + str(sub_N).zfill(2) + 
+                   '_ses-' + session + 
+                   '_task-' + task + '_mean_fct_uncut_cut_params.txt'
+    )
+
+    filename = (specie + '-sub-' + str(sub_N).zfill(2) + 
+                '_ses-' + session + 
+                '_task-' + task + 
+                '_run-' + str(run_N).zfill(2))
+    
+    # name for reoriented and motion corrected file
+    preprocessed_file = filename + '_reoriented_mc.nii.gz'
+    cut_file = filename + '_reoriented_mc_cut.nii.gz'
     
     # updating output params_file
     params_dict = utils.read_params_file(params_file)
     params_dict['output_file'] = preprocess_dir + os.sep + cut_file
     params_file_current = params_file[:-30] + '_run-' + str(run_N).zfill(2) + '_cut_params.txt'
     # add mask file to parameters
-    params_dict['mask_file'] = preprocess_dir + os.sep + filename + '_task-' + task + '_mean_fct_mask.nii.gz'
+    params_dict['mask_file'] = preprocess_dir + os.sep + filename + '_mean_fct_mask.nii.gz'
 
     # save the cutting parameters
     utils.write_params_file(params_file_current, params_dict)
@@ -1030,11 +1012,12 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
         os.system(command)
 
     # apply transformation to STD
-    mean_fct2STD_mat = preprocess_dir + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
-    # adding session if there is one
-    if session != '':
-        mean_fct2STD_mat += '_ses-' + session
-    mean_fct2STD_mat += '_task-' + task + '_mean_fct2STD.mat'
+    mean_fct2STD_mat = (
+        preprocess_dir + os.sep + 
+        specie + '-sub-' + str(sub_N).zfill(2) + 
+         '_ses-' + session +
+         '_task-' + task + '_mean_fct2STD.mat'
+         )
     
     # determine folder for the atlas    
     if specie == 'D':
@@ -1051,7 +1034,7 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
         print('Directory ' + std_dir + ' already exists')
 
     
-    command = f"flirt -in {preprocess_dir + os.sep + cut_file} -ref {atlas_file} -applyxfm -init {mean_fct2STD_mat} -out {std_dir + os.sep + std_file}"
+    command = f"flirt -in {preprocess_dir + os.sep + cut_file} -ref {atlas_file} -applyxfm -init {mean_fct2STD_mat} -out {std_dir + os.sep + filename + '.nii.gz'} -interp trilinear"
     print(command)
     if os.name != 'nt': # Windows
         os.system(command)
