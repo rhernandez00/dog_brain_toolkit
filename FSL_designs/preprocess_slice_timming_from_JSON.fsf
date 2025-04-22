@@ -69,7 +69,7 @@ set fmri(noisear) 0.34
 # Motion correction
 # 0 : None
 # 1 : MCFLIRT
-set fmri(mc) 0
+set fmri(mc) 1
 
 # Spin-history (currently obsolete)
 set fmri(sh_yn) 0
