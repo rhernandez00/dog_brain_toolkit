@@ -557,7 +557,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
     Check which files are available for the process
     returns True if the files are available, False if not
     '''
-    
+    # print the inputs
+    # print('Sub:', sub_N, 'Run:', run_N, 'Session:', session, 'Process:', process)
     # get specie from the project_dict
     specie = project_dict['Specie']
     # get dataset from the project_dict
@@ -567,7 +568,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
     # get datafolder from the project_dict
     datafolder = project_dict['Datafolder']
     
-    if process == 'Preprocess': # check if the preprocess files exist
+    if process == 'preprocess_run': # check if the preprocess files exist
         # create the filename
         filename = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 'func' + os.sep
         # check if session is not empty
@@ -587,7 +588,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
         else:
             print('File does not exist: ' + filename)
             return False
-    elif process == 'Mean fct':
+    elif process == 'get_mean_fct':
         outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = specie + '-sub-' + str(sub_N).zfill(2)
         # adding session if there is one
@@ -616,6 +617,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
             print('File does not exist: ' + preprocessed_file)
             return False
     else:
+        
+        print('Process:', process)
         print('Process not found')
         return False
     
