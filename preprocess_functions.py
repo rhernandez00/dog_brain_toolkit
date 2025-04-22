@@ -517,6 +517,7 @@ def run_process(job):
     img_type = 'brain2mm'
     run_prepro = job['Full_prepro']
     variation = job['Variation']
+    session_and_run = job['session_and_run']
 
     print(f"Running process: {process}")
     # run the adecuate process
@@ -531,8 +532,9 @@ def run_process(job):
         print('Running get_mean_fct')
         runs_to_use =  job['run_N']
         sessions_to_use = job['Sessions']
+        session_and_run = job['session_and_run']
         get_mean_fct(
-            sub_N, runs_to_use, sessions_to_use, base_run, dataset, 
+            sub_N, session_and_run, base_run, dataset, 
             task, specie, datafolder, first_time=True)
     elif process == 'Mean to atlas':
         print('Running mean_to_STD')
@@ -763,7 +765,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session, smo
     utils.reorient_file(outputdir + os.sep + non_oriented_file, outputdir + os.sep + reoriented_file, combination)
 
 
-def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, specie, datafolder, first_time=True):
+def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafolder, first_time=True):
     """
     Calculates the mean functional image for a subject and a task.
     The mean functional image is calculated by averaging the mean images of each run.
@@ -786,8 +788,9 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
     if not os.path.exists(movementdir):
         os.makedirs(movementdir)
 
-    initial_run = runs_to_use[0]
-    initial_session = sessions_to_use[0]
+    # get initial run from session_and_run[0] = ['ses-01_run-1', 'ses-02_run-2']
+    initial_run = int(session_and_run[0].split('_')[1].split('-')[1])
+    initial_session = session_and_run[0].split('_')[0].split('-')[1]
     ## obtain volume to be used as base to correct all others ##
     filename = (specie + '-sub-' + str(sub_N).zfill(2) +
                 '_ses-' + initial_session +
@@ -816,65 +819,69 @@ def get_mean_fct(sub_N, runs_to_use, sessions_to_use, base_run, dataset, task, s
     mean_images = ''
 
     ## calculate motion for each run and generate par file ##
-    for n, (run_N, session) in enumerate(zip(runs_to_use, sessions_to_use)):
-        print('processing ' + str(n+1) + ' of ' + str(runs_to_use))
+    for n, file_ending in enumerate(session_and_run):
+        print('processing ' + file_ending)
+        session = file_ending.split('_')[0].split('-')[1]
+        run_N = int(file_ending.split('_')[1].split('-')[1])
+        print('processing ' + str(n+1) + ' of ' + str(len(session_and_run)) + ' runs')
         filename = (specie + '-sub-' + str(sub_N).zfill(2) +
                 '_ses-' + session +
                 '_task-' + task +
-                '_run-' + str(run_N).zfill(2) +
-                  '_reoriented.nii.gz')
+                '_run-' + str(run_N).zfill(2))
+                #   '_reoriented.nii.gz')
         
         # calculate motion and generate par file
-        print('calculating motion...')
+        # print('calculating motion...')
         
-        command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz'} -plots"
+        # command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz'} -plots"
         
         # print commmand
-        print(command)
+        # print(command)
         # if the system is not windows, run the command
-        if os.name != 'nt':
-            os.system(command)
+        # if os.name != 'nt':
+            # os.system(command)
         # rename par file
-        tmp_par_file = outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz.par'
-        par_file = movementdir + os.sep + filename[:-18] + '.par'
-        if os.name != 'nt':
-            os.rename(tmp_par_file, par_file)
+        # tmp_par_file = outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz.par'
+        # par_file = movementdir + os.sep + filename[:-18] + '.par'
+        # if os.name != 'nt':
+            # os.rename(tmp_par_file, par_file)
         # print file saved
         
-        print('par file saved as: ' + par_file)
+        # print('par file saved as: ' + par_file)
         
-        print('correcting motion...')
+        # print('correcting motion...')
         # motion correct the file to the base_vol
-        command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc.nii.gz'} -reffile {outputdir + os.sep + 'base_vol.nii.gz'}"
+        command = f"flirt -in {outputdir + os.sep + filename + '_reoriented.nii.gz'} -ref {outputdir + os.sep + 'base_vol.nii.gz'} -out {outputdir + os.sep + filename + '_mc.nii.gz'}"
+
+        # command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc.nii.gz'} -reffile {outputdir + os.sep + 'base_vol.nii.gz'}"
         # print commmand
         print(command)
         # if the system is not windows, run the command
         if os.name != 'nt':
             os.system(command)
         # print file saved
-        print('motion corrected file saved as ' + filename[:-7] + '_mc.nii.gz')
+        print('motion corrected file saved as ' + filename + '_mc.nii.gz')
 
         # remove temporary file
-        tmp_file = outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz'
-        print('removing temporal file: ' + tmp_file)
+        # tmp_file = outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz'
+        # print('removing temporal file: ' + tmp_file)
         # if the system is not windows, run the command
-        if os.name != 'nt':
-            os.remove(outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz')
+        # if os.name != 'nt':
+            # os.remove(outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz')
         # calculate mean image
         print('calculating mean image...')
-        command = f"fslmaths {outputdir + os.sep + filename[:-7] + '_mc.nii.gz'} -Tmean {outputdir + os.sep + filename[:-18] + '_mean.nii.gz'}"
+        command = f"fslmaths {outputdir + os.sep + filename + '_mc.nii.gz'} -Tmean {outputdir + os.sep + filename + '_mean.nii.gz'}"
         # print commmand
         print(command)
         # if the system is not windows, run the command
         if os.name != 'nt':
             os.system(command)
         # add filename to mean_images
-        mean_images += outputdir + os.sep + filename[:-18] + '_mean.nii.gz' + ' '
+        mean_images += outputdir + os.sep + filename + '_mean.nii.gz' + ' '
 
     if first_time: # if yes, calculate mean image
         mean_fct_file = (outputdir + os.sep + 
-                         specie + '-sub-' + str(sub_N).zfill(2) + 
-                         '_ses-' + session +
+                         filename  + specie + '-sub-' + str(sub_N).zfill(2) + 
                          '_task-' + task + '_mean_fct_uncut.nii.gz'
         )
 
