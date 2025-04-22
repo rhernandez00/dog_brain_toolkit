@@ -96,6 +96,7 @@ def job_list_to_table(job_list):
                  'Dataset': {'label': 'Dataset'},
                  'Full_prepro': {'label': 'Full_prepro'},
                  'Combination': {'label': 'Combination'},
+                 'session_and_run': {'label': 'session_and_run'},
                  }
 
     # Initialize schedule_table
