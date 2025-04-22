@@ -571,9 +571,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
     if process == 'preprocess_run': # check if the preprocess files exist
         # create the filename
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 
-                    specie + '-sub-' + str(sub_N).zfill(2) + 
-                    os.sep + 'func' +  os.sep + 
-                    specie + '-sub-' + str(sub_N).zfill(2) + 
+                    specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 
+                    'sub-' + str(sub_N).zfill(2) + 
                     '_ses-' + session +
                     '_task-' + task +
                     '_run-' + str(run_N).zfill(2) + 
