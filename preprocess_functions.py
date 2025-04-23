@@ -830,35 +830,23 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
                 '_run-' + str(run_N).zfill(2))
                 #   '_reoriented.nii.gz')
         
-        # calculate motion and generate par file
-        # print('calculating motion...')
-        
-        # command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz'} -plots"
-        
+        # average the reoriented file to create a mean image
+        print('calculating mean image...')
+        command = f"fslmaths {outputdir + os.sep + filename + '_reoriented.nii.gz'} -Tmean {outputdir + os.sep + filename + '_mean_unaligned.nii.gz'}"
         # print commmand
-        # print(command)
+        print(command)
         # if the system is not windows, run the command
-        # if os.name != 'nt':
-            # os.system(command)
-        # rename par file
-        # tmp_par_file = outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz.par'
-        # par_file = movementdir + os.sep + filename[:-18] + '.par'
-        # if os.name != 'nt':
-            # os.rename(tmp_par_file, par_file)
-        # print file saved
-        
-        # print('par file saved as: ' + par_file)
-        
-        # print('correcting motion...')
-        # motion correct the file to the base_vol
-        # command to calculate transformation matrix
-        command = f"flirt -in {outputdir + os.sep + filename + '_reoriented.nii.gz'} -ref {outputdir + os.sep + 'base_vol.nii.gz'} -out {outputdir + os.sep + filename + '_aligned.nii.gz'} -omat {outputdir + os.sep + filename + '2base_vol.mat'}" 
+        if os.name != 'nt':
+            os.system(command)
+
+        # command to calculate transformation matrix from mean image to base volume
+        command = f"flirt -in {outputdir + os.sep + filename + '_mean_unaligned.nii.gz'} -ref {outputdir + os.sep + 'base_vol.nii.gz'} -out {outputdir + os.sep + filename + '_mean_aligned_tmp.nii.gz'} -omat {outputdir + os.sep + filename + '2base_vol.mat'}" 
         # print commmand
         print(command)
         if os.name != 'nt':
             os.system(command)
         # apply the transformation matrix to the 4D file
-        command = f"applyxfm4D -in {outputdir + os.sep + filename + '_reoriented.nii.gz'} -ref {outputdir + os.sep + 'base_vol.nii.gz'} -out {outputdir + os.sep + filename + '_mc.nii.gz'} -init {outputdir + os.sep + filename + '2base_vol.mat'}"
+        command = f"applyxfm4D {outputdir + os.sep + filename + '_reoriented.nii.gz'} {outputdir + os.sep + 'base_vol.nii.gz'} {outputdir + os.sep + filename + '_mc.nii.gz'} {outputdir + os.sep + filename + '2base_vol.mat'}"
         # print commmand
         print(command)
         # if the system is not windows, run the command
@@ -866,6 +854,13 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
             os.system(command)
         # apply the transformation matrix to the file
 
+        print('calculating mean image...')
+        command = f"fslmaths {outputdir + os.sep + filename + '_mc.nii.gz'} -Tmean {outputdir + os.sep + filename + '_mean.nii.gz'}"
+        # print commmand
+        print(command)
+        # if the system is not windows, run the command
+        if os.name != 'nt':
+            os.system(command)
 
         # command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc.nii.gz'} -reffile {outputdir + os.sep + 'base_vol.nii.gz'}"
         # print commmand
@@ -882,13 +877,7 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
         # if os.name != 'nt':
             # os.remove(outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz')
         # calculate mean image
-        print('calculating mean image...')
-        command = f"fslmaths {outputdir + os.sep + filename + '_mc.nii.gz'} -Tmean {outputdir + os.sep + filename + '_mean.nii.gz'}"
-        # print commmand
-        print(command)
-        # if the system is not windows, run the command
-        if os.name != 'nt':
-            os.system(command)
+        
         # add filename to mean_images
         mean_images += outputdir + os.sep + filename + '_mean.nii.gz' + ' '
 
