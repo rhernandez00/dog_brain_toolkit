@@ -883,7 +883,7 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
 
     if first_time: # if yes, calculate mean image
         mean_fct_file = (outputdir + os.sep + 
-                         filename  + specie + '-sub-' + str(sub_N).zfill(2) + 
+                         specie + '-sub-' + str(sub_N).zfill(2) + 
                          '_task-' + task + '_mean_fct_uncut.nii.gz'
         )
 
