@@ -860,7 +860,7 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
         if os.name != 'nt':
             os.system(command)
         # print file saved
-        print('motion corrected file saved as ' + filename + '_mc.nii.gz')
+        print('aligned file saved as ' + filename + '_mc.nii.gz')
 
         # remove temporary file
         # tmp_file = outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz'
