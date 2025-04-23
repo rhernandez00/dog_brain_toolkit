@@ -851,14 +851,27 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
         
         # print('correcting motion...')
         # motion correct the file to the base_vol
-        command = f"flirt -in {outputdir + os.sep + filename + '_reoriented.nii.gz'} -ref {outputdir + os.sep + 'base_vol.nii.gz'} -out {outputdir + os.sep + filename + '_mc.nii.gz'}"
-
-        # command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc.nii.gz'} -reffile {outputdir + os.sep + 'base_vol.nii.gz'}"
+        # command to calculate transformation matrix
+        command = f"flirt -in {outputdir + os.sep + filename + '_reoriented.nii.gz'} -ref {outputdir + os.sep + 'base_vol.nii.gz'} -out {outputdir + os.sep + filename + '_aligned.nii.gz'} -omat {outputdir + os.sep + filename + '2base_vol.mat'}" 
+        # print commmand
+        print(command)
+        if os.name != 'nt':
+            os.system(command)
+        # apply the transformation matrix to the 4D file
+        command = f"applyxfm4D -in {outputdir + os.sep + filename + '_reoriented.nii.gz'} -ref {outputdir + os.sep + 'base_vol.nii.gz'} -out {outputdir + os.sep + filename + '_mc.nii.gz'} -init {outputdir + os.sep + filename + '2base_vol.mat'}"
         # print commmand
         print(command)
         # if the system is not windows, run the command
         if os.name != 'nt':
             os.system(command)
+        # apply the transformation matrix to the file
+
+
+        # command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc.nii.gz'} -reffile {outputdir + os.sep + 'base_vol.nii.gz'}"
+        # print commmand
+        
+        # if the system is not windows, run the command
+        
         # print file saved
         print('aligned file saved as ' + filename + '_mc.nii.gz')
 
