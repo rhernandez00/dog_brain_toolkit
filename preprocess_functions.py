@@ -846,7 +846,7 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
         if os.name != 'nt':
             os.system(command)
         # apply the transformation matrix to the 4D file
-        command = f"applyxfm4D {outputdir + os.sep + filename + '_reoriented.nii.gz'} {outputdir + os.sep + 'base_vol.nii.gz'} {outputdir + os.sep + filename + '_mc.nii.gz'} {outputdir + os.sep + filename + '2base_vol.mat'}"
+        command = f"applyxfm4D {outputdir + os.sep + filename + '_reoriented.nii.gz'} {outputdir + os.sep + 'base_vol.nii.gz'} {outputdir + os.sep + filename + '_mc.nii.gz'} {outputdir + os.sep + filename + '2base_vol.mat'} -singlematrix" 
         # print commmand
         print(command)
         # if the system is not windows, run the command
