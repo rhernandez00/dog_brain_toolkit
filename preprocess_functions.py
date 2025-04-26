@@ -554,7 +554,7 @@ def run_process(job):
     else:
         print('Process not found')
 
-def check_file_status(project_dict, sub_N, run_N, session, process):
+def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False):
     '''
     Check which files are available for the process
     returns True if the files are available, False if not
@@ -581,10 +581,13 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
                     '_bold.nii.gz')
         filename_json = filename[:-7] + '.json'
         # check if filename and filename_json exist
+        
         if os.path.exists(filename):
-            print('File exists: ' + filename)
+            if verbose:
+                print('File exists: ' + filename)
             if os.path.exists(filename_json):
-                print('File exists: ' + filename_json)
+                if verbose:
+                    print('File exists: ' + filename_json)
                 return True
         else:
             print('File does not exist: ' + filename)
@@ -603,25 +606,43 @@ def check_file_status(project_dict, sub_N, run_N, session, process):
         else:
             print('File does not exist: ' + filename)
             return False
-    elif process == 'Runs to atlas': 
+    elif process == 'run_to_STD': 
         preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = (specie + '-sub-' + str(sub_N).zfill(2) +
                     '_ses-' + session +
                     '_task-' + task +
                     '_run-' + str(run_N).zfill(2)
                     )
-        preprocessed_file = filename + '_reoriented_mc.nii.gz'
+        preprocessed_file = filename + '_mc.nii.gz'
         # check if the file exists
         if os.path.exists(preprocess_dir + os.sep + preprocessed_file):
             print('File exists: ' + preprocessed_file)
             return True
         else:
-            print('File does not exist: ' + preprocessed_file)
+            print('File does not exist: ' + preprocess_dir + os.sep + preprocessed_file)
+            return False
+    elif process == 'GLM':
+        # check if the BOLD file for GLM files exist
+        filename = (datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + 
+                    specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 
+                    specie + '-sub-' + str(sub_N).zfill(2) + 
+                    '_ses-' + session +
+                    '_task-' + task +
+                    '_run-' + str(run_N).zfill(2) + 
+                    '.nii.gz')
+        
+        # check if filename and filename_json exist
+        if os.path.exists(filename):
+            if verbose:
+                print('File exists: ' + filename) 
+            return True
+        else:
+            if verbose:
+                print('File does not exist: ' + filename)
             return False
     else:
-        
-        print('Process:', process)
-        print('Process not found')
+        # print process (process) not found
+        print('Process not found: ' + process)
         return False
     
         
@@ -932,13 +953,10 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     mean_fct_file_STD = mean_fct_file[:-7] + '_STD.nii.gz'
     mean_fct2STD_mat = mean_fct_file[:-7] + '2STD.mat'
 
-
     if specie == 'D':
         specieS = 'Dog'
     elif specie == 'H':
         specieS = 'Hum'
-
-    
 
     # generate path to atlas. The atlas is in the same folder as the script
     atlas_file = os.getcwd() + os.sep + "Atlas" + os.sep + specieS + os.sep + atlas_type + os.sep + img_type + ".nii.gz"
@@ -989,7 +1007,6 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
     # cutting parameters file
     params_file = (preprocess_dir + os.sep + 
                    specie + '-sub-' + str(sub_N).zfill(2) + 
-                   '_ses-' + session + 
                    '_task-' + task + '_mean_fct_uncut_cut_params.txt'
     )
 
@@ -999,15 +1016,19 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
                 '_run-' + str(run_N).zfill(2))
     
     # name for reoriented and motion corrected file
-    preprocessed_file = filename + '_reoriented_mc.nii.gz'
+    preprocessed_file = filename + '_mc.nii.gz'
     cut_file = filename + '_reoriented_mc_cut.nii.gz'
     
     # updating output params_file
     params_dict = utils.read_params_file(params_file)
     params_dict['output_file'] = preprocess_dir + os.sep + cut_file
-    params_file_current = params_file[:-30] + '_run-' + str(run_N).zfill(2) + '_cut_params.txt'
+    params_file_current = preprocess_dir + os.sep + filename + '_cut_params.txt'
+
+    # params_file_current = params_file[:-30] + '_run-' + str(run_N).zfill(2) + '_cut_params.txt'
     # add mask file to parameters
-    params_dict['mask_file'] = preprocess_dir + os.sep + filename + '_mean_fct_mask.nii.gz'
+    params_dict['mask_file'] = (preprocess_dir + os.sep + 
+                                specie + '-sub-' + str(sub_N).zfill(2) + 
+                                '_task-' + task + '_mean_fct_mask.nii.gz')
 
     # save the cutting parameters
     utils.write_params_file(params_file_current, params_dict)
@@ -1023,7 +1044,6 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
     mean_fct2STD_mat = (
         preprocess_dir + os.sep + 
         specie + '-sub-' + str(sub_N).zfill(2) + 
-         '_ses-' + session +
          '_task-' + task + '_mean_fct2STD.mat'
          )
     
@@ -1047,3 +1067,68 @@ def run_to_STD(sub_N, run_N, dataset, task, specie, datafolder, atlas_type, img_
     if os.name != 'nt': # Windows
         os.system(command)
     print('done')
+
+
+from pathlib import Path
+import numpy as np
+from scipy.signal import detrend as _sp_detrend
+
+def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", output_file=None):
+    """
+    Compute framewise displacement (FD) and return a binary mask of frames below threshold.
+    Also optionally saves the motion parameters and FD mask to a text file.
+
+    Parameters
+    ----------
+    par_file : str or Path
+        Path to FSL .par file with 6 motion parameters (rotations in radians first).
+    radius : float, optional
+        Radius in mm used to convert rotations to displacement (default is 50).
+    threshold : float, optional
+        Threshold in mm for FD (default is 0.5).
+    detrend_type : str, optional
+        Detrending method: 'linear-demean', 'linear-nodemean', or 'none' (default is 'linear-demean').
+    output_file : str or Path, optional
+        If provided, saves a .txt file with motion params and the FD mask as the last column.
+
+    Returns
+    -------
+    numpy.ndarray
+        Array of 1s and 0s where 1 = frame below or equal to threshold, 0 = above.
+    """
+    par_file = Path(par_file)
+    motion = np.loadtxt(par_file, ndmin=2, dtype=float)
+    if motion.shape[1] != 6:
+        raise ValueError(f"Expected 6 motion columns, got {motion.shape[1]}")
+
+    motion_detrended = _detrend_columns(motion, detrend_type)
+    motion_detrended[:, :3] *= radius  # convert radians to mm
+
+    d_motion = np.vstack([np.zeros((1, 6)), np.diff(motion_detrended, axis=0)])
+    fd = np.sum(np.abs(d_motion), axis=1)
+    mask = (fd <= threshold).astype(np.int8)
+
+    if output_file:
+        output_data = np.hstack([motion, mask[:, None]])
+        np.savetxt(output_file, output_data, fmt="%.6f", delimiter="\t")
+        print
+
+
+
+    return mask
+
+def _detrend_columns(arr, kind="linear-demean"):
+    if kind == "none":
+        return arr.copy()
+
+    out = arr.copy()
+    demean = kind == "linear-demean"
+    if kind in {"linear-demean", "linear-nodemean"}:
+        for i in range(arr.shape[1]):
+            col = arr[:, i]
+            mu = col.mean() if demean else 0.0
+            out[:, i] = _sp_detrend(col) + mu
+    else:
+        raise NotImplementedError("Only 'linear-demean', 'linear-nodemean', and 'none' are supported.")
+
+    return out

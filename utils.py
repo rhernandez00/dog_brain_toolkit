@@ -268,3 +268,26 @@ def read_params_file(params_file):
 
     return params_dict
 
+def fill_design_fsf(func_file, atlas_file, movement_path, smooth, cond_txt, design_path, design_modified_path):
+    label_list = ['atlas', 'Smooth', 'Input', 'movement', 'cond']
+    to_fill_dict = dict()
+    for label in label_list:
+        to_fill_dict[label] = dict()
+        if label == 'atlas':
+            to_fill_dict[label]['string_to_find'] = 'set fmri(regstandard))'
+            to_fill_dict[label]['string_to_replace'] = ('set fmri(regstandard) "' + atlas_file + '"')
+        elif label == 'Smooth':
+            to_fill_dict[label]['string_to_find'] = 'set fmri(smooth)'
+            to_fill_dict[label]['string_to_replace'] = ('set fmri(smooth) ' + str(smooth))
+        elif label == 'Input':
+            to_fill_dict[label]['string_to_find'] = 'set feat_files(1)'
+            to_fill_dict[label]['string_to_replace'] = ('set feat_files(1) "' + func_file + '"')
+        elif label == 'movement':
+            to_fill_dict[label]['string_to_find'] = 'set confoundev_files(1)'
+            to_fill_dict[label]['string_to_replace'] = ('set confoundev_files(1) "' + movement_path + '"')
+        elif label == 'cond':
+            to_fill_dict[label]['string_to_find'] = 'set fmri(custom1) '
+            to_fill_dict[label]['string_to_replace'] = ('set fmri(custom1) "' + cond_txt + '"')
+            
+    # fill in the design.fsf file
+    fill_fsf(to_fill_dict, design_path, design_modified_path)
