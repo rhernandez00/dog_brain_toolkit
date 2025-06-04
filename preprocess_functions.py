@@ -249,16 +249,16 @@ def bet_app(project_dict, sub_N, initial_params=None):
                       }
         else:
             param_dict = {'betx_1':np.round(maxX/2),
-                      'bety_1':9,
-                      'betz_1':13,
+                      'bety_1':48,
+                      'betz_1':11,
                       'thr_1':0.65,
                       'betx_2':np.round(maxX/2),
-                      'bety_2':14,
-                      'betz_2':28,
+                      'bety_2':29,
+                      'betz_2':11,
                       'thr_2':0.6,
                       'betx_3':np.round(maxX/2),
-                      'bety_3':25,
-                      'betz_3':19,
+                      'bety_3':56,
+                      'betz_3':2,
                       'thr_3':0.75,
                       }
 
@@ -606,6 +606,18 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         else:
             print('File does not exist: ' + filename)
             return False
+    elif process == 'mean_to_STD':
+        # check if the mean file exists
+        mean_fct_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+        # adding session if there is one
+        mean_fct_file += '_task-' + task + '_mean_fct_brain.nii.gz'
+        # check if the file exists
+        if os.path.exists(mean_fct_file):
+            print('File exists: ' + mean_fct_file)
+            return True
+        else:
+            print('File does not exist: ' + mean_fct_file)
+            return False
     elif process == 'run_to_STD': 
         preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = (specie + '-sub-' + str(sub_N).zfill(2) +
@@ -927,7 +939,7 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
 
     print('done')
 
-def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='brain2mm', variation='STD0'):
+def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='brain2mm', variation='STD0', use_anatomic=False):
     """
     This function will take the mean functional image of a subject and transform it to the space of the atlas.
     sub_N: subject number
@@ -953,6 +965,14 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     mean_fct_file_STD = mean_fct_file[:-7] + '_STD.nii.gz'
     mean_fct2STD_mat = mean_fct_file[:-7] + '2STD.mat'
 
+    T1w_brain_file = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 'sub-' + str(sub_N).zfill(2) + '_T1w_brain.nii.gz'
+    T1w_brain_STD_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain_STD.nii.gz'
+    T1w_brain2STD_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain2STD.mat'
+    mean_fct_T1w_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_mean_fct_T1w.nii.gz'
+    mean_fct2T1w_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_mean_fct2T1w.mat'
+
+
+
     if specie == 'D':
         specieS = 'Dog'
     elif specie == 'H':
@@ -961,6 +981,42 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     # generate path to atlas. The atlas is in the same folder as the script
     atlas_file = os.getcwd() + os.sep + "Atlas" + os.sep + specieS + os.sep + atlas_type + os.sep + img_type + ".nii.gz"
     # check which variation to use
+    # A - mean
+    # B - anatomic
+    # C - STD
+
+    if use_anatomic:
+        # mean_to_anatomic(sub_N, dataset, task, specie, datafolder) # A -> B
+        # anatomic_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type=img_type) # B -> C
+        
+        print('Transforming masked mean functional image to T1w_brain A -> B')
+        # masked_mean_fct to T1w_brain A -> B
+        command = f"flirt -in {masked_mean_fct_file} -ref {T1w_brain_file} -out {mean_fct_T1w_file} -omat {mean_fct2T1w_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 7  -interp trilinear"    
+        # if the system is windows, don't run the command, just write it down
+        print(command)
+        if os.name == 'nt': # Windows
+            print("System is Windows, command not executed")
+        else:
+            os.system(command)
+
+        # T1w_brain to atlas B -> C
+        print('Transforming T1w_brain to atlas space B -> C')
+        command = f"flirt -in {T1w_brain_file} -ref {atlas_file} -out {T1w_brain_STD_file} -omat {T1w_brain2STD_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 7  -interp trilinear"    
+        print(command)
+        if os.name == 'nt': # Windows
+            print("System is Windows, command not executed")
+        else:
+            os.system(command)
+        print('Calculating transformation matrix from mean functional image to atlas A->B, B->C = A->C')
+        # adding the matrices... #A->B + B->C = A->C
+        command = f"convert_xfm -omat {mean_fct2STD_mat} -concat {mean_fct2T1w_mat} {T1w_brain2STD_mat}"
+        print(command)
+        if os.name == 'nt': # Windows
+            print("System is Windows, command not executed")
+        else:
+            os.system(command)
+        
+    
     print('variation: ' + variation)
     if variation == 'STD0':
         command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12  -interp trilinear"
@@ -970,8 +1026,73 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
         print('Variation not found')
         #generate error message
         return
-        
+    
 
+    # if the system is windows, don't run the command, just write it down
+    print(command)
+    if os.name == 'nt': # Windows
+        print("System is Windows, command not executed")
+    else:
+        os.system(command)
+
+def mean_to_anatomic(sub_N, dataset, task, specie, datafolder):
+    ''' 
+    input: 
+    \BIDS\sub-01_T1w_brain.nii.gz: anatomic file in BIDS format, skull removed, reoriented and labeled 
+    output: 
+    
+    
+    '''
+    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+    T1w_brain_file = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 'sub-' + str(sub_N).zfill(2) + '_T1w_brain.nii.gz'
+    mean_fct_T1w_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_mean_fct_T1w.nii.gz'
+    mean_fct2T1w_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_mean_fct2T1w.mat'
+    
+    mean_fct_file = workingdir + os.sep + specie + '-sub-' + str(sub_N).zfill(2) # like: D-sub-01_task-EmoB_run-01_mean_fct.nii.gz
+    
+    mean_fct_file += '_task-' + task + '_mean_fct.nii.gz'
+    masked_mean_fct_file = mean_fct_file[:-7] + '_brain.nii.gz'
+#    mean_fct_file_STD = mean_fct_file[:-7] + '_STD.nii.gz'
+#    mean_fct2STD_mat = mean_fct_file[:-7] + '2STD.mat'
+
+    if specie == 'D':
+        specieS = 'Dog'
+    elif specie == 'H':
+        specieS = 'Hum'
+    # masked_mean_fct to T1w_brain
+    command = f"flirt -in {masked_mean_fct_file} -ref {T1w_brain_file} -out {mean_fct_T1w_file} -omat {mean_fct2T1w_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 7  -interp trilinear"
+        
+    # if the system is windows, don't run the command, just write it down
+    print(command)
+    if os.name == 'nt': # Windows
+        print("System is Windows, command not executed")
+    else:
+        os.system(command)
+
+def anatomic_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='brain2mm'):
+    ''' 
+    input: 
+    \BIDS\sub-01_T1w_brain.nii.gz: anatomic file in BIDS format, skull removed, reoriented and labeled 
+    output: 
+    
+    
+    '''
+    workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+    T1w_brain_file = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 'sub-' + str(sub_N).zfill(2) + '_T1w_brain.nii.gz'
+    T1w_brain_STD_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain_STD.nii.gz'
+    T1w_brain2STD_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain2STD.mat'
+
+    if specie == 'D':
+        specieS = 'Dog'
+    elif specie == 'H':
+        specieS = 'Hum'
+
+    # generate path to atlas. The atlas is in the same folder as the script
+    atlas_file = os.getcwd() + os.sep + "Atlas" + os.sep + specieS + os.sep + atlas_type + os.sep + img_type + ".nii.gz"
+
+    # T1w_brain to atlas
+    command = f"flirt -in {T1w_brain_file} -ref {atlas_file} -out {T1w_brain_STD_file} -omat {T1w_brain2STD_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 7  -interp trilinear"    
+    
     # if the system is windows, don't run the command, just write it down
     print(command)
     if os.name == 'nt': # Windows
