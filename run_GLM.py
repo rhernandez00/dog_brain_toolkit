@@ -42,6 +42,12 @@ def main(sub_N):
     threshold = 0.5
     smooth = 3
     img_type = 'brain2mm'
+    model = 'visual_DHRF'
+    redo_if_exists = False # Run GLM even if output exists
+    
+    base_design_file = model + '.fsf'
+    base_design_file_modified = model + '_modified.fsf'
+    
 
     # Paths
     dataset = project_dict['Dataset']
@@ -56,9 +62,22 @@ def main(sub_N):
     for session in project_dict['Sessions']:
         for run_N in project_dict['Runs']:
             # Check if GLM preprocessing is ready
-            if not preprocess_functions.check_file_status(
+            file_available, _ = preprocess_functions.check_file_status(
                 project_dict, sub_N, run_N, session, process='GLM'
-            ):
+            )
+            if not file_available:
+                continue
+            
+            # Output directory for FSL
+            fsl_out = os.path.join(
+                datafolder, dataset, 'results', 'GLM', model,
+                f"{specie}-sub-{sub_N:02d}",
+                f"ses-{session}_task-{task}_run-{run_N:02d}"
+            )
+            # Check redo_if_exists
+            if not redo_if_exists and os.path.exists(fsl_out + '.feat'):
+                # check if output .feat directory exists
+                print(f"Output directory {fsl_out}.feat already exists. Skipping...")
                 continue
 
             # Original and target movement file paths
@@ -99,23 +118,19 @@ def main(sub_N):
 
             # Extract TR and volumes
             TR, volumes = utils.extract_params(input_nifti)
-
-            # Output directory for FSL
-            fsl_out = os.path.join(
-                datafolder, dataset, 'results', 'GLM', 'model-01',
-                f"{specie}-sub-{sub_N:02d}",
-                f"ses-{session}task-{task}run-{run_N:02d}"
-            )
-
+            
             # Condition file
             cond_file = os.path.join(
-                datafolder, dataset, 'models', 'model-01',
-                f"run-{run_N:02d}", 'cond-01.txt'
+                datafolder, dataset, 'models', model, f"{specie}-sub-{sub_N:02d}",
+                f"ses-{session}_task-{task}_run-{run_N:02d}", 
+                'cond-01.txt'
             )
+            print(f"Condition file: {cond_file}")
 
+        
             # Prepare FSF template replacement dictionary
-            design_in = os.path.join(datafolder, dataset, 'FSL_designs', 'model-01.fsf')
-            design_out = os.path.join(datafolder, dataset, 'FSL_designs', 'model-01_modified.fsf')
+            design_in = os.path.join(datafolder, dataset, 'FSL_designs', base_design_file)
+            design_out = os.path.join(datafolder, dataset, 'FSL_designs', base_design_file_modified)
 
             labels = {
                 'outputdir': (fsl_out,        'set fmri(outputdir)'),
@@ -134,7 +149,7 @@ def main(sub_N):
             for key, (val, find_str) in labels.items():
                 rep = f'set {find_str.split()[1]}("{val}"' if isinstance(val, str) else f'set {find_str.split()[1]} {val}'
                 # Actually ensure correct format
-                if key in ['outputdir', 'input', 'atlas', 'movement', 'condition']:
+                if key in labels.keys():
                     rep = f'{find_str} "{val}"'
                 else:
                     rep = f'{find_str} {val}'

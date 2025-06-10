@@ -518,6 +518,8 @@ def run_process(job):
     run_prepro = job['Full_prepro']
     variation = job['Variation']
     session_and_run = job['session_and_run']
+    first_time = job['first_time']
+    use_anatomic = job['use_anatomic']
 
     print(f"Running process: {process}")
     # run the adecuate process
@@ -535,12 +537,12 @@ def run_process(job):
         session_and_run = job['session_and_run']
         get_mean_fct(
             sub_N, session_and_run, base_run, dataset, 
-            task, specie, datafolder, first_time=True)
+            task, specie, datafolder, first_time=first_time)
     elif process == 'Mean to atlas':
         print('Running mean_to_STD')
         mean_to_STD(
             sub_N, dataset, task, specie, datafolder, 
-            atlas_type, img_type, variation=variation)
+            atlas_type, img_type, variation=variation, use_anatomic=use_anatomic)
     elif process == 'Runs to atlas':
     
         print('Running run_to_STD')
@@ -591,7 +593,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
                 return True
         else:
             print('File does not exist: ' + filename)
-            return False
+            return False, filename
     elif process == 'get_mean_fct':
         outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = specie + '-sub-' + str(sub_N).zfill(2)
@@ -602,10 +604,10 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         # check if the file exists
         if os.path.exists(outputdir + os.sep + filename):
             print('File exists: ' + filename)
-            return True
+            return True, filename
         else:
             print('File does not exist: ' + filename)
-            return False
+            return False, filename
     elif process == 'mean_to_STD':
         # check if the mean file exists
         mean_fct_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
@@ -614,10 +616,10 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         # check if the file exists
         if os.path.exists(mean_fct_file):
             print('File exists: ' + mean_fct_file)
-            return True
+            return True, mean_fct_file
         else:
             print('File does not exist: ' + mean_fct_file)
-            return False
+            return False, mean_fct_file
     elif process == 'run_to_STD': 
         preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = (specie + '-sub-' + str(sub_N).zfill(2) +
@@ -629,10 +631,10 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         # check if the file exists
         if os.path.exists(preprocess_dir + os.sep + preprocessed_file):
             print('File exists: ' + preprocessed_file)
-            return True
+            return True, preprocess_dir + os.sep + preprocessed_file
         else:
             print('File does not exist: ' + preprocess_dir + os.sep + preprocessed_file)
-            return False
+            return False, preprocess_dir + os.sep + preprocessed_file
     elif process == 'GLM':
         # check if the BOLD file for GLM files exist
         filename = (datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + 
@@ -647,15 +649,33 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         if os.path.exists(filename):
             if verbose:
                 print('File exists: ' + filename) 
-            return True
+            return True, filename
         else:
             if verbose:
                 print('File does not exist: ' + filename)
-            return False
+            return False, filename
+    elif process == 'get_vectors':
+        # "P:\userdata\raulh87\data\EmoB\BIDS\sub-01\sub-01_ses-01_task-EmoB_run-01_events.csv"
+        # check if the events file exists
+        filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep +
+                    'sub-' + str(sub_N).zfill(2) + os.sep +
+                    'sub-' + str(sub_N).zfill(2) +
+                    '_ses-' + session +
+                    '_task-' + task +
+                    '_run-' + str(run_N).zfill(2) + '_events.csv')
+        # check if the file exists
+        if os.path.exists(filename):
+            if verbose:
+                print('File exists: ' + filename)
+            return True, filename
+        else:
+            if verbose:
+                print('File does not exist: ' + filename)
+            return False, filename
     else:
         # print process (process) not found
         print('Process not found: ' + process)
-        return False
+        return False, 'error in process'
     
         
     
@@ -841,11 +861,15 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
         if os.name != 'nt':
             os.system(command)
     else:
+        # will use average created before
+        print('Using existing base volume')
+        
         # check if base_vol exists
         if not os.path.exists(outputdir + os.sep + 'base_vol.nii.gz'):
             print('base_vol.nii.gz does not exist, run the code with first_time = True')
             print('path: ' + outputdir + os.sep + 'base_vol.nii.gz')
             raise ValueError('base_vol.nii.gz does not exist, run the code with first_time = True')
+        
     ## ----- ##
 
     # This string will be used to generate the mean image
@@ -951,8 +975,6 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     img_type: type of image to use, default is 'brain2mm'
 
     """
-    #atlas_type='Czeibert'
-    
 
     # working directory
     workingdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
@@ -965,11 +987,13 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     mean_fct_file_STD = mean_fct_file[:-7] + '_STD.nii.gz'
     mean_fct2STD_mat = mean_fct_file[:-7] + '2STD.mat'
 
-    T1w_brain_file = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 'sub-' + str(sub_N).zfill(2) + '_T1w_brain.nii.gz'
-    T1w_brain_STD_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain_STD.nii.gz'
-    T1w_brain2STD_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain2STD.mat'
-    mean_fct_T1w_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_mean_fct_T1w.nii.gz'
-    mean_fct2T1w_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_mean_fct2T1w.mat'
+    #T1w_brain_file = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 'sub-' + str(sub_N).zfill(2) + os.sep + 'sub-' + str(sub_N).zfill(2) + '_T1w_brain.nii.gz'
+    T1w_brain_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain.nii.gz'
+    T1w_brain_file_unoriented = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 'sub-' + str(sub_N).zfill(2) + os.sep + 'sub-' + str(sub_N).zfill(2) + '_T1w_brain.nii.gz'
+    T1w_brain_STD_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + '_T1w_brain_STD.nii.gz'
+    T1w_brain2STD_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)+ '_T1w_brain2STD.mat'
+    mean_fct_T1w_file = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)+ '_mean_fct_T1w.nii.gz'
+    mean_fct2T1w_mat = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2) + os.sep + specie + '-sub-' + str(sub_N).zfill(2)+ '_mean_fct2T1w.mat'
 
 
 
@@ -988,7 +1012,14 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
     if use_anatomic:
         # mean_to_anatomic(sub_N, dataset, task, specie, datafolder) # A -> B
         # anatomic_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type=img_type) # B -> C
-        
+        # apply fslreorient2std to the T1w_brain file
+        print('Reorienting T1w_brain file to standard orientation')
+        command = f"fslreorient2std {T1w_brain_file_unoriented} {T1w_brain_file}"
+        print(command)
+        #if system is not windows, run the command
+        if os.name != 'nt':
+            os.system(command)
+
         print('Transforming masked mean functional image to T1w_brain A -> B')
         # masked_mean_fct to T1w_brain A -> B
         command = f"flirt -in {masked_mean_fct_file} -ref {T1w_brain_file} -out {mean_fct_T1w_file} -omat {mean_fct2T1w_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 7  -interp trilinear"    
@@ -998,36 +1029,40 @@ def mean_to_STD(sub_N, dataset, task, specie, datafolder, atlas_type, img_type='
             print("System is Windows, command not executed")
         else:
             os.system(command)
+        
 
-        # T1w_brain to atlas B -> C
+        # T1w_brain to atlas B -> C T1w_brain_STD_file
         print('Transforming T1w_brain to atlas space B -> C')
-        command = f"flirt -in {T1w_brain_file} -ref {atlas_file} -out {T1w_brain_STD_file} -omat {T1w_brain2STD_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 7  -interp trilinear"    
+        command = f"flirt -in {T1w_brain_file} -ref {atlas_file} -out {T1w_brain_STD_file} -omat {T1w_brain2STD_mat} -bins 256 -cost corratio -searchrx -45 45 -searchry -45 45 -searchrz -45 45 -dof 12 -interp trilinear"    
+        # flirt -in ${dataFolder}/data/${sub}/masks/${brain_nMeanfct}.nii.gz -ref ${atlasFile} -out ${dataFolder}/data/${sub}/masks/brainSTD.nii.gz -omat ${dataFolder}/data/${sub}/masks/brain2STD.mat -bins 256 -cost corratio -searchrx -45 45 -searchry -45 45 -searchrz -45 45 -dof 12  -interp trilinear
         print(command)
-        if os.name == 'nt': # Windows
-            print("System is Windows, command not executed")
-        else:
+        if os.name != 'nt': # Windows
             os.system(command)
+            
         print('Calculating transformation matrix from mean functional image to atlas A->B, B->C = A->C')
         # adding the matrices... #A->B + B->C = A->C
-        command = f"convert_xfm -omat {mean_fct2STD_mat} -concat {mean_fct2T1w_mat} {T1w_brain2STD_mat}"
+        command = f"convert_xfm -omat {mean_fct2STD_mat} -concat {T1w_brain2STD_mat} {mean_fct2T1w_mat}"
         print(command)
         if os.name == 'nt': # Windows
             print("System is Windows, command not executed")
         else:
             os.system(command)
-        
-    
-    print('variation: ' + variation)
-    if variation == 'STD0':
-        command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12  -interp trilinear"
-    elif variation == 'STD1':
-        command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 12  -interp trilinear"
-    else: #error, variation not found
-        print('Variation not found')
-        #generate error message
-        return
-    
+        # apply the transformation matrix to the mean functional image
+        print('Applying transformation matrix to masked mean functional image')
+        command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -applyxfm -init {mean_fct2STD_mat} -interp trilinear"
 
+    else: # use mean functional image directly
+        print('Transforming masked mean functional image directly to atlas space')
+        print('variation: ' + variation)
+        if variation == 'STD0':
+            command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -90 90 -searchry -90 90 -searchrz -90 90 -dof 12  -interp trilinear"
+        elif variation == 'STD1':
+            command = f"flirt -in {masked_mean_fct_file} -ref {atlas_file} -out {mean_fct_file_STD} -omat {mean_fct2STD_mat} -bins 256 -cost corratio -searchrx -30 30 -searchry -30 30 -searchrz -30 30 -dof 12  -interp trilinear"
+        else: #error, variation not found
+            print('Variation not found')
+            #generate error message
+            return
+        
     # if the system is windows, don't run the command, just write it down
     print(command)
     if os.name == 'nt': # Windows

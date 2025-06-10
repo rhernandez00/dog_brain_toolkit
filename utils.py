@@ -12,6 +12,114 @@ import numpy as np
 import json
 import numpy as np
 
+def run_individual_GLM(project_dict, model, sub_N, session_and_run_list):
+    """
+    Run individual GLM analysis for the specified project and parameters.
+    
+    Args:
+        project_dict (dict): Project configuration dictionary.
+        model (str): Model name.
+        sub_N (int): Subject number.
+        session_and_run_list (list): List of dictionaries with session and run information.
+    """
+    # Ensure the data folder exists
+    if not os.path.exists(project_dict['Datafolder']):
+        os.makedirs(project_dict['Datafolder'])
+
+    # determine N_runs based on the session and run list
+    N_runs = len(session_and_run_list)
+
+    # Determine data directory based on OS
+    if os.name == 'nt':  # Windows
+        datafolder = os.path.join(
+            "P:\\userdata", project_dict['User'], 'data'
+        )
+    else:
+        datafolder = os.path.join(
+            '/home', project_dict['User'], 'mnt', 'a471', 'userdata', project_dict['User'], 'data'
+        )
+    # project_dict['Datafolder'] = datafolder
+    print(f"Data folder: {datafolder}")
+
+    specie = project_dict['Specie']
+    dataset = project_dict['Dataset']
+    atlas_type = project_dict['Atlas_type']
+    task = project_dict['Task']
+    # Species label for atlas subfolder
+    specie_label = 'Dog' if specie == 'D' else 'Hum'
+    img_type = 'brain2mm'
+    # Atlas file
+    atlas_file = os.path.join(
+        os.getcwd(), 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz"
+    )
+
+    # Output directory for FSL
+    fsl_out = os.path.join(
+        datafolder, dataset, 'results', 'GLM', model,
+        f"{specie}-sub-{sub_N:02d}"
+    )
+
+    # Prepare FSF template replacement dictionary
+    design_in = os.path.join(datafolder, dataset, 'FSL_designs', 'individual_' + str(N_runs) + '.fsf')
+    design_out = os.path.join(datafolder, dataset, 'FSL_designs', 'individual_' + str(N_runs) +  '_sub-' + str(sub_N).zfill(2) + '_modified.fsf')
+
+
+    labels_to_replace = ['outputdir', 'atlas']
+    # add 'input#' based on the number of runs
+    for i in range(1, N_runs + 1):
+        labels_to_replace.append(f'input{i}')
+
+
+    input_feat_list = []
+    for session_and_run in session_and_run_list:
+        session = session_and_run['session']
+        run = session_and_run['run']
+        # input = "P:\userdata\raulh87\data\EmoB\results\GLM\visual\D-sub-01\ses-01_task-EmoB_run-01.feat"
+        input = os.path.join(
+            datafolder, dataset, 'results', 'GLM', model,
+            f"{specie}-sub-{sub_N:02d}",
+            f"ses-{session:02d}_task-{task}_run-{run:02d}.feat"
+        )
+        # Append to list
+        input_feat_list.append(input)
+        
+    labels = {
+        'outputdir': (fsl_out,        'set fmri(outputdir)'),
+        'atlas':     (atlas_file,     'set fmri(regstandard)'),
+    }
+    # Add inputs to labels
+    for i, input_feat in enumerate(input_feat_list, start=1):
+        labels[f'input{i}'] = (input_feat, f'set feat_files({i})')
+        #set feat_files(1)
+
+    print(labels)
+    # Build replacement dict
+    to_fill = {}
+    for key, (val, find_str) in labels.items():
+        rep = f'set {find_str.split()[1]}("{val}"' if isinstance(val, str) else f'set {find_str.split()[1]} {val}'
+        # Actually ensure correct format
+        if key in labels_to_replace:
+            rep = f'{find_str} "{val}"'
+        else:
+            rep = f'{find_str} {val}'
+        to_fill[key] = {
+            'string_to_find': find_str,
+            'string_to_replace': rep
+        }
+
+    # Fill FSF and run FSL
+    fill_fsf(to_fill, design_in, design_out)
+
+    # Remove existing .feat dir if present
+    if os.path.exists(fsl_out + '.feat'):
+        shutil.rmtree(fsl_out + '.feat')
+
+    cmd = f'feat {design_out}'
+    print(f"Running: {cmd}")
+    if os.name != 'nt':
+        os.system(cmd)
+    return labels_to_replace
+
 def get_slice_timing(json_path: str, txt_out_path: str):
     """
     Load a BIDS JSON sidecar, extract the 'SliceTiming' field, write each
@@ -95,6 +203,8 @@ def job_list_to_table(job_list):
                  'Atlas_type': {'label': 'Atlas_type'},
                  'Dataset': {'label': 'Dataset'},
                  'Full_prepro': {'label': 'Full_prepro'},
+                 'first_time': {'label': 'First time'},
+                 'use_anatomic': {'label': 'Use anatomical for registration'},
                  'Combination': {'label': 'Combination'},
                  'session_and_run': {'label': 'session_and_run'},
                  }
