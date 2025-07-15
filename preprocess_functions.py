@@ -557,6 +557,7 @@ def run_process(job):
         print('Process not found')
 
 def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False):
+    
     '''
     Check which files are available for the process
     returns True if the files are available, False if not
@@ -590,7 +591,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             if os.path.exists(filename_json):
                 if verbose:
                     print('File exists: ' + filename_json)
-                return True
+                return True, filename
         else:
             print('File does not exist: ' + filename)
             return False, filename
@@ -919,21 +920,14 @@ def get_mean_fct(sub_N, session_and_run, base_run, dataset, task, specie, datafo
         if os.name != 'nt':
             os.system(command)
 
-        # command = f"mcflirt -in {outputdir + os.sep + filename} -out {outputdir + os.sep + filename[:-7] + '_mc.nii.gz'} -reffile {outputdir + os.sep + 'base_vol.nii.gz'}"
-        # print commmand
+
         
         # if the system is not windows, run the command
         
         # print file saved
         print('aligned file saved as ' + filename + '_mc.nii.gz')
 
-        # remove temporary file
-        # tmp_file = outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz'
-        # print('removing temporal file: ' + tmp_file)
-        # if the system is not windows, run the command
-        # if os.name != 'nt':
-            # os.remove(outputdir + os.sep + filename[:-7] + '_mc_tmp.nii.gz')
-        # calculate mean image
+
         
         # add filename to mean_images
         mean_images += outputdir + os.sep + filename + '_mean.nii.gz' + ' '
@@ -1262,12 +1256,14 @@ def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", outp
 
     d_motion = np.vstack([np.zeros((1, 6)), np.diff(motion_detrended, axis=0)])
     fd = np.sum(np.abs(d_motion), axis=1)
-    mask = (fd <= threshold).astype(np.int8)
+    mask = (fd >= threshold).astype(np.int8)
 
     if output_file:
         output_data = np.hstack([motion, mask[:, None]])
         np.savetxt(output_file, output_data, fmt="%.6f", delimiter="\t")
         print
+        # print output file
+        print(f"Motion parameters and FD mask saved to {output_file}")
 
 
 

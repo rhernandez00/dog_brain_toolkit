@@ -21,7 +21,7 @@ def main(sub_N):
         "Task": "EmoB",
         "Participants": list(range(1, 20)),
         "Runs": [1, 2, 3, 4],
-        "Sessions": ["01", "02", "03"],
+        "Sessions": ["01", "02", "03", "04"],
         "Specie": "D",
         "Atlas_type": "Nitzsche",
     }
@@ -38,7 +38,7 @@ def main(sub_N):
     project_dict['Datafolder'] = datafolder
 
     # GLM parameters
-    radius = 55.0
+    radius = 28.0
     threshold = 0.5
     smooth = 3
     img_type = 'brain2mm'
@@ -74,12 +74,7 @@ def main(sub_N):
                 f"{specie}-sub-{sub_N:02d}",
                 f"ses-{session}_task-{task}_run-{run_N:02d}"
             )
-            # Check redo_if_exists
-            if not redo_if_exists and os.path.exists(fsl_out + '.feat'):
-                # check if output .feat directory exists
-                print(f"Output directory {fsl_out}.feat already exists. Skipping...")
-                continue
-
+            
             # Original and target movement file paths
             base_pre = os.path.join(
                 datafolder, dataset, 'preprocessing',
@@ -91,18 +86,29 @@ def main(sub_N):
                 datafolder, dataset, 'movement',
                 f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}.par"
             )
+            
+
+            print(f"Copying movement file: {base_pre} -> {target_mov}")
+            shutil.copyfile(base_pre, target_mov)
+
             mov_txt = os.path.join(
                 datafolder, dataset, 'movement',
                 f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}_fwd.txt"
             )
 
-            print(f"Copying movement file: {base_pre} -> {target_mov}")
-            shutil.copyfile(base_pre, target_mov)
-
             print("Calculating framewise displacement...")
             preprocess_functions.fwd(
                 base_pre, radius, threshold, output_file=mov_txt
             )
+            # Check redo_if_exists
+            if not redo_if_exists and os.path.exists(fsl_out + '.feat'):
+                # check if output .feat directory exists
+                print(f"Output directory {fsl_out}.feat already exists. Skipping...")
+                continue
+
+            
+
+            
 
             # Input NIfTI file
             input_nifti = os.path.join(
