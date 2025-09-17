@@ -11,6 +11,258 @@ import numpy as np
 
 import json
 import numpy as np
+from pathlib import Path
+import re
+
+
+def similarity_searchlight(map_1, map_2, mask, radius, method):
+    """
+    Calculate a voxelwise similarity map between two volumes using a spherical
+    searchlight. For each voxel within `mask`, gather the sphere of neighbors
+    (Euclidean radius in voxel units) and compute the similarity between the
+    vectors of values from map_1 and map_2 within that sphere.
+
+    Parameters
+    ----------
+    map_1, map_2 : np.ndarray
+        Arrays of identical shape (N-dim; typically 3D) with numeric values.
+    mask : np.ndarray (bool)
+        Boolean array of same shape; computation is performed only where mask==True.
+    radius : int or float
+        Searchlight radius in voxel units (isotropic).
+    method : {'mahalanobis','pearson','euclidean','kendall'}
+        Similarity metric:
+          - 'pearson'  -> Pearson r
+          - 'kendall'  -> Kendall's tau_b (requires SciPy)
+          - 'euclidean'-> negative Euclidean distance (−||x−y||_2)
+          - 'mahalanobis' -> negative (regularized) Mahalanobis distance
+
+    Returns
+    -------
+    similarity_map : np.ndarray
+        Float array of the same shape as inputs; NaN where not computed.
+
+    Notes
+    -----
+    * Correlations return coefficients in [-1,1].
+    * Distances are negated so that larger = more similar (consistent with
+      PyMVPA’s use of distances; we convert to a similarity-like quantity).
+    * Mahalanobis uses a regularized covariance estimate over sphere features.
+      If scikit-learn is available, Ledoit–Wolf shrinkage is used; otherwise a
+      small ridge (λ) is added to the sample covariance for stability.
+
+    """
+    # --- validations ---
+    if map_1.shape != map_2.shape or map_1.shape != mask.shape:
+        raise ValueError("map_1, map_2, and mask must have identical shapes.")
+    if mask.dtype != bool:
+        mask = mask.astype(bool)
+    method = method.lower()
+    if method not in {"mahalanobis", "pearson", "euclidean", "kendall"}:
+        raise ValueError("method must be one of: 'mahalanobis','pearson','euclidean','kendall'")
+
+    similarity_map = np.full(mask.shape, np.nan, dtype=float)
+    ndim = map_1.ndim
+    r = float(radius)
+    rad = int(np.floor(r))
+
+    # build integer offsets for an N-D sphere
+    ranges = [np.arange(-rad, rad + 1) for _ in range(ndim)]
+    grid = np.stack(np.meshgrid(*ranges, indexing='ij'), axis=-1).reshape(-1, ndim)
+    keep = (grid.astype(float) ** 2).sum(axis=1) <= r * r + 1e-12
+    offsets = grid[keep]
+
+    # helpers
+    def _pearson(x, y):
+        x = x - x.mean()
+        y = y - y.mean()
+        denom = np.linalg.norm(x) * np.linalg.norm(y)
+        return (x @ y) / denom if denom > 0 else np.nan
+
+    def _kendall(x, y):
+        try:
+            from scipy.stats import kendalltau
+        except Exception as e:
+            raise ImportError("SciPy is required for method='kendall'.") from e
+        return kendalltau(x, y, nan_policy='omit').correlation
+
+    def _euclidean(x, y):
+        return -float(np.linalg.norm(x - y))
+
+    def _mahalanobis(x, y):
+        # X has 2 samples (the two maps), features=len(sphere)
+        X = np.vstack([x, y])  # shape: (2, K)
+        diff = X[0] - X[1]
+        K = diff.size
+        # try Ledoit–Wolf if available
+        VI = None
+        try:
+            from sklearn.covariance import LedoitWolf
+            # LedoitWolf returns covariance over features
+            lw = LedoitWolf().fit(X)
+            cov = lw.covariance_
+            # safety net: if cov has inf/nan, fall back to ridge
+            if not np.all(np.isfinite(cov)):
+                raise ValueError("non-finite covariance")
+            VI = np.linalg.pinv(cov, hermitian=True)
+        except Exception:
+            # fallback: sample covariance with a small ridge
+            # sample cov over features with rowvar=False
+            cov = np.cov(X, rowvar=False)  # shape (K,K), rank-deficient for 2 samples
+            if np.ndim(cov) == 0:  # K==1 edge case -> scalar
+                cov = np.array([[float(cov)]])
+            # ridge λ scaled to average variance (trace/K)
+            tr = float(np.trace(cov)) if np.isfinite(np.trace(cov)) else 0.0
+            lam = 1e-3 * (tr / max(K, 1) + 1.0)  # small positive
+            cov = cov + lam * np.eye(K)
+            try:
+                VI = np.linalg.inv(cov)
+            except np.linalg.LinAlgError:
+                VI = np.linalg.pinv(cov, hermitian=True)
+        d2 = float(diff @ VI @ diff)   # squared Mahalanobis distance
+        return -np.sqrt(d2)            # return negative distance (higher = more similar)
+
+    # iterate over all voxels in mask
+    it = np.argwhere(mask)
+    for center in it:
+        neigh = center + offsets
+        # in-bounds
+        inb = np.all((neigh >= 0) & (neigh < np.array(mask.shape)), axis=1)
+        neigh = neigh[inb]
+        if neigh.size == 0:
+            continue
+        # apply mask within sphere
+        msub = mask[tuple(neigh.T)]
+        if not np.any(msub):
+            continue
+        neigh = neigh[msub]
+
+        x = map_1[tuple(neigh.T)].astype(float)
+        y = map_2[tuple(neigh.T)].astype(float)
+        valid = np.isfinite(x) & np.isfinite(y)
+        x = x[valid]; y = y[valid]
+
+        # need at least 2 points for correlation; 1+ for distances
+        if method in {"pearson", "kendall"} and x.size < 2:
+            val = np.nan
+        elif method in {"euclidean", "mahalanobis"} and x.size < 1:
+            val = np.nan
+        else:
+            if method == "pearson":
+                val = _pearson(x, y)
+            elif method == "kendall":
+                val = _kendall(x, y)
+            elif method == "euclidean":
+                val = _euclidean(x, y)
+            elif method == "mahalanobis":
+                val = _mahalanobis(x, y)
+        similarity_map[tuple(center)] = val
+
+    return similarity_map
+
+def get_path(path_label, project_dict, local_data=True, rnd=False, figure_letter='A'):
+    # if project_dict has no experiment, set it to 'Segmentation'
+    if 'Project' not in project_dict:
+        project = 'Segmentation'
+    else:
+        project = project_dict['Project']
+    username = project_dict['User']
+    dataset = project_dict['Dataset']
+    # if dataset == 'CAPS_K9':
+    #     dataset = 'Segmentation'
+    
+    if path_label == 'results' or path_label == 'Results':
+        if os.name == 'nt':
+            if local_data:
+                path = r"G:\My Drive\Results\\" + project
+            else:
+                # username
+                path = r"P:\userdata\\" + username + r"\data" + os.sep + dataset + os.sep + 'results'
+        else:
+            path =  '/home' + os.sep + username + '/mnt/a471/userdata/' + username + '/data' + os.sep + dataset + os.sep + 'results'
+        
+        if rnd:
+            path = os.path.join(path, 'rnd')
+    # figures or Figures
+    elif path_label == 'figures' or path_label == 'Figures':
+        # G:\My Drive\[project]\Figures\Figure_[figure_letter]
+        # path = 
+        path = r"C:\github" + os.sep + project + os.sep + "Figures" + os.sep + f"Figure_{figure_letter}"
+
+
+        # path = r"G:\My Drive\\" + project + r"\Figures" + os.sep + f"Figure_{figure_letter}"
+        
+    # project or Project
+    elif path_label == 'project' or path_label == 'Project':
+        if os.name == 'nt':
+            if local_data:
+                path = r"G:\My Drive\\" + project
+            else:
+                path = r"P:\userdata\\" + username + r"\data" + os.sep + project
+        else:
+            path = '/home' + os.sep + username + '/mnt/a471/userdata/' + username + os.sep + project
+        
+    else:
+        print('Path label not recognized')
+    return path
+
+def generate_fsf(n: int, template_path: str, outfile_path: str) -> None:
+    from pathlib import Path
+    import re
+
+    template_lines = Path(template_path).read_text(encoding="utf-8").splitlines()
+
+    out_parts = []
+
+    # Header: lines 1..276 (1-based) — includes the single confound file line at 275
+    head = "\n".join(template_lines[:276]) + "\n"
+    head = re.sub(r"\bNUM\b", str(n), head).replace("NUM2", str(n * 2))
+    out_parts.append(head)
+
+    # Per-EV block: lines 277..316 (1-based)
+    block_tpl = "\n".join(template_lines[276:316]) + "\n"
+    for i in range(1, n + 1):
+        con = f"cond{i:03d}"
+        block = block_tpl.replace("NUM", str(i)).replace("CONDITION", con)
+        out_parts.append(block)
+
+        # Orthogonalization (unchanged)
+        for ii in range(0, n + 1):
+            out_parts.append(f"# Orthogonalise EV {i} wrt EV {ii}\n")
+            out_parts.append(f"set fmri(ortho{i}.{ii}) 0\n\n")
+
+    # Contrast sections + masking (unchanged)
+    out_parts.append("# Contrast & F-tests mode\n# real : control real EVs\n# orig : control original EVs\n")
+    out_parts.append("set fmri(con_mode_old) orig\nset fmri(con_mode) orig\n\n")
+
+    contrastnum = n * 2
+    c = 1
+    for i in range(1, n + 1):
+        con = f"cond{i:03d}"
+        out_parts.append(f"# Display images for contrast_real {i}\nset fmri(conpic_real.{i}) 1\n\n")
+        out_parts.append(f"# Title for contrast_real {i}\nset fmri(conname_real.{i}) \"{con}\"\n\n")
+        for ii in range(1, contrastnum + 1):
+            out_parts.append(f"# Real contrast_real vector {i} element {ii}\nset fmri(con_real{i}.{ii}) {'1.0' if c == ii else '0'}\n\n")
+        c += 2
+
+    for i in range(1, n + 1):
+        con = f"cond{i:03d}"
+        out_parts.append(f"# Display images for contrast_orig {i}\nset fmri(conpic_orig.{i}) 1\n\n")
+        out_parts.append(f"# Title for contrast_orig {i}\nset fmri(conname_orig.{i}) \"{con}\"\n\n")
+        for ii in range(1, n + 1):
+            out_parts.append(f"# Real contrast_orig vector {i} element {ii}\nset fmri(con_orig{i}.{ii}) {'1.0' if i == ii else '0'}\n\n")
+
+    out_parts.append("# Contrast masking - use >0 instead of thresholding?\nset fmri(conmask_zerothresh_yn) 0\n\n")
+    for i in range(1, n + 1):
+        for ii in range(1, n + 1):
+            if i != ii:
+                out_parts.append(f"# Mask real contrast/F-test {i} with real contrast/F-test {ii}?\nset fmri(conmask{i}_{ii}) 0\n\n")
+
+    # Tail: lines 310..end (1-based)
+    out_parts.append("\n".join(template_lines[309:]) + "\n")
+
+    Path(outfile_path).write_text("".join(out_parts), encoding="utf-8")
+
 
 def run_individual_GLM(project_dict, model, sub_N, session_and_run_list):
     """

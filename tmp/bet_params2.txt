@@ -1,0 +1,17 @@
+betx_1=38
+bety_1=28
+betz_1=34
+thr_1=0.3
+betx_2=38
+bety_2=65
+betz_2=39
+thr_2=0.6
+betx_3=37
+bety_3=92
+betz_3=21
+thr_3=0.2
+output_file=/media/sf_github/dog_brain_toolkit/tmp/Rohan_brain_mask.nii.gz
+masked_file=/media/sf_github/dog_brain_toolkit/tmp/Rohan_brain.nii.gz
+mask_file1=/media/sf_github/dog_brain_toolkit/tmp/Rohan_mask1.nii.gz
+mask_file2=/media/sf_github/dog_brain_toolkit/tmp/Rohan_mask2.nii.gz
+mask_file3=/media/sf_github/dog_brain_toolkit/tmp/Rohan_mask3.nii.gz

@@ -578,7 +578,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 
                     'sub-' + str(sub_N).zfill(2) + os.sep + 
                     'sub-' + str(sub_N).zfill(2) + 
-                    '_ses-' + session +
+                    '_ses-' + str(session).zfill(2) +
                     '_task-' + task +
                     '_run-' + str(run_N).zfill(2) + 
                     '_bold.nii.gz')
@@ -600,7 +600,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         filename = specie + '-sub-' + str(sub_N).zfill(2)
         # adding session if there is one
         if session != '':
-            filename += '_ses-' + session
+            filename += '_ses-' + f"{session:02d}"
         filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented.nii.gz'
         # check if the file exists
         if os.path.exists(outputdir + os.sep + filename):
