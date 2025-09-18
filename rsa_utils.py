@@ -4,6 +4,38 @@ import yaml
 import pandas as pd
 import numpy as np
 
+import numpy as np
+
+def kendall_tau_a(a, b):
+    """
+    Kendall's tau-a correlation coefficient between vectors a and b.
+    Matches the behavior of the MATLAB function rankCorr_Kendall_taua:
+      - removes entries with NaN in either vector
+      - counts concordant/discordant pairs via sign products
+      - ties contribute 0 (tau-a; no tie correction)
+    Returns np.nan if fewer than 2 valid samples.
+    Time complexity: O(n^2) like the MATLAB code.
+    """
+    a = np.asarray(a).ravel()
+    b = np.asarray(b).ravel()
+
+    valid = np.isfinite(a) & np.isfinite(b)
+    a = a[valid]
+    b = b[valid]
+    n = a.size
+    if n < 2:
+        return np.nan
+
+    K = 0.0
+    for k in range(n - 1):
+        pair_a = np.sign(a[k] - a[k + 1:])
+        pair_b = np.sign(b[k] - b[k + 1:])
+        # ties yield 0, so they neither help nor hurt
+        K += np.dot(pair_a, pair_b)
+
+    return K / (n * (n - 1) / 2.0)
+
+
 def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, specie, model, dataset, task, mask_type, radius, rsa_model, method='pearson', rsa_method='pearson', replace_file=False, verbose=False):
 
 

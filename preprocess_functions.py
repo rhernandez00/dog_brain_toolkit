@@ -587,13 +587,15 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         
         if os.path.exists(filename):
             if verbose:
-                print('File exists: ' + filename)
+                print('BIDS file exists: ' + filename)
             if os.path.exists(filename_json):
                 if verbose:
-                    print('File exists: ' + filename_json)
+                    print('json file exists: ' + filename_json)
                 return True, filename
         else:
-            print('File does not exist: ' + filename)
+            if verbose:
+                print('BIDS file does not exist: ' + filename)
+
             return False, filename
     elif process == 'get_mean_fct':
         outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
@@ -604,10 +606,12 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented.nii.gz'
         # check if the file exists
         if os.path.exists(outputdir + os.sep + filename):
-            print('File exists: ' + filename)
+            if verbose:
+                print('Reoriented file exists: ' + filename)
             return True, filename
         else:
-            print('File does not exist: ' + filename)
+            if verbose:
+                print('Reoriented file does not exist: ' + filename)
             return False, filename
     elif process == 'mean_to_STD':
         # check if the mean file exists
@@ -616,10 +620,10 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         mean_fct_file += '_task-' + task + '_mean_fct_brain.nii.gz'
         # check if the file exists
         if os.path.exists(mean_fct_file):
-            print('File exists: ' + mean_fct_file)
+            print('Mean functional file exists: ' + mean_fct_file)
             return True, mean_fct_file
         else:
-            print('File does not exist: ' + mean_fct_file)
+            print('Mean functional file does not exist: ' + mean_fct_file)
             return False, mean_fct_file
     elif process == 'run_to_STD': 
         preprocess_dir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
@@ -631,10 +635,12 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         preprocessed_file = filename + '_mc.nii.gz'
         # check if the file exists
         if os.path.exists(preprocess_dir + os.sep + preprocessed_file):
-            print('Motion corrected file exists: ' + preprocessed_file)
+            if verbose:
+                print('Motion corrected file exists: ' + preprocessed_file)
             return True, preprocess_dir + os.sep + preprocessed_file
         else:
-            print('Motion corrected file does not exist: ' + preprocess_dir + os.sep + preprocessed_file)
+            if verbose:
+                print('Motion corrected file does not exist: ' + preprocess_dir + os.sep + preprocessed_file)
             return False, preprocess_dir + os.sep + preprocessed_file
     elif process == 'BOLD': # check if the normalized BOLD file exist
         filename = (datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + 

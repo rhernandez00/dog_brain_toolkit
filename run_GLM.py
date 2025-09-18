@@ -3,7 +3,7 @@
 """
 Script to run GLM preprocessing for a given subject.
 Usage:
-    python3 run_GLM.py <sub_N>
+    python3 
 """
 import os
 import shutil
@@ -144,9 +144,9 @@ def main(sub_N):
                 # Loop over sessions and runs
                 for session in session_list:
                     for run_N in run_list:
-                        # Check if GLM preprocessing is ready
+                        # Check if BOLD preprocessing is ready
                         file_available, _ = preprocess_functions.check_file_status(
-                            project_dict, sub_N, run_N, session, process='GLM'
+                            project_dict, sub_N, run_N, session, process='BOLD'
                         )
                         if not file_available:
                             continue
