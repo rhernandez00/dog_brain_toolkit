@@ -556,7 +556,7 @@ def run_process(job):
     else:
         print('Process not found')
 
-def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False):
+def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False, model=None):
     
     '''
     Check which files are available for the process
@@ -631,13 +631,12 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         preprocessed_file = filename + '_mc.nii.gz'
         # check if the file exists
         if os.path.exists(preprocess_dir + os.sep + preprocessed_file):
-            print('File exists: ' + preprocessed_file)
+            print('Motion corrected file exists: ' + preprocessed_file)
             return True, preprocess_dir + os.sep + preprocessed_file
         else:
-            print('File does not exist: ' + preprocess_dir + os.sep + preprocessed_file)
+            print('Motion corrected file does not exist: ' + preprocess_dir + os.sep + preprocessed_file)
             return False, preprocess_dir + os.sep + preprocessed_file
-    elif process == 'GLM':
-        # check if the BOLD file for GLM files exist
+    elif process == 'BOLD': # check if the normalized BOLD file exist
         filename = (datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + 
                     specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 
                     specie + '-sub-' + str(sub_N).zfill(2) + 
@@ -645,15 +644,28 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
                     '_task-' + task +
                     '_run-' + str(run_N).zfill(2) + 
                     '.nii.gz')
-        
-        # check if filename and filename_json exist
+        # check if filename exists
         if os.path.exists(filename):
             if verbose:
-                print('File exists: ' + filename) 
+                print('Normalized BOLD file exists: ' + filename)
             return True, filename
         else:
             if verbose:
-                print('File does not exist: ' + filename)
+                print('BOLD file does not exist: ' + filename)
+            return False, filename
+    elif process == 'feat_folder': # check if the first level GLM file exist
+        # model = 'basic'
+        # "P:\userdata\raulh87\data\EmoB\results\GLM\basic\D-sub-01\ses-01_task-EmoB_run-01.feat\stats\tstat1.nii.gz"
+        filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
+                    model + os.sep + f"D-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat")
+        # check if filename exist
+        if os.path.exists(filename):
+            if verbose:
+                print('feat folder exists: ' + filename) 
+            return True, filename
+        else:
+            if verbose:
+                print('feat folder does not exist: ' + filename)
             return False, filename
     elif process == 'get_vectors':
         # "P:\userdata\raulh87\data\EmoB\BIDS\sub-01\sub-01_ses-01_task-EmoB_run-01_events.csv"
