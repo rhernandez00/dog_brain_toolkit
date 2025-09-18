@@ -15,6 +15,22 @@ from pathlib import Path
 import re
 
 
+# def get_project_dict(config):
+#     #
+#     fields_to_add = [
+#         'Project', 'User', 'Dataset', 'Task', 'Participants',
+#         'Runs', 'Sessions', 'Specie', 'Atlas_type', 'Datafolder'
+#     ]
+#     # initialize project_dict
+#     project_dict = {}
+#     # add fields if they are in config
+#     for field in fields_to_add:
+#         if field not in config:
+#             print(f"Field {field} not in config, please add it.")
+#             continue
+#         else:
+#             project_dict[field] = config[field]
+#     return project_dict
 
 
 def get_path(path_label, project_dict, local_data=True, rnd=False, figure_letter='A'):

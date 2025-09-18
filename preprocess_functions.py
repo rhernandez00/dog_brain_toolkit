@@ -556,7 +556,7 @@ def run_process(job):
     else:
         print('Process not found')
 
-def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False, model=None):
+def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False, model=None, method=None, rsa_method=None, radius=None, rsa_model=None):
     
     '''
     Check which files are available for the process
@@ -659,11 +659,12 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             if verbose:
                 print('BOLD file does not exist: ' + filename)
             return False, filename
+    
     elif process == 'feat_folder': # check if the first level GLM file exist
         # model = 'basic'
         # "P:\userdata\raulh87\data\EmoB\results\GLM\basic\D-sub-01\ses-01_task-EmoB_run-01.feat\stats\tstat1.nii.gz"
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
-                    model + os.sep + f"D-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat")
+                    model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat")
         # check if filename exist
         if os.path.exists(filename):
             if verbose:
@@ -672,6 +673,20 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         else:
             if verbose:
                 print('feat folder does not exist: ' + filename)
+            return False, filename
+    elif process == 'model_similarity_map':
+        # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall.nii.gz"
+        filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                    model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                    f"r-{radius}_{method}_{rsa_method}.nii.gz")
+        # check if filename exist
+        if os.path.exists(filename):
+            if verbose:
+                print('model similarity map exists: ' + filename)
+            return True, filename
+        else:
+            if verbose:
+                print('model similarity map does not exist: ' + filename)
             return False, filename
     elif process == 'get_vectors':
         # "P:\userdata\raulh87\data\EmoB\BIDS\sub-01\sub-01_ses-01_task-EmoB_run-01_events.csv"

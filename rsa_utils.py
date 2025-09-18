@@ -6,6 +6,52 @@ import numpy as np
 
 import numpy as np
 
+# def check_file_status
+#"P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall.nii.gz"
+
+def nifti_mean(img_list, result_map_path=None):
+    """
+    Compute the voxel-wise mean of a list of NIfTI images.
+
+    Parameters
+    ----------
+    img_list : list of str
+        List of file paths to NIfTI images.
+    result_map_path : str, optional
+        If provided, the mean image will be saved to this path.
+
+    Returns
+    -------
+    mean_img : np.ndarray
+        The voxel-wise mean image data.
+    """
+    if len(img_list) == 0:
+        raise ValueError("img_list is empty.")
+
+    # Load the first image to get the shape and affine
+    first_img = nib.load(img_list[0])
+    img_shape = first_img.shape
+    img_affine = first_img.affine
+
+    # Initialize an array to hold the sum
+    sum_data = np.zeros(img_shape, dtype=np.float64)
+    count = 0
+
+    for img_path in img_list:
+        img = nib.load(img_path)
+        if img.shape != img_shape:
+            raise ValueError(f"Image {img_path} has a different shape: {img.shape} != {img_shape}")
+        sum_data += img.get_fdata(dtype=np.float64)
+        count += 1
+
+    mean_data = sum_data / count
+
+    if result_map_path:
+        mean_img = nib.Nifti1Image(mean_data, img_affine)
+        nib.save(mean_img, result_map_path)
+
+    return mean_data
+
 def kendall_tau_a(a, b):
     """
     Kendall's tau-a correlation coefficient between vectors a and b.
@@ -44,7 +90,12 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
     
     # "P:\userdata\raulh87\data\EmoB\results\RSA\basic"
     output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
-    output_file = os.path.join(output_folder, f"r-{radius}_{method}.nii.gz")
+    output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}.nii.gz")
+
+    # check if output_file exists
+    if os.path.exists(output_file) and not replace_file:
+        print(f"Output file {output_file} already exists. Skipping...")
+        return output_file, True
 
     # Load config.yaml
     with open(config_path, 'r') as f:
@@ -91,7 +142,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
     # go through each voxel in similarity_table and calculate similarity between meta_similarity_map and model_vector
     for i, (x, y, z) in enumerate(similarity_table[:, :3]):
         xi, yi, zi = int(x), int(y), int(z)
-        if i % 1000 == 0 and verbose:
+        if i % 100 == 0 and verbose:
             print(f"Processing voxel {i+1}/{similarity_table.shape[0]} at ({xi},{yi},{zi})")
         voxel_meta_vector = meta_similarity_map[xi-1, yi-1, zi-1, :]  # -1 for 0-based indexing
         if np.all(np.isnan(voxel_meta_vector)):
@@ -102,6 +153,14 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
         if rsa_method == 'pearson':
             # calculate pearson correlation
             sim = np.corrcoef(voxel_meta_vector, model_vector)[0, 1]
+        elif rsa_method == 'correlation':
+            # calculate correlation distance
+            sim = 1 - np.corrcoef(voxel_meta_vector, model_vector)[0, 1]
+        elif rsa_method == 'kendall':
+            sim = kendall_tau_a(voxel_meta_vector, model_vector)
+
+        # elif rsa_method == 'kendall':
+
         else:
             raise ValueError(f"Unknown rsa_method: {rsa_method}")
         similarity_table[i, 3] = sim
