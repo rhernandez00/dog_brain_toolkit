@@ -3,8 +3,9 @@ import nibabel as nib
 import yaml
 import pandas as pd
 import numpy as np
+# import random
+import random
 
-import numpy as np
 
 # def check_file_status
 #"P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall.nii.gz"
@@ -82,20 +83,37 @@ def kendall_tau_a(a, b):
     return K / (n * (n - 1) / 2.0)
 
 
-def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, specie, model, dataset, task, mask_type, radius, rsa_model, method='pearson', rsa_method='pearson', replace_file=False, verbose=False):
-
+def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, specie, model, dataset, task, mask_type, radius, rsa_model, method='pearson', rsa_method='pearson', replace_file=False, verbose=False, rnd=False, reps=1000):
+    """
+    Compares the meta similarity map with a given RSA model and saves the similarity map.
+    Parameters
+    ----------
+    ref_img : np.ndarray
+        Reference image to define the space and shape of the output similarity map.
+    mask_affine : np.ndarray
+        Affine transformation matrix for the reference image.
+    datafolder : str
+        Base directory for data storage.
+    sub_N : int
+        Subject number.
+    session : str
+        Session identifier.
+    run_N : int
+        Run number.
+    specie : str
+        Species identifier.
+    model : str
+        Model name.
+    rnd: bool
+        If True, use a randomized model. For permutation testing.
+    """
 
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
     
     # "P:\userdata\raulh87\data\EmoB\results\RSA\basic"
-    output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
-    output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}.nii.gz")
-
-    # check if output_file exists
-    if os.path.exists(output_file) and not replace_file:
-        print(f"Output file {output_file} already exists. Skipping...")
-        return output_file, True
+    
+ 
 
     # Load config.yaml
     with open(config_path, 'r') as f:
@@ -120,14 +138,15 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
     rsa_model_dict = read_model_dict(rsa_model_path)
     # build model_vector
     model_vector = np.zeros(len(rsa_model_dict['pairs']))
+    # print('Model vector length: ' + str(len(model_vector)))
+    
     for i, pair in enumerate(rsa_model_dict['pairs']):
         model_vector[i] = rsa_model_dict['model'][pair[0]][pair[1]]
 
     
     # create an result_map based on the reference image
     result_map = np.zeros(ref_img.shape)
-
-
+    
     meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, sub_N, session, run_N, config_path, method=method, radius=radius, verbose=verbose)
     # create similarity_table (x, y, z) of all voxels in the mask, results will be added here
     similarity_table = np.column_stack(np.where(ref_img > 0))
@@ -139,38 +158,58 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
     warning_table = []
     # create blank 
 
-    # go through each voxel in similarity_table and calculate similarity between meta_similarity_map and model_vector
-    for i, (x, y, z) in enumerate(similarity_table[:, :3]):
-        xi, yi, zi = int(x), int(y), int(z)
-        if i % 100 == 0 and verbose:
-            print(f"Processing voxel {i+1}/{similarity_table.shape[0]} at ({xi},{yi},{zi})")
-        voxel_meta_vector = meta_similarity_map[xi-1, yi-1, zi-1, :]  # -1 for 0-based indexing
-        if np.all(np.isnan(voxel_meta_vector)):
-            # add to warning table
-            warning_table.append((xi, yi, zi))
-            continue  # skip if all values are NaN
-        # calculate similarity
-        if rsa_method == 'pearson':
-            # calculate pearson correlation
-            sim = np.corrcoef(voxel_meta_vector, model_vector)[0, 1]
-        elif rsa_method == 'correlation':
-            # calculate correlation distance
-            sim = 1 - np.corrcoef(voxel_meta_vector, model_vector)[0, 1]
-        elif rsa_method == 'kendall':
-            sim = kendall_tau_a(voxel_meta_vector, model_vector)
-
-        # elif rsa_method == 'kendall':
-
+    for rnd_N in range(0, reps):
+        if rnd:
+            # if rnd is True, permute the model values
+            # rsa_model_dict = shuffle_model(rsa_model_dict)
+            output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
+            # build output filename _[4 digit padded rnd_N]
+            output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}_{rnd_N:04d}.nii.gz")
+            model_vector = shuffle_vector(model_vector)
         else:
-            raise ValueError(f"Unknown rsa_method: {rsa_method}")
-        similarity_table[i, 3] = sim
-        # assign sim to result_map
-        result_map[xi-1, yi-1, zi-1] = sim  # -1 for 0-based indexing
-    # save result_map to output_file
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder, exist_ok=True)
-    nib.save(nib.Nifti1Image(result_map, mask_affine), output_file)
-    print(f"Saved similarity map to {output_file}")
+            if rnd_N > 0:
+                print("real data, skipping further repetitions")
+                break
+            output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
+            # build output filename
+            output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}.nii.gz")
+        # check if output_file exists
+        if os.path.exists(output_file) and not replace_file:
+            print(f"Output file {output_file} already exists. Skipping...")
+            return output_file, True
+
+        # go through each voxel in similarity_table and calculate similarity between meta_similarity_map and model_vector
+        for i, (x, y, z) in enumerate(similarity_table[:, :3]):
+            xi, yi, zi = int(x), int(y), int(z)
+            if i % 100 == 0 and verbose:
+                print(f"Processing voxel {i+1}/{similarity_table.shape[0]} at ({xi},{yi},{zi})")
+            voxel_meta_vector = meta_similarity_map[xi-1, yi-1, zi-1, :]  # -1 for 0-based indexing
+            if np.all(np.isnan(voxel_meta_vector)):
+                # add to warning table
+                warning_table.append((xi, yi, zi))
+                continue  # skip if all values are NaN
+            # calculate similarity
+            if rsa_method == 'pearson':
+                # calculate pearson correlation
+                sim = np.corrcoef(voxel_meta_vector, model_vector)[0, 1]
+            elif rsa_method == 'correlation':
+                # calculate correlation distance
+                sim = 1 - np.corrcoef(voxel_meta_vector, model_vector)[0, 1]
+            elif rsa_method == 'kendall':
+                sim = kendall_tau_a(voxel_meta_vector, model_vector)
+
+            # elif rsa_method == 'kendall':
+
+            else:
+                raise ValueError(f"Unknown rsa_method: {rsa_method}")
+            similarity_table[i, 3] = sim
+            # assign sim to result_map
+            result_map[xi-1, yi-1, zi-1] = sim  # -1 for 0-based indexing
+        # save result_map to output_file
+        if not os.path.exists(output_folder):
+            os.makedirs(output_folder, exist_ok=True)
+        nib.save(nib.Nifti1Image(result_map, mask_affine), output_file)
+        print(f"Saved similarity map to {output_file}")
 
 def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, sub_N, session, run_N, config_path, method='pearson', radius=3, verbose=False):
     # loads the meta similarity map for given parameters
@@ -245,6 +284,9 @@ def read_model_dict(model_path):
                 continue
             rsa_model_dict['model'][cat1][cat2] = model_table[cat1][indx2]
             pairs.append((cat1, cat2))  # add pair to list
+    
+    
+    
     # save categories and pairs
     rsa_model_dict['categories'] = categories
     rsa_model_dict['pairs'] = pairs
@@ -395,3 +437,37 @@ def similarity_searchlight(map_1, map_2, mask, radius, method):
         similarity_map[tuple(center)] = val
 
     return similarity_map
+
+import itertools
+import random
+import math
+
+def shuffle_vector(vector):
+    L = len(vector)
+    print("Original vector:")
+    print(vector)
+    # Solve quadratic n(n-1)/2 = L for n
+    n = (1 + math.isqrt(1 + 8*L)) // 2
+    if n * (n - 1) // 2 != L:
+        raise ValueError("Vector length is not a valid number of pairs.")
+
+    # Original pairs in canonical order (i < j)
+    pairs = list(itertools.combinations(range(n), 2))
+
+    # Map old pairs → values
+    pair_to_val = dict(zip(pairs, vector))
+
+    # Random permutation of category labels
+    perm = list(range(n))
+    random.shuffle(perm)
+
+    # Rebuild new pairs with permuted labels
+    shuffled_pairs = [(perm[i], perm[j]) for (i, j) in pairs]
+
+    # Ensure canonical ordering (smaller index first)
+    shuffled_pairs = [(min(i, j), max(i, j)) for (i, j) in shuffled_pairs]
+
+    # Build new vector in canonical pair order
+    vector_rnd = [pair_to_val[p] for p in shuffled_pairs]
+
+    return vector_rnd
