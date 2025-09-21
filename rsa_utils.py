@@ -7,6 +7,68 @@ import numpy as np
 import random
 from scipy.ndimage import label, generate_binary_structure
 
+def get_minimal_cluster_size(cluster_sizes_path: str, p_thr: float) -> int:
+    """
+    Compute the minimal cluster-size threshold for cluster-extent correction.
+
+    Parameters
+    ----------
+    cluster_sizes_path : str
+        Path to a .npy file containing an array of arrays (or lists), where each inner
+        array holds ALL cluster sizes found for a single permutation.
+    p_thr : float
+        Target tail probability (e.g., 0.05). Returns the smallest integer k such that
+        the empirical probability of observing a cluster of size >= k under the null
+        (across permutations) is <= p_thr.
+
+    Returns
+    -------
+    int
+        Minimal cluster size threshold (integer).
+    """
+    if not (0 < p_thr < 1):
+        raise ValueError("p_thr must be in (0, 1).")
+
+    sizes_list = np.load(cluster_sizes_path, allow_pickle=True)
+
+    # Normalize to list-of-arrays
+    if isinstance(sizes_list, np.ndarray) and sizes_list.dtype == object:
+        permutations = [np.asarray(x).astype(float).ravel() if x is not None else np.array([])
+                        for x in sizes_list]
+    elif isinstance(sizes_list, (list, tuple)):
+        permutations = [np.asarray(x).astype(float).ravel() if x is not None else np.array([])
+                        for x in sizes_list]
+    else:
+        permutations = [np.asarray(x).astype(float).ravel() for x in sizes_list]
+
+    if len(permutations) == 0:
+        raise ValueError("No permutations found in the provided file.")
+
+    # Per-permutation maximum cluster size (0 if no clusters in that permutation)
+    max_sizes = np.array([float(np.max(p)) if p.size > 0 else 0.0 for p in permutations], dtype=float)
+    N = max_sizes.size
+    if N == 0:
+        raise ValueError("No valid permutations after parsing.")
+
+    # Sort ascending; find the first index with tail prob <= p_thr
+    m_sorted = np.sort(max_sizes)
+    i0 = int(np.ceil((1.0 - p_thr) * N))
+
+    # If p is extremely small, pick > max to get tail 0
+    if i0 >= N:
+        return int(np.floor(m_sorted[-1])) + 1
+
+    k = m_sorted[i0]
+    # Return smallest integer threshold meeting the criterion (conservative ceil)
+    minimal_cluster_size = int(np.ceil(k))
+
+    # Guard in case ceil bumped us into a slightly stricter tail
+    while np.mean(max_sizes >= minimal_cluster_size) > p_thr:
+        minimal_cluster_size += 1
+
+    return minimal_cluster_size
+
+
 def count_clusters_sizes(
     nifti_path,
     threshold=None,           # e.g., 2.3 for a z-map; if None -> nonzero voxels
