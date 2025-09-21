@@ -5,14 +5,68 @@ import pandas as pd
 import numpy as np
 # import random
 import random
+from scipy.ndimage import label, generate_binary_structure
 
+def count_clusters_sizes(
+    nifti_path,
+    threshold=None,           # e.g., 2.3 for a z-map; if None -> nonzero voxels
+    two_sided=False,          # if True, count pos and neg separately
+    connectivity=3,           # 1=6-conn, 2=18-conn, 3=26-conn in 3D
+    volume_index=None         # for 4D images, pick a single 3D volume (int) or None => all
+):
+    img = nib.load(nifti_path)
+    data = np.asanyarray(img.dataobj)  # lazy and memory-friendly
+    data = np.nan_to_num(data)         # treat NaNs as 0
 
-# def check_file_status
-#"P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall.nii.gz"
+    # Select 3D volume if 4D
+    if data.ndim == 4:
+        if volume_index is None:
+            # Apply per-volume
+            results = []
+            for t in range(data.shape[-1]):
+                n, sizes = _count_on_3d(data[..., t], threshold, two_sided, connectivity)
+                results.append({'t': t, 'n_clusters': n, 'sizes': sizes})
+            return results
+        else:
+            data = data[..., volume_index]
 
-def nifti_mean(img_list, result_map_path=None):
+    # 3D case
+    _, sizes = _count_on_3d(data, threshold, two_sided, connectivity)
+    return sizes
+
+def _count_on_3d(vol, threshold, two_sided, connectivity=3):
+    # Build mask(s)
+    if threshold is None:
+        pos_mask = vol != 0
+        neg_mask = None
+    else:
+        pos_mask = vol > threshold
+        neg_mask = (vol < -threshold) if two_sided else None
+
+    # Connectivity kernel (3D)
+    structure = generate_binary_structure(rank=3, connectivity=connectivity)
+
+    # Label positives
+    labels_pos, n_pos = label(pos_mask, structure=structure)
+    sizes_pos = np.bincount(labels_pos.ravel())[1:]  # drop background
+
+    if neg_mask is not None:
+        labels_neg, n_neg = label(neg_mask, structure=structure)
+        sizes_neg = np.bincount(labels_neg.ravel())[1:]
+        n_total = int(n_pos + n_neg)
+        sizes = {
+            'positive': np.sort(sizes_pos)[::-1].tolist(),
+            'negative': np.sort(sizes_neg)[::-1].tolist()
+        }
+    else:
+        n_total = int(n_pos)
+        sizes = np.sort(sizes_pos)[::-1].tolist()
+
+    return n_total, sizes
+
+def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose=False):
     """
-    Compute the voxel-wise mean of a list of NIfTI images.
+    Compute the voxel-wise mean and std of a list of NIfTI images.
 
     Parameters
     ----------
@@ -25,6 +79,8 @@ def nifti_mean(img_list, result_map_path=None):
     -------
     mean_img : np.ndarray
         The voxel-wise mean image data.
+    std_img : np.ndarray
+        The voxel-wise standard deviation image data.
     """
     if len(img_list) == 0:
         raise ValueError("img_list is empty.")
@@ -33,25 +89,52 @@ def nifti_mean(img_list, result_map_path=None):
     first_img = nib.load(img_list[0])
     img_shape = first_img.shape
     img_affine = first_img.affine
-
+    if verbose:
+        print(f"Computing mean for {len(img_list)} images of shape {img_shape}")
+    ## Compute mean
     # Initialize an array to hold the sum
     sum_data = np.zeros(img_shape, dtype=np.float64)
     count = 0
-
     for img_path in img_list:
         img = nib.load(img_path)
         if img.shape != img_shape:
             raise ValueError(f"Image {img_path} has a different shape: {img.shape} != {img_shape}")
         sum_data += img.get_fdata(dtype=np.float64)
+        if verbose:
+            print(f"Processed {count+1}/{len(img_list)}: {img_path}")
         count += 1
 
     mean_data = sum_data / count
+    # print message
+    print(f"Computing std deviation for {len(img_list)} images of shape {img_shape}")
+
+    ## Compute std deviation
+
+    sum_sq_diff = np.zeros(img_shape, dtype=np.float64)
+    for img_path in img_list:
+        img = nib.load(img_path)
+        if img.shape != img_shape:
+            raise ValueError(f"Image {img_path} has a different shape: {img.shape} != {img_shape}")
+        diff = img.get_fdata(dtype=np.float64) - mean_data
+        sum_sq_diff += diff ** 2
+
+    std_data = np.sqrt(sum_sq_diff / count)
 
     if result_map_path:
+        # save mean image
         mean_img = nib.Nifti1Image(mean_data, img_affine)
         nib.save(mean_img, result_map_path)
+        if verbose:
+            print(f"Saved mean image to {result_map_path}")
+        # save std image
+    if result_map_path_std:
+        std_img = nib.Nifti1Image(std_data, img_affine)
+        nib.save(std_img, result_map_path_std)
+        if verbose:
+            print(f"Saved std image to {result_map_path_std}")
 
-    return mean_data
+
+    return mean_data, std_data
 
 def kendall_tau_a(a, b):
     """

@@ -572,7 +572,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     task = project_dict['Task']
     # get datafolder from the project_dict
     datafolder = project_dict['Datafolder']
-    
+    session = int(session) if session != '' else ''
     if process == 'preprocess_run': # check if the preprocess files exist
         # create the filename
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 
@@ -601,6 +601,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = specie + '-sub-' + str(sub_N).zfill(2)
         # adding session if there is one
+        print('Session:', session)
         if session != '':
             filename += '_ses-' + f"{session:02d}"
         filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented.nii.gz'
@@ -664,7 +665,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         # model = 'basic'
         # "P:\userdata\raulh87\data\EmoB\results\GLM\basic\D-sub-01\ses-01_task-EmoB_run-01.feat\stats\tstat1.nii.gz"
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
-                    model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat")
+                    model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session:02d}_task-{task}_run-{run_N:02d}.feat")
         # check if filename exist
         if os.path.exists(filename):
             if verbose:
@@ -677,7 +678,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     elif process == 'model_similarity_map':
         # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall.nii.gz"
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                    model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                    model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session:02d}_task-{task}_run-{run_N:02d}" + os.sep +
                     f"r-{radius}_{method}_{rsa_method}.nii.gz")
         # check if filename exist
         if os.path.exists(filename):
