@@ -34,13 +34,18 @@ import re
 
 
 def get_path(path_label, project_dict, local_data=True, rnd=False, figure_letter='A'):
+    
     # if project_dict has no experiment, set it to 'Segmentation'
     if 'Project' not in project_dict:
         project = 'Segmentation'
     else:
         project = project_dict['Project']
-    username = project_dict['User']
-    dataset = project_dict['Dataset']
+    # if project_dict has no User, dont add it
+    if 'User' in project_dict:
+        username = project_dict['User']
+    # same for dataset
+    if 'Dataset' in project_dict:
+        dataset = project_dict['Dataset']
     # if dataset == 'CAPS_K9':
     #     dataset = 'Segmentation'
     
@@ -74,7 +79,19 @@ def get_path(path_label, project_dict, local_data=True, rnd=False, figure_letter
                 path = r"P:\userdata\\" + username + r"\data" + os.sep + project
         else:
             path = '/home' + os.sep + username + '/mnt/a471/userdata/' + username + os.sep + project
-        
+    elif path_label == 'datafolder' or path_label == 'Datafolder':
+        if os.name == 'nt':
+            if local_data:
+                path = r"C:\data"
+            else:
+                path = r"P:\userdata\raulh87\data"
+        else:
+            path = '/home' + os.sep + username + '/mnt/a471/userdata/' + username + os.sep + 'data'
+    elif path_label == 'git_folder':
+        if os.name == 'nt':
+            path = r"C:\github"
+        else:
+            path = '/home' + os.sep + username + '/mnt/a471/userdata/' + username + os.sep + 'github'
     else:
         print('Path label not recognized')
     return path

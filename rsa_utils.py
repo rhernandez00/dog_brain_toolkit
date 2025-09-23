@@ -7,6 +7,80 @@ import numpy as np
 import random
 from scipy.ndimage import label, generate_binary_structure
 
+import numpy as np
+from scipy import ndimage
+
+def apply_cluster_size_threshold(
+    z_map_thresholded: np.ndarray,
+    minimal_cluster_size: int,
+    connectivity: int = 6
+) -> np.ndarray:
+    """
+    Remove clusters smaller than `minimal_cluster_size` from a *3D* thresholded z-map.
+
+    Parameters
+    ----------
+    z_map_thresholded : np.ndarray, shape (X, Y, Z)
+        3D thresholded z-map (values kept where z >= z_threshold, else 0).
+        Voxels <= 0 are treated as background.
+    minimal_cluster_size : int
+        Clusters with voxel counts < this value are removed (set to 0).
+    connectivity : int
+        Neighborhood connectivity in 3D. One of:
+          - ndimage convention 1..3  (1≈6-neigh, 2≈18, 3≈26)
+          - Common shorthands: 6, 18, or 26
+
+    Returns
+    -------
+    np.ndarray
+        Copy of the input with small clusters set to 0.
+
+    Raises
+    ------
+    ValueError
+        If the input is not 3D, or if connectivity is invalid, or if p is out of range.
+    """
+    arr = np.asarray(z_map_thresholded)
+    if arr.ndim != 3:
+        raise ValueError(f"apply_cluster_size_threshold requires a 3D array, got ndim={arr.ndim}.")
+
+    if minimal_cluster_size <= 1:
+        raise ValueError("minimal_cluster_size must be > 1.")
+
+    # Normalize connectivity to ndimage's 1..3 scale
+    if 1 <= connectivity <= 3:
+        conn = connectivity
+    elif connectivity in (6, 18, 26):
+        conn = {6: 1, 18: 2, 26: 3}[connectivity]
+    else:
+        raise ValueError("Invalid connectivity for 3D. Use 1..3 or 6/18/26.")
+
+    if minimal_cluster_size == 1:
+        # Nothing to remove—every 1-voxel cluster survives
+        return arr.copy()
+
+    structure = ndimage.generate_binary_structure(rank=3, connectivity=conn)
+
+    # Foreground is strictly > 0 to match your thresholding
+    fg = arr > 0
+
+    labels, nlab = ndimage.label(fg, structure=structure)
+    if nlab == 0:
+        return arr.copy()
+
+    # Count sizes per label (label 0 is background)
+    label_ids, counts = np.unique(labels, return_counts=True)
+
+    # Labels to drop: exclude background (0)
+    small_labels = label_ids[(label_ids != 0) & (counts < minimal_cluster_size)]
+    if small_labels.size == 0:
+        return arr.copy()
+
+    out = arr.copy()
+    out[np.isin(labels, small_labels)] = 0
+    return out
+
+
 def get_minimal_cluster_size(cluster_sizes_path: str, p_thr: float) -> int:
     """
     Compute the minimal cluster-size threshold for cluster-extent correction.

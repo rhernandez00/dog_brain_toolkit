@@ -572,7 +572,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     task = project_dict['Task']
     # get datafolder from the project_dict
     datafolder = project_dict['Datafolder']
-    session = int(session) if session != '' else ''
+    
     if process == 'preprocess_run': # check if the preprocess files exist
         # create the filename
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 
@@ -644,6 +644,9 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
                 print('Motion corrected file does not exist: ' + preprocess_dir + os.sep + preprocessed_file)
             return False, preprocess_dir + os.sep + preprocessed_file
     elif process == 'BOLD': # check if the normalized BOLD file exist
+        # if session is int convert to str with 2 digits
+        if isinstance(session, int):
+            session = str(session).zfill(2)
         filename = (datafolder + os.sep + dataset + os.sep + 'normalized' + os.sep + 
                     specie + '-sub-' + str(sub_N).zfill(2) + os.sep + 
                     specie + '-sub-' + str(sub_N).zfill(2) + 
@@ -664,8 +667,14 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     elif process == 'feat_folder': # check if the first level GLM file exist
         # model = 'basic'
         # "P:\userdata\raulh87\data\EmoB\results\GLM\basic\D-sub-01\ses-01_task-EmoB_run-01.feat\stats\tstat1.nii.gz"
+        # if session is int convert to str with 2 digits
+        # check that all variables are available, if not indicate which is missing
+        if model is None: # model is required
+            print('Model is missing')
+            return False, 'error in model'
+        
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
-                    model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session:02d}_task-{task}_run-{run_N:02d}.feat")
+                    model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat")
         # check if filename exist
         if os.path.exists(filename):
             if verbose:
@@ -676,9 +685,18 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
                 print('feat folder does not exist: ' + filename)
             return False, filename
     elif process == 'model_similarity_map':
-        # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall.nii.gz"
+        # build the filename for the model similarity map
+        # make sure that all variables are available, if not indicate which is missing
+        list_vars = [model, method, rsa_method, radius, rsa_model]
+        list_vars_name = ['model', 'method', 'rsa_method', 'radius', 'rsa_model'
+                          ]
+        for var, var_name in zip(list_vars, list_vars_name):
+            if var is None:
+                print(f'{var_name} is missing')
+                return False, f'error in {var_name}'
+
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                    model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session:02d}_task-{task}_run-{run_N:02d}" + os.sep +
+                    model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
                     f"r-{radius}_{method}_{rsa_method}.nii.gz")
         # check if filename exist
         if os.path.exists(filename):
@@ -691,6 +709,9 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             return False, filename
     elif process == 'get_vectors':
         # "P:\userdata\raulh87\data\EmoB\BIDS\sub-01\sub-01_ses-01_task-EmoB_run-01_events.csv"
+        # if session is int convert to str with 2 digits
+        if isinstance(session, int):
+            session = str(session).zfill(2)
         # check if the events file exists
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep +
                     'sub-' + str(sub_N).zfill(2) + os.sep +
