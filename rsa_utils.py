@@ -426,6 +426,55 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
         nib.save(nib.Nifti1Image(result_map, mask_affine), output_file)
         print(f"Saved similarity map to {output_file}")
 
+def remove_existing_rnd_files(datafolder, dataset, sub_N, session, run_N, specie, model, task, mask_type, 
+                              radius, rsa_model, method='pearson', rsa_method='pearson', verbose=False, reps=1000):
+    """
+    Removes existing randomized RSA result files for a given subject/session/run.
+    Parameters
+    ----------
+    datafolder : str
+        Base directory for data storage.
+    dataset : str
+        Dataset name.
+    sub_N : int
+        Subject number.
+    session : str
+        Session identifier.
+    run_N : int
+        Run number.
+    specie : str
+        Species identifier.
+    model : str
+        Model name.
+    task : str
+        Task name.
+    mask_type : str
+        Mask type.
+    radius : int
+        Search radius.
+    rsa_model : str
+        RSA model name.
+    method : str
+        Method for similarity calculation.
+    rsa_method : str
+        RSA method for similarity calculation.
+    verbose : bool
+        If True, prints additional information.
+    """
+    output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
+    if not os.path.exists(output_folder):
+        if verbose:
+            print(f"No existing folder {output_folder} to remove files from.")
+        return
+    # go through all the possible files and remove them
+    # "P:\userdata\raulh87\data\EmoB\results\RSA_rnd\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall_0000.nii.gz"
+    for rep in range(reps):
+        file_path = output_folder + os.sep + f"r-{radius}_{method}_{rep:04d}.nii.gz"
+        if os.path.exists(file_path):
+            if verbose:
+                print(f"Removing {file_path}")
+            os.remove(file_path)
+
 def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, sub_N, session, run_N, config_path, method='pearson', radius=3, verbose=False):
     # loads the meta similarity map for given parameters
     # Load config.yaml
@@ -471,7 +520,7 @@ def load_pairwise_similarity_map(datafolder, dataset, sub_N, session, run_N, sti
     map = nib.load(file_path).get_fdata()
     return map
 
-def read_model_dict(model_path):
+def read_model_dict(model_path, erase_existing_npy=False):
     ''' Reads the RSA model from an excel file and returns as a dictionary 
     Input:
         model_path: path to the excel file
@@ -481,6 +530,18 @@ def read_model_dict(model_path):
             - 'categories': list of categories
             - 'pairs': list of tuples with category pairs
     '''
+    # rsa_model_dict is saved with the same name as model_path but with .npy extension
+    rsa_model_dict_path = model_path.replace('.xlsx', '.npy')
+    # check if rsa_model_dict_path exists
+    if os.path.exists(rsa_model_dict_path):
+        if erase_existing_npy:
+            os.remove(rsa_model_dict_path)
+        else:
+            # load and return
+            rsa_model_dict = np.load(rsa_model_dict_path, allow_pickle=True).item()
+            return rsa_model_dict
+
+    # read excel file
     model_table = pd.read_excel(model_path)
     # get all columns
     categories = model_table.columns.tolist()
@@ -500,11 +561,12 @@ def read_model_dict(model_path):
             rsa_model_dict['model'][cat1][cat2] = model_table[cat1][indx2]
             pairs.append((cat1, cat2))  # add pair to list
     
-    
-    
     # save categories and pairs
     rsa_model_dict['categories'] = categories
     rsa_model_dict['pairs'] = pairs
+    # save rsa_model_dict as npy
+    np.save(rsa_model_dict_path, rsa_model_dict)
+    
     # return dictionary
     return rsa_model_dict
 
@@ -657,14 +719,77 @@ def similarity_searchlight(map_1, map_2, mask, radius, method):
 
     return similarity_map
 
+def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
+                                       run_N, specie, model, 
+    stim_types, mask, task, radius=3, method='correlation', replace_file=False, verbose=False):
+    log = []
+    log.append("calculate_pairwise_similarity_maps called with parameters:")
+    log.append(f"datafolder: {datafolder}")
+    log.append(f"dataset: {dataset}")
+    log.append(f"sub_N: {sub_N}")
+    log.append(f"session: {session}")
+    log.append(f"run_N: {run_N}")
+    log.append(f"specie: {specie}")
+    log.append(f"model: {model}")
+    log.append(f"mask: {mask}")
+    for stim_N1, stim_1_name in enumerate(stim_types):
+        # stim_1_name = stim_types[stim_N1]
+        file_1_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + 'stats' + os.sep + f"pe{(stim_N1+1)*2 - 1}.nii.gz"
+        file_1_map = nib.load(file_1_path).get_fdata()
+        # add to log
+        log.append(f"Processing {method} similarity for stim {stim_1_name}, file: {file_1_path}")
+        
+        for stim_N2, stim_2_name in enumerate(stim_types):
+            # if stim_N1 == stim_N2, skip
+            if stim_N1 >= stim_N2:
+                # print("Skipping identical stimuli...")
+                continue                
+            file_2_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + 'stats' + os.sep + f"pe{(stim_N2+1)*2 - 1}.nii.gz"
+            log.append(f"Comparing with stim {stim_N2}, file: {file_2_path}")
+            # add to log
+            
+            output_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep + f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz"
+            # check if file_2_path exists
+            file_available = os.path.exists(file_2_path)
+
+            # check if output_path exists
+            if file_available and not replace_file:
+                if verbose:
+                    print(f"Output exists: {output_path}. Skipping...")
+                continue
+
+            
+            file_2_map = nib.load(file_2_path).get_fdata()
+
+            similarity_map = similarity_searchlight(file_1_map, file_2_map, nib.load(mask).get_fdata().astype(bool), radius=radius, method=method)
+            # add to log
+            log.append(f"    Saved similarity map to {output_path}")
+            # check if output directory exists
+            if not os.path.exists(os.path.dirname(output_path)):
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            nib.save(nib.Nifti1Image(similarity_map, nib.load(file_1_path).affine), output_path)
+            print(f"Saved {method} similarity map to {output_path}")
+    if verbose:
+        # print that we are done
+        print(f"sub {sub_N:02d} session {session} run {run_N:02d} pairwise similarity computation done.")
+
+    # save log
+    output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
+    log_path = output_folder + os.sep + f"r-{radius}_{method}_log.txt"
+    with open(log_path, 'w') as f:
+        for line in log:
+            f.write(line + '\n')
+
+
 import itertools
 import random
 import math
 
-def shuffle_vector(vector):
+def shuffle_vector(vector, verbose=False):
     L = len(vector)
-    print("Original vector:")
-    print(vector)
+    if verbose:
+        print("Original vector:")
+        print(vector)
     # Solve quadratic n(n-1)/2 = L for n
     n = (1 + math.isqrt(1 + 8*L)) // 2
     if n * (n - 1) // 2 != L:

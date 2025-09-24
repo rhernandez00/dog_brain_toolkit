@@ -558,7 +558,8 @@ def run_process(job):
 
 def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False, 
                       model=None, method=None, rsa_method=None, radius=None, rsa_model=None,
-                      stim_N=None, stim_1_name=None, stim_2_name=None):
+                      stim_N=None, stim_1_name=None, stim_2_name=None, stim_types=None,
+                      reps=None):
     
     '''
     Check which files are available for the process
@@ -695,14 +696,11 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             if var is None:
                 print(f'{var_name} is missing')
                 return False, f'error in {var_name}'
-        # "P:\userdata\raulh87\data\EmoB\results\GLM\basic-block\D-sub-01\ses-01_task-EmoB_run-01.feat\stats\pe1.nii.gz"
+        # build the filename for the beta map
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
                     model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
                     f"ses-{session}_task-{task}_run-{run_N:02d}.feat\stats\pe{stim_N*2 - 1}.nii.gz")
-        # filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
-        #             model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
-        #             f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-        #             f"r-{radius}_{method}_beta.nii.gz")
+        
         # check if filename exist
         if os.path.exists(filename):
             if verbose:
@@ -712,6 +710,74 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             if verbose:
                 print('beta map does not exist: ' + filename)
             return False, filename
+    elif process == 'beta_maps': # check if the beta map exist
+        # build the filename for the beta map
+        # make sure that all variables are available, if not indicate which is missing
+        list_vars = [model, stim_types]
+        list_vars_name = ['model', 'stim_types']
+        for var, var_name in zip(list_vars, list_vars_name):
+            if var is None:
+                print(f'{var_name} is missing')
+                return False, f'error in {var_name}'
+        # initialize a list to store missing files
+        files_missing, files_found = [], []
+        
+        for stim_Nx,_ in enumerate(stim_types):
+            # starts at 1 and jumps of 2
+            stim_N = stim_Nx + 1
+            filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
+                        model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                        f"ses-{session}_task-{task}_run-{run_N:02d}.feat\stats\pe{stim_N*2 - 1}.nii.gz")
+            # add to files_found if exist
+            if os.path.exists(filename):
+                files_found.append(filename)
+            else:
+                files_missing.append(filename)
+        if len(files_missing) == 0:
+            if verbose:
+                print('All beta maps exist')
+            # return true and a list of all filenames
+            return True, files_found
+        else:
+            if verbose:
+                print('Some beta maps are missing')
+                print('Missing files:', files_missing)
+            return False, files_missing
+    elif process == 'pairwise_similarity_maps':
+        # build the filename for the pairwise similarity map
+        # make sure that all variables are available, if not indicate which is missing
+        list_vars = [model, method, radius, stim_types]
+        list_vars_name = ['model', 'method', 'radius', 'stim_types']
+        for var, var_name in zip(list_vars, list_vars_name):
+            if var is None:
+                print(f'{var_name} is missing')
+                return False, f'error in {var_name}'
+        # initialize a list to store missing files
+        files_missing, files_found = [], []
+
+        # check if "P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\D-sub-01\ses-01_task-EmoB_run-01\r-3_correlation_A-1_A-2.nii.gz"
+        for stim_1_N, stim_1_name in enumerate(stim_types):
+            for stim_2_N, stim_2_name in enumerate(stim_types):
+                if stim_2_N > stim_1_N: # only check for upper triangle
+                    filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                                model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                                f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                                f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz")
+                    # add to files_found if exist
+                    if os.path.exists(filename):
+                        files_found.append(filename)
+                    else:
+                        files_missing.append(filename)
+        if len(files_missing) == 0:
+            if verbose:
+                print('All pairwise similarity maps exist')
+            # return true and a list of all filenames
+            return True, files_found
+        else:
+            if verbose:
+                print('Some pairwise similarity maps are missing')
+                print('Missing files:', files_missing)
+            return False, files_missing
     elif process == 'pairwise_similarity_map':
         # build the filename for the pairwise similarity map
         # make sure that all variables are available, if not indicate which is missing
@@ -782,6 +848,46 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             if verbose:
                 print('mean model similarity map does not exist: ' + filename)
             return False, filename
+    elif process == 'model_similarity_maps_rnd':
+        # checks if the permutations have been done:
+        # true, files_found. If all files exist, false if one or more files are missing
+        # false, missing_files. If one or more files are missing, list of missing files
+        # make sure that all variables are available, if not indicate which is missing
+        # reps - number of by participant repetitions
+        list_vars = [model, method, rsa_method, radius, rsa_model, reps]
+        list_vars_name = ['model', 'method', 'rsa_method', 'radius', 'rsa_model'
+                          'reps']
+        # check that all variables are available, if not indicate which is missing
+        for var, var_name in zip(list_vars, list_vars_name):
+            if var is None:
+                print(f'{var_name} is missing')
+                return False, f'error in {var_name}'
+        # initialize a list to store missing files
+        files_missing, files_found, file_num_missing = [], [], []
+        # "P:\userdata\raulh87\data\EmoB\results\RSA_rnd\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall_0000.nii.gz"
+        for rep in range(reps):
+            filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
+                        model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                        f"r-{radius}_{method}_{rsa_method}_{str(rep).zfill(4)}.nii.gz")
+            # add to files_found if exist
+            if os.path.exists(filename):
+                files_found.append(filename)
+            else:
+                files_missing.append(filename)
+                file_num_missing.append(rep)
+        if len(files_missing) == 0:
+            if verbose:
+                print('All model similarity rnd maps exist')
+            # return true and a list of all filenames
+            return True, files_found
+        else:
+            if verbose:
+                print('Some model similarity rnd maps are missing')
+                print('Missing files:', files_missing)
+            
+            
+            return False, file_num_missing
+
     elif process == 'get_vectors':
         # "P:\userdata\raulh87\data\EmoB\BIDS\sub-01\sub-01_ses-01_task-EmoB_run-01_events.csv"
         # if session is int convert to str with 2 digits
