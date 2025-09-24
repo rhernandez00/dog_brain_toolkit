@@ -556,7 +556,9 @@ def run_process(job):
     else:
         print('Process not found')
 
-def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False, model=None, method=None, rsa_method=None, radius=None, rsa_model=None):
+def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False, 
+                      model=None, method=None, rsa_method=None, radius=None, rsa_model=None,
+                      stim_N=None, stim_1_name=None, stim_2_name=None):
     
     '''
     Check which files are available for the process
@@ -684,6 +686,55 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             if verbose:
                 print('feat folder does not exist: ' + filename)
             return False, filename
+    elif process == 'beta_map': # check if the beta map exist
+        # build the filename for the beta map
+        # make sure that all variables are available, if not indicate which is missing
+        list_vars = [model, stim_N]
+        list_vars_name = ['model', 'stim_N']
+        for var, var_name in zip(list_vars, list_vars_name):
+            if var is None:
+                print(f'{var_name} is missing')
+                return False, f'error in {var_name}'
+        # "P:\userdata\raulh87\data\EmoB\results\GLM\basic-block\D-sub-01\ses-01_task-EmoB_run-01.feat\stats\pe1.nii.gz"
+        filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
+                    model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat\stats\pe{stim_N*2 - 1}.nii.gz")
+        # filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep +
+        #             model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+        #             f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+        #             f"r-{radius}_{method}_beta.nii.gz")
+        # check if filename exist
+        if os.path.exists(filename):
+            if verbose:
+                print('beta map exists: ' + filename)
+            return True, filename
+        else:
+            if verbose:
+                print('beta map does not exist: ' + filename)
+            return False, filename
+    elif process == 'pairwise_similarity_map':
+        # build the filename for the pairwise similarity map
+        # make sure that all variables are available, if not indicate which is missing
+        list_vars = [model, method, radius, stim_1_name, stim_2_name]
+        list_vars_name = ['model', 'method', 'radius', 'stim_1_name', 'stim_2_name']
+        for var, var_name in zip(list_vars, list_vars_name):
+            if var is None:
+                print(f'{var_name} is missing')
+                return False, f'error in {var_name}'
+        # build the filename for the pairwise similarity map
+        filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                    model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                    f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                    f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz")
+        # check if filename exist
+        if os.path.exists(filename):
+            if verbose:
+                print('pairwise similarity map exists: ' + filename)
+            return True, filename
+        else:
+            if verbose:
+                print('pairwise similarity map does not exist: ' + filename)
+            return False, filename
     elif process == 'model_similarity_map':
         # build the filename for the model similarity map
         # make sure that all variables are available, if not indicate which is missing
@@ -706,6 +757,30 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         else:
             if verbose:
                 print('model similarity map does not exist: ' + filename)
+            return False, filename
+    # write check for beta map
+    elif process == 'mean_model_similarity_map':
+        # build the filename for the mean model similarity map
+        # make sure that all variables are available, if not indicate which is missing
+        list_vars = [model, method, rsa_method, radius, rsa_model]
+        list_vars_name = ['model', 'method', 'rsa_method', 'radius', 'rsa_model'
+                          ]
+        for var, var_name in zip(list_vars, list_vars_name):
+            if var is None:
+                print(f'{var_name} is missing')
+                return False, f'error in {var_name}'
+
+        filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                    model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                    f"r-{radius}_{method}_{rsa_method}_mean.nii.gz")
+        # check if filename exist
+        if os.path.exists(filename):
+            if verbose:
+                print('mean model similarity map exists: ' + filename)
+            return True, filename
+        else:
+            if verbose:
+                print('mean model similarity map does not exist: ' + filename)
             return False, filename
     elif process == 'get_vectors':
         # "P:\userdata\raulh87\data\EmoB\BIDS\sub-01\sub-01_ses-01_task-EmoB_run-01_events.csv"

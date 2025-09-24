@@ -304,7 +304,7 @@ def kendall_tau_a(a, b):
 
 def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, specie, model, dataset, task, mask_type, radius, rsa_model, method='pearson', rsa_method='pearson', replace_file=False, verbose=False, rnd=False, reps=1000):
     """
-    Compares the meta similarity map with a given RSA model and saves the similarity map.
+    Compares the meta similarity map with a given RSA model and saves the model similarity map.
     Parameters
     ----------
     ref_img : np.ndarray
@@ -329,11 +329,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
 
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
-    
-    # "P:\userdata\raulh87\data\EmoB\results\RSA\basic"
-    
  
-
     # Load config.yaml
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
@@ -555,8 +551,8 @@ def similarity_searchlight(map_1, map_2, mask, radius, method):
     if mask.dtype != bool:
         mask = mask.astype(bool)
     method = method.lower()
-    if method not in {"mahalanobis", "pearson", "euclidean", "kendall"}:
-        raise ValueError("method must be one of: 'mahalanobis','pearson','euclidean','kendall'")
+    if method not in {"mahalanobis", "pearson", "euclidean", "kendall", "correlation"}:
+        raise ValueError("method must be one of: 'mahalanobis','pearson','euclidean','kendall','correlation'")
 
     similarity_map = np.full(mask.shape, np.nan, dtype=float)
     ndim = map_1.ndim
@@ -575,6 +571,8 @@ def similarity_searchlight(map_1, map_2, mask, radius, method):
         y = y - y.mean()
         denom = np.linalg.norm(x) * np.linalg.norm(y)
         return (x @ y) / denom if denom > 0 else np.nan
+    def _correlation(x, y):
+        return 1.0 - _pearson(x, y)
 
     def _kendall(x, y):
         try:
@@ -647,6 +645,8 @@ def similarity_searchlight(map_1, map_2, mask, radius, method):
         else:
             if method == "pearson":
                 val = _pearson(x, y)
+            elif method == "correlation":
+                val = _correlation(x, y)
             elif method == "kendall":
                 val = _kendall(x, y)
             elif method == "euclidean":
