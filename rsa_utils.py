@@ -750,14 +750,19 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
             
             output_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep + f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz"
             # check if file_2_path exists
-            file_available = os.path.exists(file_2_path)
+            file_available = os.path.exists(output_path)
 
             # check if output_path exists
             if file_available and not replace_file:
                 if verbose:
                     print(f"Output exists: {output_path}. Skipping...")
                 continue
-
+            # check that file 2 exists
+            if not os.path.exists(file_2_path):
+                if verbose:
+                    print(f"File {file_2_path} does not exist. Skipping...")
+                    log.append(f"    File {file_2_path} does not exist. Skipping...")
+                continue
             
             file_2_map = nib.load(file_2_path).get_fdata()
 
@@ -776,6 +781,8 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
     # save log
     output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
     log_path = output_folder + os.sep + f"r-{radius}_{method}_log.txt"
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder, exist_ok=True)
     with open(log_path, 'w') as f:
         for line in log:
             f.write(line + '\n')
