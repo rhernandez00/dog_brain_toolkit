@@ -836,9 +836,147 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
         iu = np.triu_indices(C, 1)
         return D[iu]
 
+def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
+                          specie, model, stim_types, mask, task, radius,
+                          mah_fold='run-wise', output_files=None, sigma=None,
+                          shrinkage='ledoitwolf', return_rdm=True):
+    '''
+    Calculate Mahalanobis distance maps using searchlight approach.
+    - Uses cross-validation based on specified folding strategy.
+    - Supports single-run and multi-run scenarios.
+    
+    mask : np.ndarray (bool)
+        Boolean array of same shape; computation is performed only where mask==True.
+    radius : int or float
+        Searchlight radius in voxel units (isotropic).
 
-# MODIFY THIS TO ADD MAHALANOBIS
-# MUST FOLD BY RUN
+    Folding strategies:
+        Single run:
+            - max-fold: max partitions possible
+            - odd-even: splits data into odd and even trials
+        Multiple runs:
+            - run-wise: each run is a fold
+    
+    Input:
+        - beta maps per condition and run
+        - mask
+        - folding strategy
+    Output:
+        - similarity_map for each pairwise condition comparison
+    '''
+    # Go over every run available for the participant and load beta maps to session_and_run_dict
+    for indx, entry in enumerate(session_and_run_dict):
+        session = entry['session']
+        run_N = entry['run']
+        # correct session to 2 digits
+        session = f"{session:02d}"
+        # initialize maps dict
+        session_and_run_dict[indx]['maps'] = {}
+        for i, stim in enumerate(stim_types):
+            input_file = os.path.join(
+                datafolder, dataset, 'results', 'GLM', model,
+                f"{specie}-sub-{sub_N:02d}",
+                f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                'stats', f'pe{(i+1)*2 - 1}.nii.gz'
+            )
+            print(f"Loading beta map: {input_file}")
+            # load map
+            map_data = nib.load(input_file).get_fdata()
+            # make sure map_data has same shape as mask
+            if map_data.shape != mask.shape:
+                raise ValueError(f"Beta map shape {map_data.shape} does not match mask shape {mask.shape}.")
+
+            # store in session_and_run_dict
+            session_and_run_dict[indx]['maps'][stim] = map_data
+    # check that mask is boolean
+    if mask.dtype != bool:
+        mask = mask.astype(bool)
+    
+    # prepare for searchlight
+    ndim = mask.ndim # dimensions based on mask
+    r = float(radius)
+    rad = int(np.floor(r))
+
+    # build integer offsets for an N-D sphere
+    ranges = [np.arange(-rad, rad + 1) for _ in range(ndim)]
+    grid = np.stack(np.meshgrid(*ranges, indexing='ij'), axis=-1).reshape(-1, ndim)
+    keep = (grid.astype(float) ** 2).sum(axis=1) <= r * r + 1e-12
+    offsets = grid[keep]
+    # initialize similarity_maps
+    similarity_maps = {}
+    for i, stim_i in enumerate(stim_types):
+        for j, stim_j in enumerate(stim_types):
+            if i >= j:
+                continue  # avoid duplicates and self-comparison
+            key = (stim_i, stim_j)
+            similarity_maps[key] = np.full(mask.shape, np.nan, dtype=float)
+    # iterate over all voxels in mask
+    it = np.argwhere(mask)
+    for center in it: # iterate over each sphere center
+        # get neighboring voxels within radius
+        neigh = center + offsets
+        # in-bounds
+        inb = np.all((neigh >= 0) & (neigh < np.array(mask.shape)), axis=1)
+        neigh = neigh[inb]
+        if neigh.size == 0:
+            continue
+        # apply mask within sphere
+        msub = mask[tuple(neigh.T)]
+        if not np.any(msub):
+            continue
+        neigh = neigh[msub]
+        # get indices of valid voxels
+        indices = tuple(neigh.T)
+        # prepare data matrix Y (stim_types x voxels)
+        Y_list = []
+        for stim in stim_types:
+            Y_list.append(session_and_run_dict[indx]['maps'][stim][indices])
+        Y = np.stack(Y_list)  # shape: (n_conditions, n_voxels)
+        labels = np.array(stim_types)
+        # prepare partitions based on mah_fold
+        if len(session_and_run_dict) > 1:
+            # multiple runs available
+            if mah_fold == 'run-wise':
+                partitions = []
+                for entry in session_and_run_dict:
+                    run_N = entry['run']
+                    partitions.extend([run_N] * len(stim_types))
+                partitions = np.array(partitions)
+            else:
+                raise ValueError(f"Unknown mah_fold strategy for multiple runs: {mah_fold}")
+        else:
+            # single run available
+            raise NotImplementedError("Single run Mahalanobis calculation not implemented yet.")
+        D = crossnobis(Y, labels, partitions, sigma=sigma, shrinkage=shrinkage, return_rdm=return_rdm)
+        # store distances in similarity_maps
+        for i, stim_i in enumerate(stim_types):
+            for j, stim_j in enumerate(stim_types):
+                if i >= j:
+                    continue  # avoid duplicates and self-comparison
+                key = (stim_i, stim_j)
+                similarity_maps[key][tuple(neigh.T)] = D[i, j]
+    # save similarity maps
+    for i, stim_i in enumerate(stim_types):
+        for j, stim_j in enumerate(stim_types):
+            if i >= j:
+                continue  # avoid duplicates and self-comparison
+            key = (stim_i, stim_j)
+            output_file = os.path.join(
+                datafolder, dataset, 'results', 'RSA', model,
+                f"{specie}-sub-{sub_N:02d}",
+                f"ses-{session}_task-{task}_run-{run_N:02d}",
+                f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+            )
+            # create output directory if it doesn't exist
+            output_dir = os.path.dirname(output_file)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            # save NIfTI
+            affine = nib.load(input_file).affine  # use affine from last loaded map
+            sim_map_nifti = nib.Nifti1Image(similarity_maps[key], affine)
+            nib.save(sim_map_nifti, output_file)
+            print(f"Saved similarity map: {output_file}")
+
 def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
                                        run_N, specie, model, 
     stim_types, mask, task, radius=3, method='correlation', replace_file=False, verbose=False):
