@@ -836,9 +836,123 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
         iu = np.triu_indices(C, 1)
         return D[iu]
 
+
+def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
+                          specie, model, stim_types, mask, task, radius, 
+                          method, replace_file, mah_fold='run-wise',
+                          sigma=None, shrinkage='ledoitwolf', return_rdm=True,
+                          verbose=False):
+    '''
+    Calculate pairwise similarity maps using searchlight approach.
+    - Checks if input files are available.
+    - Checks if output files already exist.
+    - Calculates pairwise similarity maps using specified method.
+    
+
+    Methods:
+        - Pearson correlation
+        - Kendall correlation
+        - Euclidean distance
+        - Mahalanobis distance
+    Mahalanobis:
+        mah_fold: folding strategy for Mahalanobis distance with cross-validation
+            Single run:
+                When a single run is available, calculate distance within the same run 
+                (creates folds within run and cross-validates).
+                Folding strategies:
+                    - max-fold: max partitions possible
+                    - odd-even: splits data into odd and even trials
+            Multiple runs:
+                When multiple runs are available, calculate distance across runs 
+                (cross-validated across runs).
+                Folding strategies:
+                    - run-wise: each run is a fold
+    Input:
+        - beta maps per condition and run
+        - mask
+        - folding strategy (in case of Mahalanobis)
+    '''
+    ## check if output files already exist
+    output_files = {}
+    for entry in session_and_run_dict:
+        session = entry['session']
+        run_N = entry['run']
+        # correct session to 2 digits
+        session = f"{session:02d}"
+        for i, stim_i in enumerate(stim_types):
+            for j, stim_j in enumerate(stim_types):
+                if i >= j:
+                    continue  # avoid duplicates and self-comparison
+                output_file = os.path.join(
+                    datafolder, dataset, 'results', 'RSA', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}",
+                    f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                )
+                output_files[(session, run_N, stim_i, stim_j)] = output_file
+                # if replace_file is true, delete existing file
+                if replace_file and os.path.exists(output_file):
+                    os.remove(output_file)
+    ## check if input files are available
+    missing = {}
+    # iterate over session_and_run_dict
+    for entry in session_and_run_dict:
+        session = entry['session']
+        run_N = entry['run']
+        # correct session to 2 digits
+        session = f"{session:02d}"
+        for i, stim_i in enumerate(stim_types):
+            for j, stim_j in enumerate(stim_types):
+                if i >= j:
+                    continue  # avoid duplicates and self-comparison
+                input_file_i = os.path.join(
+                    datafolder, dataset, 'results', 'GLM', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                    'stats', f'tstat{i+1}.nii.gz'
+                )
+                input_file_j = os.path.join(
+                    datafolder, dataset, 'results', 'GLM', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                    'stats', f'tstat{j+1}.nii.gz'
+                )
+                if not os.path.exists(input_file_i):
+                    missing_key = (session, run_N, stim_i)
+                    missing[missing_key] = input_file_i
+                if not os.path.exists(input_file_j):
+                    missing_key = (session, run_N, stim_j)
+                    missing[missing_key] = input_file_j
+    if len(missing) > 0:
+        print(f"Missing input files for sub-{sub_N:02d}:")
+        for key, file in missing.items():
+            session, run_N, stim = key
+            print(f"  Session: {session}, Run: {run_N}, Stimulus: {stim} -> {file}")
+        return missing  # return missing files info
+    
+    ## All input files are available, proceed to calculate pairwise similarity maps
+    # if method is 'mahalanobis', run mahalanobis for all runs, otherwise run 
+    # calculate_pairwise_similarity_maps for each session/run
+    if method == 'mahalanobis':
+        calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
+                          specie, model, stim_types, mask, task, radius, replace_file=False,
+                          mah_fold=mah_fold, sigma=sigma,
+                          shrinkage=shrinkage, return_rdm=return_rdm)
+    else:
+        for entry in session_and_run_dict:
+            session = entry['session']
+            run_N = entry['run']
+            # correct session to 2 digits
+            session = f"{session:02d}"
+            calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
+                                       run_N, specie, model, stim_types, mask, 
+                                       task, radius=3, method=method, 
+                                       replace_file=replace_file, verbose=verbose)
+    return None  # no missing files
+
 def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
-                          specie, model, stim_types, mask, task, radius,
-                          mah_fold='run-wise', output_files=None, sigma=None,
+                          specie, model, stim_types, mask, task, radius, replace_file=False,
+                          mah_fold='run-wise', sigma=None,
                           shrinkage='ledoitwolf', return_rdm=True):
     '''
     Calculate Mahalanobis distance maps using searchlight approach.
@@ -864,6 +978,33 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     Output:
         - similarity_map for each pairwise condition comparison
     '''
+    # Go over every run available for the participant and check if output files exist
+
+    for indx, entry in enumerate(session_and_run_dict):
+        session = entry['session']
+        run_N = entry['run']
+        # correct session to 2 digits
+        session = f"{session:02d}"
+        session_and_run_dict[indx]['pairs'] = {}
+        for i, stim_i in enumerate(stim_types):
+            for j, stim_j in enumerate(stim_types):
+                if i >= j:
+                    continue  # avoid duplicates and self-comparison
+                output_file = os.path.join(
+                    datafolder, dataset, 'results', 'RSA', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}",
+                    f"r-{radius}_mahalanobis_{stim_i}_{stim_j}.nii.gz"
+                )
+                # indicate whether the file exist in session_and_run_dict[indx]
+                file_exist = os.path.exists(output_file)
+                session_and_run_dict[indx]['pairs'][(stim_i, stim_j)] = file_exist
+    # If all files exist and replace_file is False, skip calculation
+    all_exist = all(session_and_run_dict[indx]['pairs'].values())
+    if all_exist and not replace_file:
+        print(f"All output files exist for session {session}, run {run_N}. Skipping Mahalanobis calculation...")
+        return
+
     # Go over every run available for the participant and load beta maps to session_and_run_dict
     for indx, entry in enumerate(session_and_run_dict):
         session = entry['session']
@@ -880,6 +1021,8 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                 'stats', f'pe{(i+1)*2 - 1}.nii.gz'
             )
             print(f"Loading beta map: {input_file}")
+            if not os.path.exists(input_file):
+                raise FileNotFoundError(f"Beta map file not found: {input_file}")
             # load map
             map_data = nib.load(input_file).get_fdata()
             # make sure map_data has same shape as mask
@@ -978,8 +1121,9 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             print(f"Saved similarity map: {output_file}")
 
 def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
-                                       run_N, specie, model, 
-    stim_types, mask, task, radius=3, method='correlation', replace_file=False, verbose=False):
+                                       run_N, specie, model, stim_types, mask, 
+                                       task, radius=3, method='correlation', 
+                                       replace_file=False, verbose=False):
     '''
     Calculate pairwise similarity maps between all stimulus types for a given subject/session/run.
     Parameters
