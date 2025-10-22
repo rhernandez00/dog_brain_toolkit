@@ -578,6 +578,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     
     if process == 'preprocess_run': # check if the preprocess files exist
         # create the filename
+        if session != '':
+            session = int(session)
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 
                     'sub-' + str(sub_N).zfill(2) + os.sep + 
                     'sub-' + str(sub_N).zfill(2) + 
@@ -604,8 +606,9 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         outputdir = datafolder + os.sep + dataset + os.sep + 'preprocessing' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
         filename = specie + '-sub-' + str(sub_N).zfill(2)
         # adding session if there is one
-        print('Session:', session)
+        
         if session != '':
+            session = int(session)
             filename += '_ses-' + f"{session:02d}"
         filename += '_task-' + task + '_run-' + str(run_N).zfill(2) + '_reoriented.nii.gz'
         # check if the file exists

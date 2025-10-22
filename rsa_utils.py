@@ -719,9 +719,144 @@ def similarity_searchlight(map_1, map_2, mask, radius, method):
 
     return similarity_map
 
+
+def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return_rdm=True):
+    """
+    Cross-validated Mahalanobis (crossnobis) distances for RSA.
+
+    Parameters
+    ----------
+    Y : array, shape (n_obs, n_features)
+        Pattern estimates (e.g., trial- or run-level betas).
+    labels : array, shape (n_obs,)
+        Condition ID for each observation (int/str).
+    partitions : array, shape (n_obs,)
+        Partition/run/session ID for each observation (e.g., run number).
+    sigma : None or array (n_features, n_features), optional
+        Noise covariance. If None, it is estimated from pooled run-residuals
+        with shrinkage (see `shrinkage`).
+    shrinkage : {'ledoitwolf','oas','ridge','identity'}, optional
+        How to estimate sigma when `sigma is None`.
+        - 'ledoitwolf' (default): Ledoit–Wolf shrinkage (sklearn)
+        - 'oas': Oracle Approximating Shrinkage (sklearn)
+        - 'ridge': diagonal ridge using feature variances
+        - 'identity': no whitening (yields cross-validated Euclidean)
+    return_rdm : bool, optional
+        If True return a (n_conditions x n_conditions) symmetric RDM.
+        If False return the condensed upper-triangular vector.
+
+    Returns
+    -------
+    D : ndarray
+        Crossnobis distances (unbiased estimate of squared Mahalanobis distance).
+        Can be negative around zero.
+
+    Notes
+    -----
+    Let Δ_m = u_i,m − u_j,m be the run-m difference (whitened). The crossnobis
+    for pair (i,j) is the mean cross-run inner product:
+        d(i,j) = (1 / (M*(M-1))) * sum_{m≠n} Δ_m · Δ_n
+    which equals the leave-one-run-out formulation. With identity sigma this
+    reduces to cross-validated Euclidean distance. :contentReference[oaicite:1]{index=1}
+    """
+    Y = np.asarray(Y, float)
+    labels = np.asarray(labels)
+    partitions = np.asarray(partitions)
+
+    if Y.ndim != 2:
+        raise ValueError("Y must be 2D (n_obs x n_features).")
+    if not (len(Y) == len(labels) == len(partitions)):
+        raise ValueError("Y, labels, and partitions must have the same length.")
+
+    conds = np.unique(labels)
+    runs = np.unique(partitions)
+    C, M, P = len(conds), len(runs), Y.shape[1]
+    if M < 2:
+        raise ValueError("Need at least 2 partitions for cross-validation.")
+
+    # --- per-run condition means: U[run, cond, feat] ---
+    U = np.zeros((M, C, P), float)
+    for mi, m in enumerate(runs):
+        for ci, c in enumerate(conds):
+            idx = (partitions == m) & (labels == c)
+            if not np.any(idx):
+                raise ValueError(f"No observations for condition {c} in partition {m}.")
+            U[mi, ci] = Y[idx].mean(axis=0)
+
+    # --- estimate noise covariance if not given (pooled run-residuals across conditions) ---
+    if sigma is None:
+        R = (U - U.mean(axis=0, keepdims=True)).reshape(M*C, P)  # samples x features
+        if shrinkage == 'ledoitwolf':
+            try:
+                from sklearn.covariance import LedoitWolf
+                sigma = LedoitWolf().fit(R).covariance_
+            except Exception:
+                var = R.var(axis=0, ddof=1)
+                lam = 1e-3 * (var.mean() + 1e-12)
+                sigma = np.diag(var + lam)
+        elif shrinkage == 'oas':
+            try:
+                from sklearn.covariance import OAS
+                sigma = OAS().fit(R).covariance_
+            except Exception:
+                var = R.var(axis=0, ddof=1); lam = 1e-3 * (var.mean() + 1e-12)
+                sigma = np.diag(var + lam)
+        elif shrinkage == 'ridge':
+            var = R.var(axis=0, ddof=1); lam = 1e-3 * (var.mean() + 1e-12)
+            sigma = np.diag(var + lam)
+        elif shrinkage == 'identity':
+            sigma = np.eye(P)
+        else:
+            raise ValueError("Unknown shrinkage option.")
+    else:
+        sigma = np.asarray(sigma, float)
+        if sigma.shape != (P, P):
+            raise ValueError(f"sigma must be ({P},{P}).")
+
+    # --- whiten: apply Σ^{-1/2} so dot-products equal δ^T Σ^{-1} δ ---
+    eigvals, eigvecs = np.linalg.eigh(sigma)
+    eigvals = np.clip(eigvals, np.finfo(float).eps, None)
+    Winvhalf = (eigvecs / np.sqrt(eigvals)).dot(eigvecs.T)   # Σ^{-1/2}
+    Z = np.einsum('mcp,pk->mck', U, Winvhalf)               # whitened patterns
+
+    # --- crossnobis for each condition pair ---
+    D = np.zeros((C, C), float)
+    denom = M * (M - 1)
+    for i in range(C):
+        for j in range(i + 1, C):
+            Delta = Z[:, i, :] - Z[:, j, :]         # shape: (M, P)
+            s = Delta.sum(axis=0)                   # sum over runs
+            # sum_{m≠n} Δ_m·Δ_n = ||∑Δ_m||^2 − ∑||Δ_m||^2
+            sum_off = float(np.dot(s, s) - np.einsum('mp,mp->', Delta, Delta))
+            D[i, j] = D[j, i] = sum_off / denom
+
+    if return_rdm:
+        return D
+    else:
+        iu = np.triu_indices(C, 1)
+        return D[iu]
+
+
+# MODIFY THIS TO ADD MAHALANOBIS
+# MUST FOLD BY RUN
 def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
                                        run_N, specie, model, 
     stim_types, mask, task, radius=3, method='correlation', replace_file=False, verbose=False):
+    '''
+    Calculate pairwise similarity maps between all stimulus types for a given subject/session/run.
+    Parameters
+    ----------
+    datafolder : str
+        Base directory for data storage.
+    dataset : str
+        Dataset name.
+    sub_N : int
+
+
+    Returns
+
+    '''
+
     log = []
     log.append("calculate_pairwise_similarity_maps called with parameters:")
     log.append(f"datafolder: {datafolder}")
@@ -736,6 +871,7 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
         # stim_1_name = stim_types[stim_N1]
         file_1_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + 'stats' + os.sep + f"pe{(stim_N1+1)*2 - 1}.nii.gz"
         file_1_map = nib.load(file_1_path).get_fdata()
+        
         # add to log
         log.append(f"Processing {method} similarity for stim {stim_1_name}, file: {file_1_path}")
         

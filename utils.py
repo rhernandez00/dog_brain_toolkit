@@ -32,6 +32,57 @@ import re
 #             project_dict[field] = config[field]
 #     return project_dict
 
+def run_visual_model(datafolder, database, sub_ID, session, run_N, task, smooth, 
+                     slice_timming_path, input_nifti, anat_file, cond_file, 
+                     design_template, design_out, replace_existing=False):
+    
+    TR, volumes = extract_params(input_nifti)
+    #fsl_out = "C:\data\EmoB\results\GLM\visual\D-sub-01.gfeat"
+    # "P:\userdata\raulh87\data\EmoB\results\GLM\visual\H-01\ses-01_task-EmoB_run-01.feat"
+    fsl_out = (datafolder + os.sep + database + os.sep + "results" + os.sep + "GLM" + os.sep + 
+               "visual" + os.sep + sub_ID + os.sep + f"ses-01_task-{database}_run-{str(run_N).zfill(2)}" + '.feat')
+    # check if fsl_out exists
+    if os.path.exists(fsl_out) and not replace_existing:
+        print(f"Output folder {fsl_out} already exists, skipping...")
+        return
+    else:
+        print(f"Output folder {fsl_out} does not exist, proceeding...")
+
+    labels = {
+                'outputdir': (fsl_out,        'set fmri(outputdir)'),
+                'TR':        (TR,             'set fmri(tr)'),
+                'volumes':   (volumes,        'set fmri(npts)'),
+                'smooth':    (smooth,         'set fmri(smooth)'),
+                'slice_timing': (slice_timming_path, 'set fmri(st_file)'),
+                'input':     (input_nifti,    'set feat_files(1)'),
+                'anatomical': (anat_file,      'set highres_files(1)'),
+                'condition': (cond_file,      'set fmri(custom1)'),
+            }
+    # Build replacement dict
+    to_fill = {}
+    for key, (val, find_str) in labels.items():
+        rep = f'set {find_str.split()[1]}("{val}"' if isinstance(val, str) else f'set {find_str.split()[1]} {val}'
+        # Actually ensure correct format
+        if key in labels.keys():
+            rep = f'{find_str} "{val}"' 
+        else:
+            rep = f'{find_str} {val}'
+        to_fill[key] = {
+            'string_to_find': find_str,
+            'string_to_replace': rep
+        }
+    print(f"Template: {design_template}")
+    print(f"Output design: {design_out}")
+    # Fill FSF and run FSL
+    fill_fsf(to_fill, design_template, design_out)
+    # Remove existing .feat dir if present
+    if os.path.exists(fsl_out + '.feat'):
+        shutil.rmtree(fsl_out + '.feat')
+    cmd = f'feat {design_out}'
+    print(f"Running: {cmd}")
+    if os.name != 'nt':
+        os.system(cmd)
+
 
 def get_path(path_label, project_dict, local_data=True, rnd=False, figure_letter='A'):
     
@@ -375,6 +426,9 @@ def fill_fsf(to_fill_dict, design_path, design_modified_path):
     design_path: path to the original design.fsf file
     design_modified_path: path to the new design.fsf file
     """
+    # make sure the design_modified_path directory exists
+    os.makedirs(os.path.dirname(design_modified_path), exist_ok=True)
+
     # create a copy of the design file and save it as design_copy.fsf
     shutil.copy(design_path, design_modified_path)
     
