@@ -19,10 +19,80 @@ from scipy import ndimage
 
 import preprocess_functions
 
+def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius,
+                             method, rsa_method, z_threshold, cluster_threshold, forced_minimal_cluster_size=None,
+                             verbose=False):
+    """
+    """
+    connectivity = 26  # based on FSL default for 3D images
+    # Load cluster sizes dictionary
+    cluster_sizes_dict_path = (datafolder + os.sep + dataset + os.sep +
+                        'results' + os.sep + 'RSA' + os.sep +
+                        model + os.sep + rsa_model + os.sep + 'dist' + os.sep +
+                        f"{specie}-r-{radius}_{method}_{rsa_method}_dist.npy")
+    # check if file exists
+    if os.path.exists(cluster_sizes_dict_path):
+        cluster_sizes_dict = np.load(cluster_sizes_dict_path, allow_pickle=True).item()
+        print(f"Loaded cluster sizes from {cluster_sizes_dict_path}")
+    else:
+        # trigger error
+        raise FileNotFoundError(f"Cluster sizes file {cluster_sizes_dict_path} not found")
+
+    
+
+    # mean model similarity map
+    mean_model_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                    model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                    f"{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz")
+
+    # distribution mean and std maps
+    distribution_mean_map_path = (datafolder + os.sep + dataset + os.sep + 
+                                'results' + os.sep + 'RSA_rnd' + os.sep +
+                                model + os.sep + specie + '-' + rsa_model + '_mean.nii.gz')
+    distribution_std_map_path = (datafolder + os.sep + dataset + os.sep +
+                                'results' + os.sep + 'RSA_rnd' + os.sep +
+                                model + os.sep + specie + '-' + rsa_model + '_std.nii.gz')
+    
+
+    # load mean model similarity map
+    
+    mean_model_img = nib.load(mean_model_map_path)
+    img_affine = mean_model_img.affine
+    mean_model_img = mean_model_img.get_fdata()
+    # load distribution mean and std maps
+    dist_mean_img = nib.load(distribution_mean_map_path).get_fdata()
+    dist_std_img = nib.load(distribution_std_map_path).get_fdata()
+    # calculate z map
+    z_map = (mean_model_img - dist_mean_img) / dist_std_img
+    # threshold z map
+    z_map_thresholded = np.where(z_map >= z_threshold, z_map, 0)
+    # if forced_minimal_cluster_size is set, use it
+    if forced_minimal_cluster_size is not None:
+        minimal_cluster_size = forced_minimal_cluster_size
+    else:
+        # get minimal cluster size
+        minimal_cluster_size = get_minimal_cluster_size(cluster_sizes_dict_path, z_threshold, cluster_threshold, verbose=verbose)
+    print(f"Minimal cluster size for p<{cluster_threshold}: {minimal_cluster_size} voxels")
+    # apply minimal cluster size threshold to z_map_thresholded, remove clusters smaller than minimal_cluster_size
+    z_map_thresholded = apply_cluster_size_threshold(z_map_thresholded, minimal_cluster_size, connectivity=connectivity, verbose=verbose)
+    # save corrected z map
+    # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion-valence-basic\mean\D-r-3_mahalanobis_kendall_z.nii.gz"
+    corrected_z_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                             model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                             f"{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz")
+    nib.save(nib.Nifti1Image(z_map_thresholded, affine=img_affine), corrected_z_map_path)
+    print(f"Saved corrected z map to {corrected_z_map_path}")
+
+import numpy as np
+from scipy import ndimage
+import time
+from typing import Callable, Union, Optional
+
 def apply_cluster_size_threshold(
     z_map_thresholded: np.ndarray,
     minimal_cluster_size: int,
-    connectivity: int = 6
+    connectivity: int = 6,
+    verbose: Union[bool, Callable[[str], None]] = False
 ) -> np.ndarray:
     """
     Remove clusters smaller than `minimal_cluster_size` from a *3D* thresholded z-map.
@@ -34,10 +104,15 @@ def apply_cluster_size_threshold(
         Voxels <= 0 are treated as background.
     minimal_cluster_size : int
         Clusters with voxel counts < this value are removed (set to 0).
+        If 1, nothing is removed (all clusters survive).
     connectivity : int
         Neighborhood connectivity in 3D. One of:
           - ndimage convention 1..3  (1≈6-neigh, 2≈18, 3≈26)
           - Common shorthands: 6, 18, or 26
+    verbose : bool or callable
+        - False (default): no logs.
+        - True: print concise progress/info messages.
+        - Callable[[str], None]: custom logger (e.g., `logger.info`).
 
     Returns
     -------
@@ -47,14 +122,26 @@ def apply_cluster_size_threshold(
     Raises
     ------
     ValueError
-        If the input is not 3D, or if connectivity is invalid, or if p is out of range.
+        If the input is not 3D, or if connectivity is invalid, or if minimal_cluster_size < 1.
     """
+    t0 = time.perf_counter()
+
+    # Lightweight logger
+    if callable(verbose):
+        _log = verbose  # type: ignore[assignment]
+    elif verbose:
+        def _log(msg: str) -> None:
+            print(msg)
+    else:
+        def _log(msg: str) -> None:  # no-op
+            return
+
     arr = np.asarray(z_map_thresholded)
     if arr.ndim != 3:
         raise ValueError(f"apply_cluster_size_threshold requires a 3D array, got ndim={arr.ndim}.")
 
-    if minimal_cluster_size <= 1:
-        raise ValueError("minimal_cluster_size must be > 1.")
+    if minimal_cluster_size < 1:
+        raise ValueError("minimal_cluster_size must be >= 1.")
 
     # Normalize connectivity to ndimage's 1..3 scale
     if 1 <= connectivity <= 3:
@@ -64,41 +151,79 @@ def apply_cluster_size_threshold(
     else:
         raise ValueError("Invalid connectivity for 3D. Use 1..3 or 6/18/26.")
 
+    # Early exit: nothing to remove when threshold is 1
     if minimal_cluster_size == 1:
-        # Nothing to remove—every 1-voxel cluster survives
+        _log(f"[cluster] No removal requested (minimal_cluster_size=1). Returning copy.")
         return arr.copy()
+
+    _log(f"[cluster] shape={arr.shape}, voxels={arr.size}")
+    _log(f"[cluster] connectivity={connectivity} (ndimage conn={conn}); min_size={minimal_cluster_size}")
 
     structure = ndimage.generate_binary_structure(rank=3, connectivity=conn)
 
     # Foreground is strictly > 0 to match your thresholding
     fg = arr > 0
+    fg_voxels = int(fg.sum())
+    _log(f"[cluster] foreground voxels > 0: {fg_voxels}")
+
+    if fg_voxels == 0:
+        _log("[cluster] No foreground voxels; returning copy.")
+        return arr.copy()
 
     labels, nlab = ndimage.label(fg, structure=structure)
+    _log(f"[cluster] connected components found (excluding background=0): {nlab}")
+
     if nlab == 0:
+        _log("[cluster] No labeled components; returning copy.")
         return arr.copy()
 
     # Count sizes per label (label 0 is background)
     label_ids, counts = np.unique(labels, return_counts=True)
 
+    # Map label -> size for easy reporting (excluding background)
+    lbl_sizes = dict(zip(label_ids.tolist(), counts.tolist()))
+    lbl_sizes.pop(0, None)
+
     # Labels to drop: exclude background (0)
-    small_labels = label_ids[(label_ids != 0) & (counts < minimal_cluster_size)]
-    if small_labels.size == 0:
+    small_labels = np.array([lbl for lbl, sz in lbl_sizes.items() if sz < minimal_cluster_size], dtype=labels.dtype)
+    n_small = int(small_labels.size)
+    _log(f"[cluster] clusters below min size: {n_small}")
+
+    if n_small == 0:
+        _log("[cluster] Nothing to remove; returning copy.")
         return arr.copy()
 
+    # Compute voxels to be removed (before modifying)
+    to_remove_mask = np.isin(labels, small_labels)
+    removed_voxels = int(to_remove_mask.sum())
+
     out = arr.copy()
-    out[np.isin(labels, small_labels)] = 0
+    out[to_remove_mask] = 0
+
+    remaining_fg_voxels = int((out > 0).sum())
+    pct_removed = (removed_voxels / max(fg_voxels, 1)) * 100.0
+
+    # A few concise stats (don’t spam)
+    _log(f"[cluster] removed voxels: {removed_voxels} / {fg_voxels} ({pct_removed:.2f}%)")
+    _log(f"[cluster] remaining fg voxels: {remaining_fg_voxels}")
+    _log(f"[cluster] runtime: {(time.perf_counter() - t0)*1000:.1f} ms")
+
     return out
 
 
-def get_minimal_cluster_size(cluster_sizes_path: str, p_thr: float) -> int:
+
+def get_minimal_cluster_size(cluster_sizes_dict_path, z_threshold, cluster_threshold, verbose=False) -> int:
     """
     Compute the minimal cluster-size threshold for cluster-extent correction.
 
     Parameters
     ----------
     cluster_sizes_path : str
-        Path to a .npy file containing an array of arrays (or lists), where each inner
-        array holds ALL cluster sizes found for a single permutation.
+        Path to a .npy file containing a dict. For each z-threshold key (e.g., "z3.1"),
+        the value has a 'cluster_sizes' entry: a list of lists where each inner list
+        contains ALL cluster sizes found for one permutation.
+    z_threshold : float
+        Threshold used to define clusters (e.g., 3.1 for z-maps).
     p_thr : float
         Target tail probability (e.g., 0.05). Returns the smallest integer k such that
         the empirical probability of observing a cluster of size >= k under the null
@@ -109,47 +234,41 @@ def get_minimal_cluster_size(cluster_sizes_path: str, p_thr: float) -> int:
     int
         Minimal cluster size threshold (integer).
     """
-    if not (0 < p_thr < 1):
+    if not (0 < cluster_threshold < 1):
         raise ValueError("p_thr must be in (0, 1).")
 
-    sizes_list = np.load(cluster_sizes_path, allow_pickle=True)
-
-    # Normalize to list-of-arrays
-    if isinstance(sizes_list, np.ndarray) and sizes_list.dtype == object:
-        permutations = [np.asarray(x).astype(float).ravel() if x is not None else np.array([])
-                        for x in sizes_list]
-    elif isinstance(sizes_list, (list, tuple)):
-        permutations = [np.asarray(x).astype(float).ravel() if x is not None else np.array([])
-                        for x in sizes_list]
+    cluster_sizes_dict = np.load(cluster_sizes_dict_path, allow_pickle=True).item()
+    key = f"z{z_threshold}"
+    if key in cluster_sizes_dict:
+        sizes_list = cluster_sizes_dict[key]['cluster_sizes']
     else:
-        permutations = [np.asarray(x).astype(float).ravel() for x in sizes_list]
+        raise KeyError(f"No cluster sizes found for {key} in {cluster_sizes_dict_path}")
 
-    if len(permutations) == 0:
-        raise ValueError("No permutations found in the provided file.")
+    # For FWER control, use the max cluster size per permutation (0 if no clusters)
+    max_per_perm = np.array([max(s) if len(s) > 0 else 0 for s in sizes_list], dtype=int)
+    if verbose:
+        print(f"Cluster size comparison for z>{z_threshold}, p<{cluster_threshold}:")
+        for idx, s in enumerate(sizes_list):
+            print(f"  Permutation {idx+1}: max cluster size = {max(s) if len(s) > 0 else 0}, all sizes = {s}")
+    n_perm = len(max_per_perm)
+    if n_perm == 0:
+        raise ValueError("No permutations found in 'cluster_sizes'.")
 
-    # Per-permutation maximum cluster size (0 if no clusters in that permutation)
-    max_sizes = np.array([float(np.max(p)) if p.size > 0 else 0.0 for p in permutations], dtype=float)
-    N = max_sizes.size
-    if N == 0:
-        raise ValueError("No valid permutations after parsing.")
+    # Find the smallest k with P(max >= k) <= p_thr
+    max_observed = int(max_per_perm.max())
+    minimal_cluster_size = None
+    for k in range(1, max_observed + 1):
+        tail_prob = np.mean(max_per_perm >= k)
+        if tail_prob <= cluster_threshold:
+            minimal_cluster_size = k
+            break
 
-    # Sort ascending; find the first index with tail prob <= p_thr
-    m_sorted = np.sort(max_sizes)
-    i0 = int(np.ceil((1.0 - p_thr) * N))
+    # If even at k = max_observed the tail prob is > p_thr, bump by 1
+    if minimal_cluster_size is None:
+        minimal_cluster_size = max_observed + 1
 
-    # If p is extremely small, pick > max to get tail 0
-    if i0 >= N:
-        return int(np.floor(m_sorted[-1])) + 1
+    return int(minimal_cluster_size)
 
-    k = m_sorted[i0]
-    # Return smallest integer threshold meeting the criterion (conservative ceil)
-    minimal_cluster_size = int(np.ceil(k))
-
-    # Guard in case ceil bumped us into a slightly stricter tail
-    while np.mean(max_sizes >= minimal_cluster_size) > p_thr:
-        minimal_cluster_size += 1
-
-    return minimal_cluster_size
 
 
 def count_clusters_sizes(
@@ -162,6 +281,9 @@ def count_clusters_sizes(
     img = nib.load(nifti_path)
     data = np.asanyarray(img.dataobj)  # lazy and memory-friendly
     data = np.nan_to_num(data)         # treat NaNs as 0
+    # make sure connectivity is int and valid
+    if connectivity not in (1, 2, 3):
+        raise ValueError("connectivity must be 1, 2, or 3 for 3D images.")
 
     # Select 3D volume if 4D
     if data.ndim == 4:
@@ -318,6 +440,8 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     '''
     Compare pairwise similarity maps with a model.
     '''
+    ###- Pending: Implement logic to check for existing output files, remove manually for now ###
+
     # if calculating permutations, create_subject_mean should be False
     if rnd:
         create_subject_mean = False
@@ -327,50 +451,68 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     ref_img = nib.load(mask).get_fdata()
     mask_affine = nib.load(mask).affine
     
-    if not rnd:
-        ## check if output files already exist
-        print("Checking for existing model comparison files...")
-        all_exist = True
-        for entry in session_and_run_dict:
-            session = entry['session']
-            run_N = entry['run']
-            # correct session to 2 digits
-            session = f"{session:02d}"
-            # check if model comparison file exist
-            # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_euclidean_kendall.nii.gz"
+    all_exist = True # this is a flag to indicate if all output files exist
+    # Check for existing output files
+    for entry in session_and_run_dict:
+        session = entry['session']
+        run_N = entry['run']
+        # correct session to 2 digits
+        session = f"{session:02d}"
+        ## check whether this is real data or if running permutations
+        
+        if rnd: # permutations, check in RSA_rnd if all permutations exist
+            folder_permutations = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
+                        model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                        f"ses-{session}_task-{task}_run-{run_N:02d}")
+            # check if folder exists
+            if os.path.exists(folder_permutations):
+                # check if there are files matching r-{radius}_{method}_{rsa_method}_rnd-*.nii.gz
+                existing_files = glob.glob(folder_permutations + os.sep + f"r-{radius}_{method}_{rsa_method}_*.nii.gz")
+                if len(existing_files) >= reps:
+                    if verbose:
+                        print(f"Skipping: Found {len(existing_files)} permutation model comparison files in {folder_permutations}.")
+                        # all done, exit function
+                    continue
+                else:
+                    if verbose:
+                        print(f"Running missing. Found only {len(existing_files)} permutation model comparison files in {folder_permutations}, need {reps}.")
+                        all_exist = False
+            else: # folder does not exist, not necessary to check files
+                if verbose:
+                    print(f"Running missing. Folder {folder_permutations} does not exist.")
+                all_exist = False
+                break
+
+        else: # real data, check for the specific file
             filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
                         f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
                         f"r-{radius}_{method}_{rsa_method}.nii.gz")
-            # check if file exists
-            if not os.path.exists(filename):
+            if os.path.exists(filename):
                 if verbose:
-                    print(f"Not found: {filename}")
+                    print(f"Skipping: Found existing model comparison file: {filename}.")
+                    # all done, exit function
+                continue
+            else: # file does not exist
+                if verbose:
+                    print(f"Missing. File {filename} does not exist.")
                 all_exist = False
-            else:
-                if verbose:
-                    print(f"Found: {filename}")
-                        
-        if all_exist:
-            print(f"All output files for {specie}-sub-{sub_N:02d} already exist.")        
-            if not replace_file:
-                print("Skipping computation as replace_file is False.")
-                return  # all files exist, skip computation
-            else:
-                print("Will replace existing files as replace_file is True.")
-        else:
-            print("Some output files are missing. Proceeding to computation.")
-                
-            # # if all files are available and not to be replaced, skip
-            # if np.all(files_available) and not replace_file:
-            #     print(f"Existing {method} map for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}. Skipping computation.")
-            #     continue
-    print("Checking for input pairwise similarity maps...")
-    
-    
-    
+                break
 
+    # if all files exist, skip computation
+    if all_exist:
+        print(f"All output files for {specie}-sub-{sub_N:02d} already exist.")        
+        if not replace_file:
+            print("Skipping computation as replace_file is False.")
+            return  # all files exist, skip computation
+        else:
+            # issue error, not implemented
+            raise NotImplementedError("Replacing existing files is not implemented.")
+    
+    ### To this point, at least one output file is missing, proceed to check input files ###
+    
     ## check if input pairwise similarity maps necessary are available for each run
+    print("Checking for input pairwise similarity maps...")
     # initialize pairs_available_array a boolean array to indicate if all pairwise similarity maps are available for each run
     # initialize it to False
     all_available = True
@@ -406,70 +548,50 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
         print("Some input pairwise similarity maps are missing. Skipping computation.")
         return
     print("All input files are available.")
-    # initialize file_list to store output files
+    
+    ### All input files are available, check if there are temporary files to indicate other instance processing it ###
+    # initialize file_list to store output files for subject mean
     file_list = []
+    tmp_file = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + 
+                        model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}_processing.tmp")
+    if rnd: # if running permutations, check for existing temporary files
+        # temporal file to indicate that this participant is being processed
+        
+        temp_folder = os.path.dirname(tmp_file)
+        if not os.path.exists(temp_folder):
+            os.makedirs(temp_folder, exist_ok=True)
+        # check if tmp_file exists, if it does, check against wait_time
+        if os.path.exists(tmp_file):
+            # is the file older than wait_time?
+            if time() - os.path.getmtime(tmp_file) < wait_time:
+                print(f"Skipping. Existing recent processing temporary file {tmp_file} exists and is less than {wait_time/60} minutes old.")
+                return
+            else:
+                print(f"File is old, removing {tmp_file} and repeating calculation. Temporary file is older than {wait_time/60} minutes.")
+                # remove tmp_file
+                os.remove(tmp_file)
+        # create tmp_file
+        with open(tmp_file, 'w') as f:
+            f.write('Processing...\n')
+        if verbose:
+            print(f"Created processing temporary file {tmp_file}.")
 
-    # go through each session and run
+    ### Now, all input files are available, and no recent temporary file exists,
+
+    
+    
+    # go through each session and run,
     for entry in session_and_run_dict:
         session = entry['session']
         run_N = entry['run']
         # correct session to 2 digits
         session = f"{session:02d}"
-        # temporary file to mark that processing is ongoing
-        if rnd:
-            temp_file = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + model + os.sep +
-                            f"{specie}-sub-{sub_N:02d}" + os.sep +
-                            f"ses-{session}_task-{task}_run-{run_N:02d}_r-{radius}_{method}_tmp.txt")
-            temp_folder = os.path.dirname(temp_file)
-            # check if temp_folder exists
-            if not os.path.exists(temp_folder):
-                os.makedirs(temp_folder, exist_ok=True)
-            # check if in the folder there are any recent _tmp.txt files
-            recent_tmp_files = [f for f in os.listdir(temp_folder) if f.endswith('_tmp.txt')]
-            # check their modification time
-            for f in recent_tmp_files:
-                f_path = os.path.join(temp_folder, f)
-                if time() - os.path.getmtime(f_path) < wait_time:
-                    print(f"Skipping. Existing recent temporary file {f_path} exists and is less than {wait_time/60} minutes old.")
-                    return
-            # as the tmp files are old, remove them
-            for f in recent_tmp_files:
-                f_path = os.path.join(temp_folder, f)
-                print(f"Calculating. Existing old file {f_path} exists and is older than {wait_time/60} minutes.")
-                os.remove(f_path)
-
-
-        else:
-            temp_file = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep +
-                f"{specie}-sub-{sub_N:02d}" + os.sep +
-                f"ses-{session}_task-{task}_run-{run_N:02d}_r-{radius}_{method}_tmp.txt")
-        
-
-
-        # # check if temp file exists
-        # if os.path.exists(temp_file):
-        #     # is it older than wait_time?
-        #     if time() - os.path.getmtime(temp_file) < wait_time:
-        #         print(f"Skipping. Existing recent temporary file {temp_file} exists and is less than {wait_time/60} minutes old.")
-        #         return
-        #     else:
-        #         print(f"Calculating. Existing old file {temp_file} exists and is older than {wait_time/60} minutes.")
-        #         # remove temp file
-        #         if os.path.exists(temp_file):
-        #             os.remove(temp_file)
-
-        print(f"sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}, computing pairwise similarity maps...")
+        ## check for existing temp files, skip if recent temp files, if they are old, skip calculation, otherwise go on
+        print(f"sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}, all checks, computing pairwise similarity maps...")
         # create folder if not exists
-        temp_folder = os.path.dirname(temp_file)
-        if not os.path.exists(temp_folder):
-            os.makedirs(temp_folder, exist_ok=True)
-        # create empty temp file
-        with open(temp_file, 'w') as f:
-            f.write('Processing...\n')
-        print(f"Created temporary file {temp_file}.")
+        
     
         # try to compute pairwise similarity maps
-    
         try:  # if error, remove temp file and continue
             # calculate comparison with model
             compare_with_model(
@@ -495,11 +617,11 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
             )
         except Exception as e:
             print(f"Error computing pairwise similarity maps for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}: {e}")
-                
-        # remove temp file
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-            print(f"Removed temporary file {temp_file}.")
+                    
+    # remove temp file
+    if os.path.exists(tmp_file):
+        os.remove(tmp_file)
+        print(f"Removed temporary file {tmp_file}.")
         
     
 
@@ -614,6 +736,13 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     # initialize warning table
     warning_table = []
     
+    # create temporal file to indicate that this participant is being processed
+    output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + 
+                     model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                     f"ses-{session}_task-{task}_run-{run_N:02d}")
+    # build output filename _[4 digit padded rnd_N]
+    # output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}_{rnd_N:04d}.nii.gz")
+
 
     for rnd_N in range(0, reps):
         # create an result_map based on the reference image
@@ -769,7 +898,7 @@ def load_pairwise_similarity_map(datafolder, dataset, sub_N, session, run_N, sti
     map = nib.load(file_path).get_fdata()
     return map
 
-def read_model_dict(model_path, erase_existing_npy=False):
+def read_model_dict(model_path, erase_existing_npy=False, return_all_comparisons=False):
     ''' Reads the RSA model from an excel file and returns as a dictionary 
     Input:
         model_path: path to the excel file
@@ -779,12 +908,15 @@ def read_model_dict(model_path, erase_existing_npy=False):
             - 'categories': list of categories
             - 'pairs': list of tuples with category pairs
     '''
+    
     # rsa_model_dict is saved with the same name as model_path but with .npy extension
     rsa_model_dict_path = model_path.replace('.xlsx', '.npy')
-    # check if rsa_model_dict_path exists
-    if os.path.exists(rsa_model_dict_path):
-        if erase_existing_npy:
-            os.remove(rsa_model_dict_path)
+    # if not return_all_comparisons
+    if not return_all_comparisons:
+        # check if rsa_model_dict_path exists
+        if os.path.exists(rsa_model_dict_path):
+            if erase_existing_npy:
+                os.remove(rsa_model_dict_path)
         else:
             # load and return
             rsa_model_dict = np.load(rsa_model_dict_path, allow_pickle=True).item()
@@ -815,7 +947,19 @@ def read_model_dict(model_path, erase_existing_npy=False):
     rsa_model_dict['pairs'] = pairs
     # save rsa_model_dict as npy
     np.save(rsa_model_dict_path, rsa_model_dict)
-    
+    # if return_all_comparisons, overwrite rsa_model_dict to include all comparisons
+    if return_all_comparisons:
+        # print("Returning all pairwise comparisons in model dictionary...")
+        rsa_model_dict['model'] = {} # initialize model
+        
+        for indx1,cat1 in enumerate(categories):
+            rsa_model_dict['model'][cat1] = {}
+            
+            for indx2,cat2 in enumerate(categories):
+                rsa_model_dict['model'][cat1][cat2] = model_table[cat1][indx2]
+                pairs.append((cat1, cat2))  # add pair to list
+
+
     # return dictionary
     return rsa_model_dict
 
@@ -1386,7 +1530,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
     
     ## check if there is any output file missing
     if all_exist:
-        print(f"All output files exist for sub-{sub_N:02d}.")
+        print(f"All output files exist for sub-{sub_N:02d}, ({len(session_and_run_dict)}).")
         if not replace_file:
             print("Skipping calculation as replace_file is False.")
             return None  # no missing files
@@ -2020,13 +2164,65 @@ def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, tas
     with open(log_path, 'w') as f:
         f.write('\n'.join(log))
 
+def calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
+                              method, rsa_method, rsa_model, verbose=False):
+
+    # paths
+    distribution_mean_map_path = os.path.join(datafolder, dataset, 'results', 'RSA_rnd',
+                                              model, f'{specie}-{rsa_model}_mean.nii.gz')
+    distribution_std_map_path  = os.path.join(datafolder, dataset, 'results', 'RSA_rnd',
+                                              model, f'{specie}-{rsa_model}_std.nii.gz')
+
+    group_mean_map_path = os.path.join(datafolder, dataset, 'results', 'RSA',
+                                       model, rsa_model, 'mean',
+                                       f'{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz')
+
+    group_z_map_path = os.path.join(datafolder, dataset, 'results', 'RSA',
+                                    model, rsa_model, 'mean',
+                                    f'{specie}-r-{radius}_{method}_{rsa_method}_z.nii.gz')
+
+    # load images
+    ref_img   = nib.load(group_mean_map_path)         # reference space
+    mean_arr  = ref_img.get_fdata()
+    dmean_arr = nib.load(distribution_mean_map_path).get_fdata()
+    dstd_arr  = nib.load(distribution_std_map_path).get_fdata()
+
+    # sanity checks: same shape + affine
+    if mean_arr.shape != dmean_arr.shape or mean_arr.shape != dstd_arr.shape:
+        raise ValueError("Array shapes differ; resampling needed before z calculation.")
+    if not np.allclose(ref_img.affine, nib.load(distribution_mean_map_path).affine) \
+       or not np.allclose(ref_img.affine, nib.load(distribution_std_map_path).affine):
+        raise ValueError("Affines differ; resample distribution maps to ref_img before z.")
+
+    # robust z
+    with np.errstate(divide='ignore', invalid='ignore'):
+        z = (mean_arr - dmean_arr) / dstd_arr
+        z[~np.isfinite(z)] = 0  # handles std=0, NaN, inf
+
+    # build output using ref header+affines (and keep codes)
+    ref_hdr = ref_img.header.copy()
+    z_img = nib.Nifti1Image(z.astype(np.float32), ref_img.affine, header=ref_hdr)
+
+    # explicitly set qform/sform and their codes (belt & suspenders)
+    qform, qcode = ref_img.get_qform(), int(ref_img.header['qform_code'])
+    sform, scode = ref_img.get_sform(), int(ref_img.header['sform_code'])
+    if qform is not None:
+        z_img.set_qform(qform, code=qcode if qcode > 0 else 1)
+    if sform is not None:
+        z_img.set_sform(sform, code=scode if scode > 0 else 1)
+
+    nib.save(z_img, group_z_map_path)
+    if verbose:
+        print(f"Saved z map to {group_z_map_path}")
+
+
 def calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
                                     method='pearson', rsa_method='pearson',
                                     rsa_model='emotion-valence-basic',
                                     verbose=False, reps_group=1000, replace_file=False):
 
     """
-    Calculate z maps by comparing group model similarity map with rnd distribution
+    Calculate z map by comparing group model similarity map with the distribution mean and std maps.
     """
     # initialize log
     log= []
@@ -2132,8 +2328,8 @@ def shuffle_vector(vector, verbose=False):
     return vector_rnd
 
 def calculate_cluster_size_distribution(
-    datafolder, dataset, model, rsa_model, radius, 
-    method, rsa_method, z_threshold=3.1, connectivity=3.0,
+    datafolder, dataset, model, rsa_model, radius, specie,
+    method, rsa_method, z_threshold=3.1,
     verbose=False
 ):
     """
@@ -2152,14 +2348,15 @@ def calculate_cluster_size_distribution(
     Outputs:
     - writes cluster sizes dictionary to npy file
     """
+    connectivity=3 # based on FSL default for 3D images
     # Load cluster sizes
     cluster_sizes_dict_path = (datafolder + os.sep + dataset + os.sep +
                         'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'dist' + os.sep +
-                        f"r-{radius}_{method}_{rsa_method}_dist.npy")
+                        f"{specie}-r-{radius}_{method}_{rsa_method}_dist.npy")
     # check if file exists
     if os.path.exists(cluster_sizes_dict_path):
-        cluster_sizes_dict = np.load(cluster_sizes_dict_path, allow_pickle=True)
+        cluster_sizes_dict = np.load(cluster_sizes_dict_path, allow_pickle=True).item()
         print(f"Loaded cluster sizes from {cluster_sizes_dict_path}")
     else: # file does not exist, create empty dictionary
         cluster_sizes_dict = {}  # dictionary to store cluster sizes for each rnd z map
@@ -2177,11 +2374,12 @@ def calculate_cluster_size_distribution(
         print(f"No log found at {log_file_path}. Starting from scratch.")
 
     # check if cluster_sizes_dict has the current z_threshold and connectivity
-    key = f"z{z_threshold}_c{connectivity}"
+    key = f"z{z_threshold}"
     if key in cluster_sizes_dict:
         print(f"Found cluster sizes for {key}")
         # stop script
-        sys.exit(0)
+        return 10
+        
     else:
         print(f"No cluster sizes found for {key}")
         cluster_sizes_dict[key] = {}  # initialize empty dictionary for this threshold and connectivity
@@ -2203,7 +2401,7 @@ def calculate_cluster_size_distribution(
 
     # add threshold to log
     log.append(f"Z threshold: {z_threshold}")
-    log.append(f"Cluster connectivity: {connectivity}")
+
 
     ## Calculate z map for permutations (RSA_rnd folder)
     # check how many rnd mean files are available
@@ -2214,18 +2412,16 @@ def calculate_cluster_size_distribution(
                         # model + os.sep + rsa_model + os.sep +
                         # f"r-{radius}_{method}_{rsa_method}_z_*.nii.gz")
     search_query = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
-                    model + os.sep + rsa_model + os.sep +
-                    f"r-{radius}_{method}_{rsa_method}_z_*.nii.gz")
+                    model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                    f"{specie}-r-{radius}_{method}_{rsa_method}_z_*.nii.gz")
 
     # print message
     if verbose:
         print("Searching for rnd z map files using:")
         print(search_query)
     
-    # list all files matching the pattern
-    file_list = glob.glob(datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
-                        model + os.sep + rsa_model + os.sep +
-                        f"r-{radius}_{method}_{rsa_method}_z_*.nii.gz")
+    # list all files matching the pattern on search_query
+    file_list = glob.glob(search_query)
     if verbose:
         print(f"Found {len(file_list)} rnd z map files.")
     
@@ -2248,8 +2444,8 @@ def calculate_cluster_size_distribution(
     # add number of processed files cluster_sizes_dict
     cluster_sizes_dict[key]['number_of_images'] = number_of_images
     # sizes_list is an array of arrays, convert to a single list
-    sizes_list = np.concatenate(sizes_list).ravel()
-    cluster_sizes_dict[key]['cluster_sizes'] = sizes_list.tolist()  # convert to list for saving as npy
+    # sizes_list = np.concatenate(sizes_list).ravel()
+    cluster_sizes_dict[key]['cluster_sizes'] = sizes_list#.tolist()  # convert to list for saving as npy
     # log info added to cluster_sizes_dict
     log.append(f"Data added to cluster_sizes_dict under key {key}. Total clusters found: {len(sizes_list)}")
 
@@ -2273,3 +2469,230 @@ def calculate_cluster_size_distribution(
     with open(log_path, 'w') as f:
         f.write('\n'.join(log))
     print(f"Saved log to {log_path}")
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib import patches
+from matplotlib.colors import Normalize, TwoSlopeNorm
+import matplotlib.colors as mcolors
+from typing import Dict, List, Optional, Tuple, Callable, Union
+
+
+def _extract_categories(model_dict: Dict[str, Dict[str, float]], categories: Optional[List[str]] = None) -> List[str]:
+    """Return an ordered list of categories. If `categories` is None, use keys order as loaded."""
+    if categories is None:
+        # Preserve insertion order (Py3.7+ dicts preserve insertion order)
+        categories = list(model_dict.keys())
+    else:
+        # Sanity-check: ensure all provided categories exist
+        missing = [c for c in categories if c not in model_dict]
+        if missing:
+            raise KeyError(f"Categories not found in model: {missing}")
+    return categories
+
+
+def _build_matrix(rsa_model_dict: Dict, categories: List[str],
+                  value_fn: Optional[Callable[[float], float]] = None,
+                  default_nan: float = np.nan) -> np.ndarray:
+    """Build a numeric matrix V[i, j] from nested rsa_model_dict['model'][row][col]."""
+    model = rsa_model_dict['model']
+    n = len(categories)
+    V = np.full((n, n), default_nan, dtype=float)
+    for i, r in enumerate(categories):
+        # Each row must exist
+        if r not in model:
+            continue
+        for j, c in enumerate(categories):
+            try:
+                val = model[r][c]
+            except Exception:
+                val = default_nan
+            if value_fn is not None and val is not np.nan and val is not None:
+                try:
+                    val = value_fn(val)
+                except Exception:
+                    # If transform fails, fall back to original
+                    pass
+            V[i, j] = val
+    return V
+
+
+def plot_rsa_circle_matrix(
+    rsa_model_dict: Dict,
+    categories: Optional[List[str]] = None,
+    value_fn: Optional[Callable[[float], float]] = None,
+    cmap: Union[str, mcolors.Colormap] = 'Greys',
+    vmin: Optional[float] = None,
+    vmax: Optional[float] = None,
+    center: Optional[float] = None,
+    circle_radius: float = 0.42,
+    size_by_value: bool = False,
+    size_range: Tuple[float, float] = (0.15, 0.48),
+    edgecolor: str = 'white',
+    linewidth: float = 0.5,
+    show_grid: bool = False,
+    annotate: bool = False,
+    annot_fmt: str = '{:.2f}',
+    nan_color: str = '#d9d9d9',
+    figsize: Tuple[float, float] = (9, 9),
+    title: Optional[str] = None,
+    savepath: Optional[str] = None,
+    background: str = 'white',
+    invert_yaxis: bool = True,
+    tight_layout: bool = True,
+    dpi: int = 150,
+    visible_border: bool = False,
+    draw_colorbar: bool = False,
+):
+    """
+    Draw a matrix of pairwise comparisons using independently drawn circles.
+
+    Parameters
+    ----------
+    rsa_model_dict : dict
+        Dictionary as loaded from npy, with nested structure rsa_model_dict['model'][row][col].
+    categories : list[str], optional
+        Order of rows/cols. Defaults to insertion order of keys in rsa_model_dict['model'].
+    value_fn : callable, optional
+        Function applied to each scalar value before plotting (e.g., np.abs, lambda v: v*100).
+    cmap : str or Colormap
+        Matplotlib colormap name or object.
+    vmin, vmax : float, optional
+        Color scale limits. If None, computed from data (ignoring NaNs).
+    center : float, optional
+        If provided, use a TwoSlopeNorm centered at this value (handy for diverging data).
+    circle_radius : float
+        Base radius of circles in axis units (cells are 1x1). Ignored if size_by_value=True.
+    size_by_value : bool
+        If True, scale circle size based on normalized value between `size_range`.
+    size_range : (float, float)
+        Min and max circle radius if size_by_value=True.
+    edgecolor : str
+        Circle outline color.
+    linewidth : float
+        Circle outline width.
+    show_grid : bool
+        If True, draws light grid lines for the cell boundaries.
+    annotate : bool
+        If True, writes the numeric value on top of the circles.
+    annot_fmt : str
+        Format string for annotations.
+    nan_color : str
+        Fill color for NaN or missing values.
+    figsize : (float, float)
+        Figure size in inches.
+    title : str, optional
+        Title of the plot.
+    savepath : str, optional
+        If provided, the figure is saved to this path.
+    background : str
+        Figure/axes background color.
+    invert_yaxis : bool
+        If True, puts the first row at the top (matrix-like view).
+    tight_layout : bool
+        If True, calls plt.tight_layout() before returning.
+    dpi : int
+        Figure DPI.
+
+    Returns
+    -------
+    fig, ax : Matplotlib figure and axes.
+    """
+    model = rsa_model_dict['model']
+    categories = _extract_categories(model, categories)
+    V = _build_matrix(rsa_model_dict, categories, value_fn=value_fn)
+
+    # Set up normalization for colors
+    finite_vals = V[np.isfinite(V)]
+    if finite_vals.size == 0:
+        raise ValueError("No finite values found in RSA model to plot.")
+
+    if vmin is None:
+        vmin = float(np.nanmin(finite_vals))
+    if vmax is None:
+        vmax = float(np.nanmax(finite_vals))
+
+    if center is not None:
+        # Ensure vmin < center < vmax as required by TwoSlopeNorm. If not, expand
+        # symmetrically around the center using the data spread.
+        if not (vmin < center < vmax):
+            spread = float(np.nanmax(np.abs(finite_vals - center))) if finite_vals.size else 1.0
+            if not np.isfinite(spread) or spread == 0:
+                spread = 1.0
+            vmin = center - spread
+            vmax = center + spread
+        norm = TwoSlopeNorm(vmin=vmin, vcenter=center, vmax=vmax)
+    else:
+        norm = Normalize(vmin=vmin, vmax=vmax)
+
+    # Prepare figure
+    fig, ax = plt.subplots(figsize=figsize, dpi=dpi)
+    ax.set_facecolor(background)
+    fig.patch.set_facecolor(background)
+
+    n = len(categories)
+    # Draw cell boundaries (optional)
+    if show_grid:
+        for i in range(n + 1):
+            ax.plot([-0.5, n - 0.5], [i - 0.5, i - 0.5], lw=0.5, alpha=0.3)
+            ax.plot([i - 0.5, i - 0.5], [-0.5, n - 0.5], lw=0.5, alpha=0.3)
+
+    # Draw circles cell by cell
+    for i in range(n):
+        for j in range(n):
+            val = V[i, j]
+            x, y = j, i
+            if np.isnan(val):
+                face = nan_color
+                r = circle_radius if not size_by_value else np.mean(size_range)
+            else:
+                face = plt.get_cmap(cmap)(norm(val))
+                if size_by_value:
+                    # Scale radius linearly between size_range based on normalized value
+                    nv = (val - vmin) / (vmax - vmin) if vmax > vmin else 0.5
+                    r = size_range[0] + nv * (size_range[1] - size_range[0])
+                else:
+                    r = circle_radius
+
+            circ = patches.Circle((x, y), radius=r, facecolor=face, edgecolor=edgecolor, linewidth=linewidth)
+            ax.add_patch(circ)
+
+            if annotate and np.isfinite(val):
+                ax.text(x, y, annot_fmt.format(val), ha='center', va='center', fontsize=9)
+
+    # Axes cosmetics
+    ax.set_xlim(-0.5, n - 0.5)
+    ax.set_ylim(-0.5, n - 0.5)
+    if invert_yaxis:
+        ax.invert_yaxis()
+    ax.set_aspect('equal')
+
+    if visible_border:
+        # Ticks & labels
+        ax.set_xticks(range(n))
+        ax.set_yticks(range(n))
+        ax.set_xticklabels(categories, rotation=45, ha='right')
+        ax.set_yticklabels(categories)
+    else:
+        # remove border and ticks
+        ax.axis('off')
+        ax.set_xticks([])
+        ax.set_yticks([])
+
+    if draw_colorbar:
+        # Colorbar
+        sm = plt.cm.ScalarMappable(norm=norm, cmap=cmap)
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, fraction=0.046, pad=0.04)
+        cbar.ax.set_ylabel('Comparison value', rotation=90, va='center')
+
+    if title:
+        ax.set_title(title)
+
+    if tight_layout:
+        plt.tight_layout()
+
+    if savepath is not None:
+        fig.savefig(savepath, dpi=dpi, bbox_inches='tight', facecolor=background)
+
+    return fig, ax
