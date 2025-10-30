@@ -2696,3 +2696,71 @@ def plot_rsa_circle_matrix(
         fig.savefig(savepath, dpi=dpi, bbox_inches='tight', facecolor=background)
 
     return fig, ax
+
+from scipy.ndimage import label, generate_binary_structure
+
+def cluster_masks_3d(vol, threshold=None, two_sided=False, connectivity=3, dtype=np.uint8):
+    """
+    Return binary masks for each connected cluster in a 3D volume.
+
+    Parameters
+    ----------
+    vol : np.ndarray
+        3D array (e.g., statistical map) to cluster.
+    threshold : float or None
+        If None, any nonzero voxel is considered for clustering.
+        If a float, uses vol > threshold for positive clusters,
+        and (if two_sided) vol < -threshold for negative clusters.
+    two_sided : bool
+        If True, find clusters separately for positive and negative sides.
+    connectivity : {1, 2, 3}
+        Neighborhood connectivity in 3D (1=6-connectivity, 2=18, 3=26).
+    dtype : np.dtype
+        Output dtype for binary masks (default uint8).
+
+    Returns
+    -------
+    masks : list[np.ndarray] or dict[str, list[np.ndarray]]
+        - If two_sided=False: a list of binary masks (one per cluster), sorted by size desc.
+        - If two_sided=True: dict with keys 'positive' and 'negative', each a list of masks.
+    """
+
+    # Build mask(s)
+    if threshold is None:
+        pos_mask = vol != 0
+        neg_mask = None
+    else:
+        pos_mask = vol > threshold
+        neg_mask = (vol < -threshold) if two_sided else None
+
+    # 3D connectivity kernel
+    structure = generate_binary_structure(rank=3, connectivity=connectivity)
+
+    def _masks_from_binary(binary_mask):
+        if binary_mask is None:
+            return []
+        labels, n = label(binary_mask, structure=structure)
+        if n == 0:
+            return []
+
+        # Count voxels in each label (drop background at index 0)
+        counts = np.bincount(labels.ravel())
+        if counts.size <= 1:
+            return []
+        sizes = counts[1:]  # ignore background
+
+        # Sort labels by size (desc)
+        order = np.argsort(sizes)[::-1]
+        lbl_ids_sorted = (order + 1)  # labels start at 1
+
+        # Generate binary masks (1s and 0s) per cluster
+        masks = [(labels == lbl_id).astype(dtype, copy=False) for lbl_id in lbl_ids_sorted]
+        return masks
+
+    clusters = _masks_from_binary(pos_mask)
+
+    if two_sided:
+        neg_masks = _masks_from_binary(neg_mask)
+        return {'positive': clusters, 'negative': neg_masks}
+
+    return clusters
