@@ -2763,4 +2763,94 @@ def cluster_masks_3d(vol, threshold=None, two_sided=False, connectivity=3, dtype
         neg_masks = _masks_from_binary(neg_mask)
         return {'positive': clusters, 'negative': neg_masks}
 
-    return clusters
+    return 
+
+import numpy as np
+import nibabel as nib
+from scipy.ndimage import maximum_filter, label, generate_binary_structure
+
+def world_coords(ijk, affine):
+    ijk = np.asarray(ijk)
+    ijk_h = np.c_[ijk, np.ones(len(ijk))]
+    xyz = ijk_h @ affine.T
+    return xyz[:, :3]
+
+def local_maxima(mask, stat, footprint=None):
+    """Return indices of voxels that are local maxima inside 'mask'."""
+    if footprint is None:
+        # 26-neighborhood in 3D
+        footprint = generate_binary_structure(3, 3)
+    # Find voxels that equal the local max in neighborhood
+    neighborhood_max = maximum_filter(stat, footprint=footprint, mode='nearest')
+    is_local_max = (stat == neighborhood_max) & mask
+    # Optional: break plateaus by preferring higher smoothed value or center-of-mass
+    return np.argwhere(is_local_max)
+
+def pick_subpeaks(affine, stat, cluster_mask, min_dist_mm=8.0, max_peaks=None):
+    """
+    cluster_mask: boolean array for a single cluster
+    stat: same-shape array of Z/T values
+    Returns list of (z, (i,j,k), (x,y,z))
+    """
+    # candidate local maxima within this cluster
+    cand_ijk = local_maxima(cluster_mask, stat)
+    cand_vals = stat[tuple(cand_ijk.T)]
+    order = np.argsort(-cand_vals)
+    cand_ijk = cand_ijk[order]
+    cand_vals = cand_vals[order]
+    cand_xyz = world_coords(cand_ijk, affine)
+
+    kept = []
+    kept_xyz = []
+
+    for v, ijk, xyz in zip(cand_vals, cand_ijk, cand_xyz):
+        if not kept:
+            kept.append((float(v), tuple(ijk), tuple(xyz)))
+            kept_xyz.append(xyz)
+        else:   
+            dists = np.linalg.norm(np.vstack(kept_xyz) - xyz, axis=1)
+            if np.all(dists >= min_dist_mm):
+                kept.append((float(v), tuple(ijk), tuple(xyz)))
+                kept_xyz.append(xyz)
+        if max_peaks is not None and len(kept) >= max_peaks:
+            break
+    return kept
+
+def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0, max_peaks_per_cluster=3):
+    img = nib.load(nifti_path)
+    stat = img.get_fdata()
+    affine = img.affine
+
+    # threshold (if not already cluster-thresholded)
+    if stat_thresh is not None:
+        mask = stat >= stat_thresh
+    else:
+        mask = np.isfinite(stat) & (stat > 0)  # or however your map is defined
+
+    # connected components (26-connectivity)
+    struct = generate_binary_structure(3, 3)
+    labeled, n_clu = label(mask, structure=struct)
+
+    results = []
+    for c in range(1, n_clu + 1):
+        cluster_mask = labeled == c
+        # cluster peak set
+        peaks = pick_subpeaks(
+            affine=affine,
+            stat=stat,
+            cluster_mask=cluster_mask,
+            min_dist_mm=min_dist_mm,
+            max_peaks=max_peaks_per_cluster
+        )
+        # gather cluster-level descriptors
+        cluster_size = int(cluster_mask.sum())
+        cluster_max = max(peaks, key=lambda t: t[0]) if peaks else None
+        results.append({
+            "cluster_id": c,
+            "size_vox": cluster_size,
+            "peaks": [{"Z": z, "ijk": ijk, "xyz_mm": xyz} for (z, ijk, xyz) in peaks],
+            "peak_Z": cluster_max[0] if cluster_max else None,
+            "peak_xyz_mm": cluster_max[2] if cluster_max else None
+        })
+    return results
+
