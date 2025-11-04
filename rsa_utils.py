@@ -2694,7 +2694,8 @@ def plot_rsa_circle_matrix(
 
     if savepath is not None:
         fig.savefig(savepath, dpi=dpi, bbox_inches='tight', facecolor=background)
-
+        # indicate where it was saved
+        print(f"Figure saved to: {savepath}")
     return fig, ax
 
 from scipy.ndimage import label, generate_binary_structure
@@ -2854,3 +2855,57 @@ def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0, ma
         })
     return results
 
+def clusters_to_excel(results, out_path):
+    """
+    Build a hierarchical (cluster -> subpeak) table from `results`
+    and save it as an Excel file.
+    """
+    rows = []
+    # print('hit new 2')
+    for cluster in results:
+        cid = cluster['cluster_id']
+        size = cluster['size_vox']
+        peak_Z_cluster = cluster['peak_Z']
+        peak_xyz_cluster = cluster['peak_xyz_mm']
+
+        for sub_idx, peak in enumerate(cluster['peaks'], start=1):
+            i, j, k = peak['ijk']
+            x_mm, y_mm, z_mm = peak['xyz_mm']
+
+            rows.append({
+                'cluster_id': cid,
+                'subpeak_id': sub_idx,
+                'cluster_size_vox': size,
+                'subpeak_Z': peak['Z'],
+                'subpeak_x_vox': i,
+                'subpeak_y_vox': j,
+                'subpeak_z_vox': k,
+                'subpeak_x_mm': x_mm,
+                'subpeak_y_mm': y_mm,
+                'subpeak_z_mm': z_mm,
+            })
+            # print each element in rows
+            # for key, value in rows[-1].items():
+            #     print(f"{key}: {value}")
+
+    df = pd.DataFrame(rows)
+    # Make it hierarchical: first cluster, then subpeak
+    df = df.set_index(['cluster_id', 'subpeak_id']).sort_index()
+
+    df.to_excel(out_path)
+    return df
+
+def create_tables(datafolder, dataset, specie, model, rsa_model, radius, 
+                  method, rsa_method, min_dist_mm=8.0, max_peaks_per_cluster=3):
+    res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                f"{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz"
+                )
+    
+    res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
+    results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, max_peaks_per_cluster=max_peaks_per_cluster)
+    out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                f"{specie}-r-{radius}_{method}_{rsa_method}.xlsx")
+    clusters_to_excel(results, out_path)
+    print(f"Files written in: {out_path}")
