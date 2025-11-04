@@ -58,20 +58,6 @@ Very roughly, the pipeline does:
 * **Step 9** — Cluster-extent correction. Apply **cluster-extent correction** to the real z-map.
 * **Step 10** — Cluster table export. Extract clusters & peaks → **Excel table** for reporting.
 
-1. **GLM → beta maps** (per condition, per run)
-2. **Searchlight similarity** between condition betas
-3. **Voxelwise RSA**: compare empirical pattern relations to a model
-4. **Group average** across runs/subjects
-5. **Permutation-based null** via label-shuffling
-6. **Voxelwise null mean/std**
-7. **Z-maps** (real + permutations)
-8. **Cluster-size null distribution**
-9. **Cluster-extent correction**
-10. **Cluster table export** (Excel)
-
-If you just want the TL;DR mental model, skip to the end.
-If you want to actually run this thing without crying, read on.
-
 ---
 
 ## Step 0 – Fit GLMs and write beta maps
