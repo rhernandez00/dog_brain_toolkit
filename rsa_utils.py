@@ -1325,8 +1325,30 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
                         radius_fwd,
                         threshold_fwd,
                         redo_if_exists,
-                        overwrite_movement):
+                        overwrite_movement, wait_time=300):
+    '''
+    Calculate beta maps for given subject, session, run using FSL FEAT
+    Parameters
+    ----------
+    datafolder : str. Path to the data folder
+    dataset : str. Dataset name
+    model : str. Model name
+    specie : str. Species identifier
+    sub_N : int. Subject number
+    session : str. Session identifier
+    run_N : int. Run number
+    task : str. Task name
+    stim_types : list. List of stimulus types
+    design_template : str. Path to the design template file
+    atlas_file : str. Path to the atlas file
+    smooth : int. Smoothing kernel size
+    radius_fwd : float. Radius for framewise displacement calculation
+    threshold_fwd : float. Threshold for framewise displacement calculation
+    redo_if_exists : bool. If True, redo the calculation even if beta maps exist
+    overwrite_movement : bool. If True, overwrite movement files
+    wait_time : int. Time to wait between checks for existing beta maps
     
+    '''
     session = str(session).zfill(2)
     print(f"sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}...")
     # "P:\userdata\raulh87\data\EmoB\results\GLM\basic\D-sub-01\ses-01_task-EmoB_run-01_(len(stim_types))"
@@ -1372,6 +1394,18 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
         f"{specie}-sub-{sub_N:02d}",
         f"ses-{session}_task-{task}_run-{run_N:02d}"
     )
+    # check if fsl_out.feat exists
+    if os.path.exists(fsl_out + '.feat'):
+        # check if file is older than wait_time seconds. If it is older, remove it, otherwise return
+        mod_time = os.path.getmtime(fsl_out + '.feat')
+        current_time = time.time()
+        if current_time - mod_time > wait_time:
+            print(f"Existing FSL output {fsl_out + '.feat'} is older than {wait_time} seconds. Removing...")
+            shutil.rmtree(fsl_out + '.feat')
+        else:
+            print(f"Existing FSL output {fsl_out + '.feat'} is recent. Skipping GLM...")
+            return
+        
     
     # Original and target movement file paths
     base_pre = os.path.join(
@@ -1422,7 +1456,7 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
         'smooth':    (smooth,         'set fmri(smooth)'),
         'input':     (input_nifti,    'set feat_files(1)'),
         'atlas':     (atlas_file,     'set fmri(regstandard)'),
-        'movement':  (target_mov,     'set confoundev_files(1)'),
+        'movement':  (mov_txt,     'set confoundev_files(1)'),
         #'condition': (cond_file,      'set fmri(custom1)'),
     }
     # add conditions based on stim_types

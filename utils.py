@@ -339,6 +339,8 @@ def generate_fsf(n: int, template_path: str, outfile_path: str) -> None:
 
     # Tail: lines 310..end (1-based)
     out_parts.append("\n".join(template_lines[309:]) + "\n")
+    # create outfile_path directory if it does not exist
+    os.makedirs(os.path.dirname(outfile_path), exist_ok=True)
 
     Path(outfile_path).write_text("".join(out_parts), encoding="utf-8")
 
