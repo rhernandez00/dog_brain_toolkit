@@ -1407,7 +1407,7 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
     
     # Extract TR and volumes
     data = nib.load(input_nifti)
-    TR = data.header.get_zooms()[3]
+    tr = data.header.get_zooms()[3]
     volumes = data.shape[3]
 
     # TR, volumes = utils.extract_params(input_nifti)
@@ -1416,7 +1416,7 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
     design_out = os.path.join(datafolder, dataset, 'FSL_designs', model + f"{specie}-sub-{sub_N:02d}_tmp.fsf")
     labels = {
         'outputdir': (fsl_out,        'set fmri(outputdir)'),
-        'TR':        (TR,             'set fmri(tr)'),
+        'TR':        (tr,             'set fmri(tr)'),
         'volumes':   (volumes,        'set fmri(npts)'),
         'BET':       (1 if specie=='H' else 0, 'set fmri(bet_yn)'),
         'smooth':    (smooth,         'set fmri(smooth)'),

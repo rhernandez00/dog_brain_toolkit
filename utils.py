@@ -31,12 +31,150 @@ import re
 #         else:
 #             project_dict[field] = config[field]
 #     return project_dict
+import nibabel as nib
+import time
+
+def run_human_fsl_preprocessing(datafolder, dataset, sub_ID, run_N, smooth, 
+                                design_template, overwrite_existing=False, wait_time=5.0,
+                                copy_if_exists=True):
+    '''Run FSL preprocessing for a single subject and run.
+    Parameters:
+    - datafolder: str, path to the data folder
+    - dataset: str, name of the dataset
+    - sub_ID: str, subject ID
+    - run_N: int, run number
+    - smooth: int, smoothing kernel size
+    - design_template: str, path to the FSL design template
+    - overwrite_existing: bool, whether to overwrite existing normalized files
+    - wait_time: float, if .feat directory exists and no normalized file. Wait time to assume
+    that the previous process was done but failed, thus proceeding to run again.
+
+    
+    '''
+    specie = 'H'
+    # build path for normalized file
+    normalized_file = os.path.join(datafolder, dataset, 'normalized', sub_ID,
+                                f"{sub_ID}_ses-01_task-{dataset}_run-{str(run_N).zfill(2)}.nii.gz")
+    # check if normalized_file exists
+    if os.path.exists(normalized_file) and not overwrite_existing:
+        print(f"Normalized file {normalized_file} already exists, skipping...")
+        return
+    # build output folder for FSL
+    fsl_out = os.path.join(datafolder, dataset, 'preprocessing', sub_ID,
+                        f"{sub_ID}_ses-01_task-{dataset}_run-{str(run_N).zfill(2)}_bold")
+    # build path for prefiltered_func_data.nii.gz
+    prefiltered_file = os.path.join(datafolder, dataset, 'preprocessing', sub_ID, 
+                                f"{sub_ID}_ses-01_task-{dataset}_run-{str(run_N).zfill(2)}_bold.feat", 
+                                "prefiltered_func_data.nii.gz")
+    
+    # check if fsl_out.feat exists
+    if os.path.exists(fsl_out + '.feat'):
+        # does the prefiltered_file exist?
+        if os.path.exists(prefiltered_file):
+            # if copy_if_exists is True, move it to normalized_file
+            if copy_if_exists:
+                # make sure folder exists
+                os.makedirs(os.path.dirname(normalized_file), exist_ok=True)
+                # copy prefiltered_file to normalized_file
+                shutil.copy(prefiltered_file, normalized_file)
+                # print success message
+                print(f"Copied {prefiltered_file} to {normalized_file}")
+                return
+            
+
+        # how old is the .feat folder?
+        mod_time = os.path.getmtime(fsl_out + '.feat')
+        current_time = time.time()
+        age = current_time - mod_time
+        if age < wait_time*60.0:  # convert wait_time to seconds
+            print(f"Output folder {fsl_out}.feat already exists and is recent ({age:.2f} seconds old), skipping...")
+            print(f"The limit was set to {wait_time*60.0} seconds.")
+            return
+        else:
+            print(f"Output folder {fsl_out}.feat already exists but is old ({age:.2f} seconds old), proceeding...")
+            print(f"The limit was set to {wait_time*60.0} seconds.")
+            # remove existing .feat dir
+            shutil.rmtree(fsl_out + '.feat')
+
+    # build path for slice timing file
+    slice_timming_path = (datafolder + os.sep + dataset + os.sep + 'BIDS' + 
+               os.sep + sub_ID + os.sep + f"{sub_ID}_ses-01_task-{dataset}_run-{str(run_N).zfill(2)}_bold_slicetiming.txt")
+    # functional image
+    input_nifti = (datafolder + os.sep + dataset + os.sep + 'BIDS' + 
+                os.sep + sub_ID + os.sep + f"{sub_ID}_ses-01_task-{dataset}_run-{str(run_N).zfill(2)}_bold.nii.gz")
+    # anatomical image
+    anat_file = (datafolder + os.sep + dataset + os.sep + 'BIDS' + 
+                os.sep + sub_ID + os.sep + f"{sub_ID}_T1.nii.gz")
+    
+
+    design_out = os.path.join(datafolder, dataset, 'FSL_designs', 'preprocess_' + f"{sub_ID}-run-{str(run_N).zfill(2)}_tmp.fsf")
+
+    # Extract TR and volumes
+    data = nib.load(input_nifti)
+    tr = data.header.get_zooms()[3]
+    volumes = data.shape[3]
+
+    labels = {
+        'outputdir': (fsl_out,        'set fmri(outputdir)'),
+        'TR':        (tr,             'set fmri(tr)'),
+        'volumes':   (volumes,        'set fmri(npts)'),
+        'smooth':    (smooth,         'set fmri(smooth)'),
+        'slice_timing': (slice_timming_path, 'set fmri(st_file)'),
+        'input':     (input_nifti,    'set feat_files(1)'),
+        't1_image':  (anat_file,      'set highres_files(1)'),
+        #'condition': (cond_file,      'set fmri(custom1)'),
+    }
+
+
+    # Build replacement dict
+    to_fill = {}
+    for key, (val, find_str) in labels.items():
+        rep = f'set {find_str.split()[1]}("{val}"' if isinstance(val, str) else f'set {find_str.split()[1]} {val}'
+        # Actually ensure correct format
+        if key in labels.keys():
+            rep = f'{find_str} "{val}"'
+        else:
+            rep = f'{find_str} {val}'
+        to_fill[key] = {
+            'string_to_find': find_str,
+            'string_to_replace': rep
+        }
+    # Fill FSF and run FSL
+    fill_fsf(to_fill, design_template, design_out)
+    # Remove existing .feat dir if present. 
+    if os.path.exists(fsl_out + '.feat'):
+
+
+        # remove directory, even if not empty
+        shutil.rmtree(fsl_out + '.feat')
+
+    cmd = f'feat {design_out}'
+    print(f"Running: {cmd}")
+    if os.name != 'nt':
+        os.system(cmd)
+    print("FSL preprocessing done.")
+    # move filtered_func_data.nii.gz to normalized folder
+    
+    if os.path.exists(prefiltered_file):
+        print(f"Found prefiltered file: {prefiltered_file}")
+        return
+        # issue error
+        
+        # raise FileExistsError(f"File {prefiltered_file} already exists. Please check processing steps.")
+    # "C:\data\EmoB\normalized\D-sub-06\D-sub-06_ses-01_task-EmoB_run-02.nii.gz"
+    
+    # make sure folder exists
+    os.makedirs(os.path.dirname(normalized_file), exist_ok=True)
+    # move prefiltered_file to normalized_file
+    shutil.copy(prefiltered_file, normalized_file)
+    # print success message
+    print(f"Moved {prefiltered_file} to {normalized_file}")
 
 def run_visual_model(datafolder, database, sub_ID, session, run_N, task, smooth, 
                      slice_timming_path, input_nifti, anat_file, cond_file, 
                      design_template, design_out, replace_existing=False):
     
-    TR, volumes = extract_params(input_nifti)
+    tr, volumes = extract_params(input_nifti)
     #fsl_out = "C:\data\EmoB\results\GLM\visual\D-sub-01.gfeat"
     # "P:\userdata\raulh87\data\EmoB\results\GLM\visual\H-01\ses-01_task-EmoB_run-01.feat"
     fsl_out = (datafolder + os.sep + database + os.sep + "results" + os.sep + "GLM" + os.sep + 
@@ -50,7 +188,7 @@ def run_visual_model(datafolder, database, sub_ID, session, run_N, task, smooth,
 
     labels = {
                 'outputdir': (fsl_out,        'set fmri(outputdir)'),
-                'TR':        (TR,             'set fmri(tr)'),
+                'TR':        (tr,             'set fmri(tr)'),
                 'volumes':   (volumes,        'set fmri(npts)'),
                 'smooth':    (smooth,         'set fmri(smooth)'),
                 'slice_timing': (slice_timming_path, 'set fmri(st_file)'),
