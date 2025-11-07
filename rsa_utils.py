@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import os
 import numpy as np
-from time import time
+from time import time, perf_counter
 import shutil
 # import random
 import random
@@ -85,7 +85,7 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
 
 import numpy as np
 from scipy import ndimage
-import time
+
 from typing import Callable, Union, Optional
 
 def apply_cluster_size_threshold(
@@ -124,7 +124,7 @@ def apply_cluster_size_threshold(
     ValueError
         If the input is not 3D, or if connectivity is invalid, or if minimal_cluster_size < 1.
     """
-    t0 = time.perf_counter()
+    t0 = perf_counter()
 
     # Lightweight logger
     if callable(verbose):
@@ -206,7 +206,7 @@ def apply_cluster_size_threshold(
     # A few concise stats (don’t spam)
     _log(f"[cluster] removed voxels: {removed_voxels} / {fg_voxels} ({pct_removed:.2f}%)")
     _log(f"[cluster] remaining fg voxels: {remaining_fg_voxels}")
-    _log(f"[cluster] runtime: {(time.perf_counter() - t0)*1000:.1f} ms")
+    _log(f"[cluster] runtime: {(perf_counter() - t0)*1000:.1f} ms")
 
     return out
 
@@ -911,16 +911,17 @@ def read_model_dict(model_path, erase_existing_npy=False, return_all_comparisons
     
     # rsa_model_dict is saved with the same name as model_path but with .npy extension
     rsa_model_dict_path = model_path.replace('.xlsx', '.npy')
-    # if not return_all_comparisons
+    
+
     if not return_all_comparisons:
-        # check if rsa_model_dict_path exists
         if os.path.exists(rsa_model_dict_path):
-            if erase_existing_npy:
+            if not erase_existing_npy:
+                # load and return
+                rsa_model_dict = np.load(rsa_model_dict_path, allow_pickle=True).item()
+                return rsa_model_dict
+            else:
+                # delete rsa_model_dict_path
                 os.remove(rsa_model_dict_path)
-        else:
-            # load and return
-            rsa_model_dict = np.load(rsa_model_dict_path, allow_pickle=True).item()
-            return rsa_model_dict
 
     # read excel file
     model_table = pd.read_excel(model_path)
@@ -1516,6 +1517,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         - Kendall correlation
         - Euclidean distance
         - Mahalanobis distance
+        - Correlation distance
     Mahalanobis:
         mah_fold: folding strategy for Mahalanobis distance with cross-validation
             Single run:
@@ -1583,6 +1585,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         run_N = entry['run']
         # correct session to 2 digits
         session = f"{session:02d}"
+        # iterate over stim_types
         for i, stim_i in enumerate(stim_types):
             for j, stim_j in enumerate(stim_types):
                 if i >= j:
@@ -1789,11 +1792,19 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                 if verbose:
                     print(f"Saving similarity map for {stim_i} vs {stim_j}...")
                 key = (stim_i, stim_j)
+                # build output path
                 output_file = os.path.join(
                     datafolder, dataset, 'results', 'RSA', model,
                     f"{specie}-sub-{sub_N:02d}",
                     f"ses-{session}_task-{task}_run-{run_N:02d}",
                     f"r-{radius}_mahalanobis_{stim_i}_{stim_j}.nii.gz"
+                )
+                # same but with stimuli inverted
+                output_fileb = os.path.join(
+                    datafolder, dataset, 'results', 'RSA', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}",
+                    f"r-{radius}_mahalanobis_{stim_j}_{stim_i}.nii.gz"
                 )
                 # create output directory if it doesn't exist
                 output_dir = os.path.dirname(output_file)
@@ -1803,6 +1814,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                 affine = nib.load(input_file).affine  # use affine from last loaded map
                 sim_map_nifti = nib.Nifti1Image(similarity_maps[key], affine)
                 nib.save(sim_map_nifti, output_file)
+                nib.save(sim_map_nifti, output_fileb)
                 print(f"Saved similarity map: {output_file}")
 
 def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
@@ -1850,8 +1862,10 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
             file_2_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + 'stats' + os.sep + f"pe{(stim_N2+1)*2 - 1}.nii.gz"
             log.append(f"Comparing with stim {stim_N2}, file: {file_2_path}")
             # add to log
-            
+            # build output path
             output_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep + f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz"
+            # same but the order of the stims is inverted
+            output_pathb = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep + f"r-{radius}_{method}_{stim_2_name}_{stim_1_name}.nii.gz"
             # check if file_2_path exists
             file_available = os.path.exists(output_path)
 
@@ -1876,6 +1890,8 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
             if not os.path.exists(os.path.dirname(output_path)):
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
             nib.save(nib.Nifti1Image(similarity_map, nib.load(file_1_path).affine), output_path)
+            # save the version with the stims inverted
+            nib.save(nib.Nifti1Image(similarity_map, nib.load(file_1_path).affine), output_pathb)
             print(f"Saved {method} similarity map to {output_path}")
     if verbose:
         # print that we are done
@@ -2936,7 +2952,7 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                 f"{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz"
                 )
     
-    res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
+    # res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, max_peaks_per_cluster=max_peaks_per_cluster)
     out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
