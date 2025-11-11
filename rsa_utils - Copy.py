@@ -19,7 +19,6 @@ from scipy import ndimage
 
 import preprocess_functions
 
-
 def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius,
                              method, rsa_method, z_threshold, cluster_threshold, forced_minimal_cluster_size=None,
                              verbose=False):
@@ -332,7 +331,7 @@ def _count_on_3d(vol, threshold, two_sided, connectivity=3):
 
     return n_total, sizes
 
-def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose=False, mask_img=None):
+def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose=False):
     """
     Compute the voxel-wise mean and std of a list of NIfTI images.
 
@@ -371,12 +370,13 @@ def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose
         if verbose:
             print(f"Processed {count+1}/{len(img_list)}: {img_path}")
         count += 1
-    # calculate mean
+
     mean_data = sum_data / count
     # print message
     print(f"Computing std deviation for {len(img_list)} images of shape {img_shape}")
 
     ## Compute std deviation
+
     sum_sq_diff = np.zeros(img_shape, dtype=np.float64)
     for img_path in img_list:
         img = nib.load(img_path)
@@ -384,18 +384,8 @@ def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose
             raise ValueError(f"Image {img_path} has a different shape: {img.shape} != {img_shape}")
         diff = img.get_fdata(dtype=np.float64) - mean_data
         sum_sq_diff += diff ** 2
-    # calculate std deviation
-    std_data = np.sqrt(sum_sq_diff / count)
-    # check if mask_img is provided
-    if mask_img is not None:
-        if mask_img.shape != img_shape:
-            raise ValueError(f"mask_img has a different shape: {mask_img.shape} != {img_shape}")
-        if verbose:
-            print("Applying mask to mean and std images")
-        # apply mask to mean and std data
-        mean_data = mean_data * mask_img
-        std_data = std_data * mask_img
 
+    std_data = np.sqrt(sum_sq_diff / count)
 
     if result_map_path:
         # save mean image
@@ -456,7 +446,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     if rnd:
         create_subject_mean = False
 
-    print(f"Pairwise vs model for: {specie}-sub-{sub_N:02d}, model {model}, rsa_model {rsa_model}...")
+    print(f"Pairwise similarity vs model for: {specie}-sub-{sub_N:02d}, model {model}...")
     # load the mask to use as reference
     ref_img = nib.load(mask).get_fdata()
     mask_affine = nib.load(mask).affine
@@ -578,12 +568,8 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                 return
             else:
                 print(f"File is old, removing {tmp_file} and repeating calculation. Temporary file is older than {wait_time/60} minutes.")
-                
-                # try to remove tmp_file
-                try:
-                    os.remove(tmp_file)
-                except Exception as e:
-                    print(f"Error removing temporary file {tmp_file}: {e}")
+                # remove tmp_file
+                os.remove(tmp_file)
         # create tmp_file
         with open(tmp_file, 'w') as f:
             f.write('Processing...\n')
@@ -634,14 +620,11 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                     
     # remove temp file
     if os.path.exists(tmp_file):
-        # try to remove
-        try:
-            os.remove(tmp_file)
-            print(f"Removed temporary file {tmp_file}.")
-        except Exception as e:
-            print(f"Error removing temporary file {tmp_file}: {e}")
+        os.remove(tmp_file)
+        print(f"Removed temporary file {tmp_file}.")
         
     
+
     # if create_subject_mean is True, compute mean similarity map across runs for the subject
     if create_subject_mean:
         print(f"{specie}-sub-{sub_N:02d}, computing subject mean similarity map...")
@@ -1345,7 +1328,6 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
                         redo_if_exists,
                         overwrite_movement, wait_time=300):
     '''
-    
     Calculate beta maps for given subject, session, run using FSL FEAT
     Parameters
     ----------
@@ -1417,7 +1399,7 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
     if os.path.exists(fsl_out + '.feat'):
         # check if file is older than wait_time seconds. If it is older, remove it, otherwise return
         mod_time = os.path.getmtime(fsl_out + '.feat')
-        current_time = time()
+        current_time = time.time()
         if current_time - mod_time > wait_time:
             print(f"Existing FSL output {fsl_out + '.feat'} is older than {wait_time} seconds. Removing...")
             shutil.rmtree(fsl_out + '.feat')
@@ -1594,8 +1576,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         print("Some output files are missing. Proceeding to calculation.")
     
     print("Checking for input beta maps...")
-    missing_files_to_process = 0 # keep track of the output files that cannot be calculated due to missing input files
-    missing_run_dict = {}  # keep track of missing files for session/run
+    
     ## check if input beta files are available
     missing = {}
     # iterate over session_and_run_dict
@@ -1604,11 +1585,6 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         run_N = entry['run']
         # correct session to 2 digits
         session = f"{session:02d}"
-        pair_check = 0 # keep track of pairs that can be calculated
-        # add an entry for this session/run in missing_run_dict
-        missing_run_dict[(session, run_N)] = []
-
-        missing_flag = False  # flag to indicate if any input file is missing for this session/run
         # iterate over stim_types
         for i, stim_i in enumerate(stim_types):
             for j, stim_j in enumerate(stim_types):
@@ -1627,73 +1603,34 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                     'stats', f'pe{(j+1)*2 - 1}.nii.gz'
                 )
                 if not os.path.exists(input_file_i):
-                    if verbose:
-                        print(f"Missing input file: {input_file_i}")
                     missing_key = (session, run_N, stim_i)
                     missing[missing_key] = input_file_i
-                    # flag that this session/run has missing files
-                    missing_flag = True
-                else:
-                    if verbose:
-                        print(f"Found input file: {input_file_i}")
-                    pair_check += 1
                 if not os.path.exists(input_file_j):
-                    if verbose:
-                        print(f"Missing input file: {input_file_j}")
                     missing_key = (session, run_N, stim_j)
                     missing[missing_key] = input_file_j
-                    # flag that this session/run has missing files
-                    missing_flag = True
-                else:
-                    if verbose:
-                        print(f"Found input file: {input_file_j}")
-                    pair_check += 1
-            # if missing_flag is True, add this session/run to missing_run_dict
-        if missing_flag:
-            missing_run_dict[(session, run_N)].append('missing input files')
-            missing_files_to_process += 1
-    
+    if len(missing) > 0:
+        print(f"Missing input files for sub-{sub_N:02d}:")
+        for key, file in missing.items():
+            session, run_N, stim = key
+            print(f"Session: {session}, Run: {run_N}, Stimulus: {stim} -> {file}")
+        return missing  # return missing files info
+    print("All input files are available.")
     ## All input files are available, proceed to calculate pairwise similarity maps
     # if method is 'mahalanobis', run mahalanobis for all runs, otherwise run 
     # calculate_pairwise_similarity_maps for each session/run
     if method == 'mahalanobis':
-        if len(missing) > 0:
-            print(f"Missing input files for Mahalanobis for sub-{sub_N:02d}:")
-            for key, file in missing.items():
-                session, run_N, stim = key
-                print(f"Session: {session}, Run: {run_N}, Stimulus: {stim} -> {file}")
-            # return missing files
-            return missing
-            
-        print("All input files are available.")
         print("Calculating Mahalanobis pairwise similarity maps...")
         calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius, replace_file=False,
                           mah_fold=mah_fold, sigma=sigma,
                           shrinkage=shrinkage, return_rdm=return_rdm, verbose=verbose)
     else:
-        if len(missing) > 0:
-            print(f"Missing input files for {method} for sub-{sub_N:02d}:")
-            for key, file in missing.items():
-                session, run_N, stim = key
-                if verbose:
-                    print(f"Session: {session}, Run: {run_N}, Stimulus: {stim} -> {file}")
-        # check if there are at least one session/run with all input files available
-        # if len(missing_run_dict) == len(session_and_run_dict):
-        #     # if all runs are missing, we can't calculate anything
-        #     print(f"All runs are missing for sub-{sub_N:02d}, skipping...")
-        #     return missing
         print(f"Calculating {method} pairwise similarity maps...")
         for entry in session_and_run_dict:
             session = entry['session']
             run_N = entry['run']
             # correct session to 2 digits
             session = f"{session:02d}"
-            # check if this session/run has missing files
-            # if (session, run_N) in missing_run_dict:
-            #     print(f"Skipping session {session}, run {run_N} due to missing input files.")
-            #     continue
-            # If we reach this point, it means all input files are available
             calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
                                        run_N, specie, model, stim_types, mask, 
                                        task, radius=3, method=method, 
@@ -1888,21 +1825,12 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
     Calculate pairwise similarity maps between all stimulus types for a given subject/session/run.
     Parameters
     ----------
-    datafolder : str. Base directory for data storage.
-    dataset : str. Dataset name.
-    sub_N : int. Subject number.
-    session : str. Session identifier.
-    run_N : int. Run number.
-    specie : str. Species identifier.
-    model : str. Model name.
-    stim_types : list. List of stimulus type names.
-    mask : str. Path to the brain mask NIfTI file.
-    task : str. Task name.
-    radius : int. Radius for searchlight (default: 3).
-    method : str. Method for pairwise similarity calculation (default: 'correlation').
-    replace_file : bool. Overwrite existing output files (default: False).
-    verbose : bool. Verbose output (default: False).
-    
+    datafolder : str
+        Base directory for data storage.
+    dataset : str
+        Dataset name.
+    sub_N : int
+
 
     Returns
 
@@ -1919,14 +1847,9 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
     log.append(f"model: {model}")
     log.append(f"mask: {mask}")
     for stim_N1, stim_1_name in enumerate(stim_types):
-        blank = False  # flag to indicate if either map is blank
         # stim_1_name = stim_types[stim_N1]
         file_1_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + 'stats' + os.sep + f"pe{(stim_N1+1)*2 - 1}.nii.gz"
         file_1_map = nib.load(file_1_path).get_fdata()
-        # check if file_1_map is empty (all zeros)
-        if np.all(file_1_map == 0):
-            blank = True # all next maps will be blank
-        
         
         # add to log
         log.append(f"Processing {method} similarity for stim {stim_1_name}, file: {file_1_path}")
@@ -1955,21 +1878,14 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
             if not os.path.exists(file_2_path):
                 if verbose:
                     print(f"File {file_2_path} does not exist. Skipping...")
-                    log.append(f"File {file_2_path} does not exist. Skipping...")
+                    log.append(f"    File {file_2_path} does not exist. Skipping...")
                 continue
             
             file_2_map = nib.load(file_2_path).get_fdata()
-            # check if either map is blank
-            if blank or np.all(file_2_map == 0):
-                if verbose:
-                    print(f"One of the maps is blank (all zeros). Creating blank similarity map for {output_path}...")
-                log.append(f"One of the maps is blank (all zeros). Creating blank similarity map for {output_path}...")
-                # create blank similarity map
-                similarity_map = np.zeros(nib.load(mask).get_fdata().shape)
-            else:
-                similarity_map = similarity_searchlight(file_1_map, file_2_map, nib.load(mask).get_fdata().astype(bool), radius=radius, method=method)
+
+            similarity_map = similarity_searchlight(file_1_map, file_2_map, nib.load(mask).get_fdata().astype(bool), radius=radius, method=method)
             # add to log
-            log.append(f"Saved similarity map to {output_path}")
+            log.append(f"    Saved similarity map to {output_path}")
             # check if output directory exists
             if not os.path.exists(os.path.dirname(output_path)):
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -1993,7 +1909,7 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
             f.write(line + '\n')
 
 
-def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, mask_img,
+def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model,
                                           task, radius, rsa_model, rsa_method,
                                           method, replace_file, min_percentage_available=1.0, verbose=False):
     '''Calculate the group model similarity map.
@@ -2002,9 +1918,8 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
         dataset: str. Dataset name.
         specie: str. 'D' or 'H'.
         model: str. GLM model name.
-        mask_img: numpy array. Mask image data. Area to compute similarity.
-        session_and_run_all_dict: dict. Dictionary with session and run information for all participants.
         stim_types: list of str. Stimulus types.
+        mask: str. Path to mask file.
         task: str. Task name.
         radius: int. Searchlight radius.
         rsa_model: str. Path to RSA model file.
@@ -2071,13 +1986,10 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     # gather all model similarity maps across participants/sessions/runs
     # if they exist, add to files_list
     print("Gathering model similarity maps across participants/sessions/runs...")
-    files_in_database = 0
     files_list = [] # list of files to process
     for sub_N in participants:
         session_and_run_dict = session_and_run_all_dict[sub_N]
         for entry in session_and_run_dict:
-            # add a counter
-            files_in_database += 1
             session = entry['session']
             session = f"{session:02d}"
             run_N = entry['run']
@@ -2098,13 +2010,8 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
                 if verbose:
                     print(log[-1])
             files_list.append(model_sim_map_file)
-    # make sure files_in_database is not zero
-    if files_in_database == 0:
-        # no files expected? there is an error
-        raise ValueError("No files found for group model similarity map calculation.")
-    
     # check if enough files are available
-    available_percentage = len(files_list) / files_in_database
+    available_percentage = len(files_list) / (len(participants) * len(session_and_run_dict))
     if available_percentage < min_percentage_available:
         log.append(f"Only {available_percentage*100:.2f}% of data available. Minimum required is {min_percentage_available*100:.2f}%. Skipping group model similarity map calculation.")
         if verbose:
@@ -2132,9 +2039,7 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     log_json['output_mean_file'] = mean_model_map_path
     log_json['output_std_file'] = std_model_map_path
     # calculate mean model similarity map by averaging all files in files_list
-    nifti_mean(files_list, mean_model_map_path, std_model_map_path, mask_img=mask_img)
-    #mask_img
-
+    nifti_mean(files_list, mean_model_map_path, std_model_map_path)
     print("Done computing mean and std model similarity maps.")
     ## update log_json with output files
     # if log_json already exists, delete and recreate
@@ -2146,7 +2051,7 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
         yaml.dump(log_json, f)
     
 def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model, 
-                                            mask_img, task, radius, rsa_model,
+                                            task, radius, rsa_model,
                                             rsa_method='pearson',
                                             method='pearson', verbose=False, 
                                             min_percentage_available=1.0,
@@ -2198,11 +2103,9 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
         
         # build list of available model similarity maps
         files_list = [] # list of files to process
-        file_counter = 0 # keep track of the possible files
         for sub_N in participants:
             session_and_run_dict = session_and_run_all_dict[sub_N]
             for entry in session_and_run_dict:
-                file_counter += 1 # add a file counter
                 session = entry['session']
                 session = f"{session:02d}"
                 run_N = entry['run']
@@ -2221,10 +2124,10 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
                     if verbose:
                         print(f"Not found skipping {model_sim_map_file}.")
                     continue
-                # file exists, add to list
+                
                 files_list.append(model_sim_map_file)
         # check if enough files are available
-        available_percentage = len(files_list) / file_counter
+        available_percentage = len(files_list) / (len(participants) * len(session_and_run_dict))
         if available_percentage < min_percentage_available:
             print(f"rnd {rnd_N:05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
             # remove temp file
@@ -2235,17 +2138,13 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             print(f"rnd {rnd_N:05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
         try:
             # calculate group model similarity map
-            nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
+            nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False)
         except Exception as e:
             print(f"Error {e} calculating group model similarity map for rnd {rnd_N:05d}. Skipping...")
         # remove temp file
         if os.path.exists(mean_model_map_path_tmp):
-            try:
-                os.remove(mean_model_map_path_tmp)
-            except Exception as e:
-                print(f"Error {e} removing temporary file {mean_model_map_path_tmp}.")
-            continue
-
+            os.remove(mean_model_map_path_tmp)
+            
 def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
                                     method='pearson', rsa_method='pearson',
                                     rsa_model='emotion-valence-basic', reps_group=1000,
