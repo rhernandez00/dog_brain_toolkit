@@ -19,6 +19,209 @@ from scipy import ndimage
 
 import preprocess_functions
 
+def create_sphere_mask(sample_img, coords_vox, radius):
+    '''
+    Create a spherical mask in the given image at the specified voxel coordinates and radius.
+
+    Input arguments:
+    --sample_img: Nifti image to create the mask in
+    --coords_vox: (x,y,z) coordinates of the center in voxels
+    --radius: radius of the sphere in voxels
+
+    Output:
+    --sphere_mask: Nifti1Image, binary mask with the sphere (uint8, 0/1), same affine/shape as sample_img
+    '''
+    if radius is None or radius <= 0:
+        raise ValueError("radius must be a positive number (in voxels).")
+
+    coords_vox = np.asarray(coords_vox, dtype=float).reshape(3,)
+    cx, cy, cz = coords_vox
+
+    shape = sample_img.shape[:3]  # supports sample_img being 3D or 4D
+    nx, ny, nz = shape
+
+    # Bounding box (clip to image)
+    x0 = max(int(np.floor(cx - radius)), 0)
+    x1 = min(int(np.ceil (cx + radius)) + 1, nx)
+    y0 = max(int(np.floor(cy - radius)), 0)
+    y1 = min(int(np.ceil (cy + radius)) + 1, ny)
+    z0 = max(int(np.floor(cz - radius)), 0)
+    z1 = min(int(np.ceil (cz + radius)) + 1, nz)
+
+    mask = np.zeros(shape, dtype=np.uint8)
+
+    # Build sphere only within the bounding box (fast + memory friendly)
+    xx, yy, zz = np.ogrid[x0:x1, y0:y1, z0:z1]
+    dist2 = (xx - cx) ** 2 + (yy - cy) ** 2 + (zz - cz) ** 2
+    sphere_local = dist2 <= (radius ** 2)
+
+    mask[x0:x1, y0:y1, z0:z1] = sphere_local.astype(np.uint8)
+
+    hdr = sample_img.header.copy()
+    hdr.set_data_dtype(np.uint8)
+    sphere_out = nib.Nifti1Image(mask, affine=sample_img.affine, header=hdr)
+    return sphere_out
+
+def calculate_similarity_plots(datafolder,
+                               dataset,
+                               participants_dict,
+                               stim_types,
+                               model='basic-block',
+                               method='correlation',
+                               specie='D',
+                               roi_type='sphere',
+                               atlas_type='Nitzsche',
+                               verbose=False,
+                               **kwargs):
+    '''
+    Input arguments:
+    --datafolder: Path to data folder
+    --dataset: Dataset to use 
+    --model: GLM model to use (default: 'basic-block')
+    --method: Method for pairwise similarity calculation (default: 'correlation')
+    --stim_types: List of stimulus types to use
+    --specie: 'D' for Dog, 'H' for Human (default: 'D')
+    --roi_type: Type of ROI to use (default: 'sphere'). Options: 'sphere', 'segment', 'roi', 'anatomical'
+        --sphere: creates a sphere (default: 3). 
+            Requires: 
+            --coords_vox (x,y,z coordinates of center in voxels)
+            --coords_mm (x,y,z coordinates of center in mm)
+            --radius (default: 3).
+        --segment: uses segment from segmentation map
+            Requires: 
+                --segmentation_segments (segmentation map to use)
+                --number_of_clusters (number of segments to use)
+        --roi: uses ROI from ROI file
+            Requires: 
+                --roi_file (ROI file to use)
+        --anatomical: uses anatomical mask from atlas
+            Requires:
+                --atlas_type (type of atlas to use)
+                --region_name (name of region to use)
+    --atlas_type: Type of atlas to use in case of dogs (default: 'Nitzsche')
+    --verbose: Verbose output (default: False)
+
+    '''
+    if roi_type == 'sphere':
+        # check if either coords_vox or coords_mm is provided
+        if 'coords_vox' not in kwargs and 'coords_mm' not in kwargs:
+            raise ValueError("For roi_type 'sphere', either 'coords_vox' or 'coords_mm' must be provided")
+        if 'radius' not in kwargs:
+            radius = 3
+        else:
+            radius = kwargs['radius']
+        # if the coordinates are in mm, convert to voxels
+        if 'coords_mm' in kwargs:
+            coords_vox = utils.mm_to_vox(kwargs['coords_mm'])
+        elif 'coords_vox' in kwargs:
+            coords_vox = kwargs['coords_vox']
+        # take first entry of participants_dict to get sub_N, session, run_N
+        first_entry = participants_dict[0]
+        sub_N = first_entry['sub_N']
+        session = first_entry['session']
+        run_N = first_entry['run']
+        
+        sample_file_path = os.path.join(
+                    datafolder, dataset, 'results', 'GLM', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                    'stats', f'pe1.nii.gz'
+                )
+        sample_img = nib.load(sample_file_path)
+        mask = create_sphere_mask(sample_img, coords_vox, radius)
+
+
+    elif roi_type == 'segment':
+        if 'segmentation_segments' not in kwargs:
+            raise ValueError("For roi_type 'segment', 'segmentation_segments' must be provided")
+        if 'number_of_clusters' not in kwargs:
+            raise ValueError("For roi_type 'segment', 'number_of_clusters' must be provided")
+        segmentation_segments = kwargs['segmentation_segments']
+        number_of_clusters = kwargs['number_of_clusters']
+        raise NotImplementedError("roi_type 'segment' not implemented yet")
+    elif roi_type == 'roi':
+        if 'roi_file' not in kwargs:
+            raise ValueError("For roi_type 'roi', 'roi_file' must be provided")
+        roi_file = kwargs['roi_file']
+        raise NotImplementedError("roi_type 'roi' not implemented yet")
+    elif roi_type == 'anatomical':
+        if 'region_name' not in kwargs:
+            raise ValueError("For roi_type 'anatomical', 'region_name' must be provided")
+        region_name = kwargs['region_name']
+        atlas_type = kwargs.get('atlas_type', 'Nitzsche')
+        raise NotImplementedError("roi_type 'anatomical' not implemented yet")
+    else:
+        raise ValueError("roi_type must be 'sphere', 'segment', 'roi', or 'anatomical'")
+    
+    # helpers
+    def _pearson(x, y):
+        x = x - x.mean()
+        y = y - y.mean()
+        denom = np.linalg.norm(x) * np.linalg.norm(y)
+        return (x @ y) / denom if denom > 0 else np.nan
+    def _correlation(x, y):
+        return 1.0 - _pearson(x, y)
+
+    def _kendall(x, y):
+        try:
+            from scipy.stats import kendalltau
+        except Exception as e:
+            raise ImportError("SciPy is required for method='kendall'.") from e
+        return kendalltau(x, y, nan_policy='omit').correlation
+
+    def _euclidean(x, y):
+        return -float(np.linalg.norm(x - y))
+
+    # initialize results dataframe
+    results_df = pd.DataFrame(columns=['sub_N', 'session', 'run_N', 'stim_i', 'stim_j', 'similarity'])
+
+    for entry in participants_dict:
+        sub_N = entry['sub_N']
+        session = entry['session']
+        run_N = entry['run']
+        for i, stim_i in enumerate(stim_types):
+            for j, stim_j in enumerate(stim_types):
+                if i >= j:
+                    continue  # avoid duplicates and self-comparison
+                input_file_i = os.path.join(
+                    datafolder, dataset, 'results', 'GLM', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                    'stats', f'pe{(i+1)*2 - 1}.nii.gz'
+                )
+                input_file_j = os.path.join(
+                        datafolder, dataset, 'results', 'GLM', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                        'stats', f'pe{(j+1)*2 - 1}.nii.gz'
+                    )
+                # load beta maps
+                beta_map_i = nib.load(input_file_i).get_fdata()
+                beta_map_j = nib.load(input_file_j).get_fdata()
+                # extract data within mask
+                data_i = beta_map_i[mask.get_fdata() > 0]
+                data_j = beta_map_j[mask.get_fdata() > 0]
+                # compute similarity
+                if method == 'pearson':
+                    similarity = _pearson(data_i, data_j)
+                elif method == 'correlation':
+                    similarity = _correlation(data_i, data_j)
+                elif method == 'kendall':
+                    similarity = _kendall(data_i, data_j)
+                elif method == 'euclidean':
+                    similarity = _euclidean(data_i, data_j)
+                # create new_row
+                new_row = {
+                    'sub_N': sub_N,
+                    'session': session,
+                    'run_N': run_N,
+                    'stim_i': stim_i,
+                    'stim_j': stim_j,
+                    'similarity': similarity
+                }
+                # append to results_df
+                results_df = results_df.append(new_row, ignore_index=True)
+    return results_df
 
 def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius,
                              method, rsa_method, z_threshold, cluster_threshold, forced_minimal_cluster_size=None,
