@@ -190,6 +190,14 @@ def main():
         design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_DHRF.fsf'
         # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz")
+        atlas_for_labels = 'Czeibert' # takes for dogs: Czeibert, Johnson. For humans: AAL, Harvard
+        label_dict = pd.read_excel(os.path.join(
+        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.xlsx"
+    ))
+        label_nii_data = nib.load(os.path.join(
+        path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', f"{atlas_for_labels}_labels2mm.nii.gz"
+    )).get_fdata()
+        
     elif specie == 'H':
         specie_label = 'Hum'
         mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', mask_type + '.nii.gz')
@@ -336,7 +344,9 @@ def main():
         if step == 10: # Summarize results, create formatted report and save xlsx
             print("### Step 10: Summarizing results and saving to Excel ###")
             rsa_utils.create_tables(datafolder, dataset, specie, model, rsa_model, radius, 
-                    method, rsa_method, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3)
+                  method, rsa_method, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
+                  label_dict=label_dict, label_nii_data=label_nii_data)
+
 
 if __name__ == "__main__":
     main()

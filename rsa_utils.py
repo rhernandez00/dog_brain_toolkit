@@ -2673,6 +2673,7 @@ def plot_rsa_circle_matrix(
     categories: Optional[List[str]] = None,
     value_fn: Optional[Callable[[float], float]] = None,
     cmap: Union[str, mcolors.Colormap] = 'Greys',
+    diagonal_color: Optional[str] = None,
     vmin: Optional[float] = None,
     vmax: Optional[float] = None,
     center: Optional[float] = None,
@@ -2708,6 +2709,8 @@ def plot_rsa_circle_matrix(
         Function applied to each scalar value before plotting (e.g., np.abs, lambda v: v*100).
     cmap : str or Colormap
         Matplotlib colormap name or object.
+    diagonal_color : str, optional
+        If provided, override the fill color of diagonal cells with this color.
     vmin, vmax : float, optional
         Color scale limits. If None, computed from data (ignoring NaNs).
     center : float, optional
@@ -2805,7 +2808,12 @@ def plot_rsa_circle_matrix(
                 else:
                     r = circle_radius
 
-            circ = patches.Circle((x, y), radius=r, facecolor=face, edgecolor=edgecolor, linewidth=linewidth)
+            # Override diagonal color if requested
+            if diagonal_color is not None and i == j:
+                face = diagonal_color
+
+            circ = patches.Circle((x, y), radius=r, facecolor=face,
+                                  edgecolor=edgecolor, linewidth=linewidth)
             ax.add_patch(circ)
 
             if annotate and np.isfinite(val):
@@ -2845,9 +2853,10 @@ def plot_rsa_circle_matrix(
 
     if savepath is not None:
         fig.savefig(savepath, dpi=dpi, bbox_inches='tight', facecolor=background)
-        # indicate where it was saved
         print(f"Figure saved to: {savepath}")
+
     return fig, ax
+
 
 from scipy.ndimage import label, generate_binary_structure
 
@@ -2968,7 +2977,8 @@ def pick_subpeaks(affine, stat, cluster_mask, min_dist_mm=8.0, max_peaks=None):
             break
     return kept
 
-def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0, max_peaks_per_cluster=3):
+def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0, 
+                               max_peaks_per_cluster=3, label_dict=None, label_nii_data=None):
     img = nib.load(nifti_path)
     stat = img.get_fdata()
     affine = img.affine
@@ -2994,13 +3004,26 @@ def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0, ma
             min_dist_mm=min_dist_mm,
             max_peaks=max_peaks_per_cluster
         )
+        # go through every peak and label region
+        if label_dict is not None and label_nii_data is not None:
+            print(f"Labelling peaks for cluster {c}...")
+            for idx in range(len(peaks)):
+                ijk = peaks[idx][1]
+                label_val = label_nii_data[ijk]
+                # find the row matching with label_val in label_dict
+                label_row = label_dict[label_dict['Number'] == label_val]
+                region_name = label_row['Region'].values[0] if not label_row.empty else "Unknown"
+                # add region name to peaks
+                peaks[idx] = (peaks[idx][0], peaks[idx][1], peaks[idx][2], region_name)
+
+
         # gather cluster-level descriptors
         cluster_size = int(cluster_mask.sum())
         cluster_max = max(peaks, key=lambda t: t[0]) if peaks else None
         results.append({
             "cluster_id": c,
             "size_vox": cluster_size,
-            "peaks": [{"Z": z, "ijk": ijk, "xyz_mm": xyz} for (z, ijk, xyz) in peaks],
+            "peaks": [{"Z": z, "ijk": ijk, "xyz_mm": xyz, "region": region} for (z, ijk, xyz, region) in peaks],
             "peak_Z": cluster_max[0] if cluster_max else None,
             "peak_xyz_mm": cluster_max[2] if cluster_max else None
         })
@@ -3022,6 +3045,7 @@ def clusters_to_excel(results, out_path):
         for sub_idx, peak in enumerate(cluster['peaks'], start=1):
             i, j, k = peak['ijk']
             x_mm, y_mm, z_mm = peak['xyz_mm']
+            region = peak['region']
 
             rows.append({
                 'cluster_id': cid,
@@ -3034,6 +3058,8 @@ def clusters_to_excel(results, out_path):
                 'subpeak_x_mm': x_mm,
                 'subpeak_y_mm': y_mm,
                 'subpeak_z_mm': z_mm,
+                'region': region
+
             })
             # print each element in rows
             # for key, value in rows[-1].items():
@@ -3047,14 +3073,17 @@ def clusters_to_excel(results, out_path):
     return df
 
 def create_tables(datafolder, dataset, specie, model, rsa_model, radius, 
-                  method, rsa_method, min_dist_mm=8.0, max_peaks_per_cluster=3):
+                  method, rsa_method, min_dist_mm=8.0, max_peaks_per_cluster=3, 
+                  label_dict=None, label_nii_data=None):
     res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
                 f"{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz"
                 )
     
     # res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
-    results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, max_peaks_per_cluster=max_peaks_per_cluster)
+    results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
+                                         max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,
+                                         label_nii_data=label_nii_data)
     out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
                 f"{specie}-r-{radius}_{method}_{rsa_method}.xlsx")

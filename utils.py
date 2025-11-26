@@ -34,6 +34,32 @@ import re
 import nibabel as nib
 import time
 
+def mm_to_vox(coords_mm, atlas_type='Nitzsche'):
+    '''Convert mm coordinates to voxel coordinates for a given atlas type.
+    Parameters:
+    - atlas_type: str, type of atlas (Default: 'Nitzsche')
+    - coords_mm: list or array of 3 floats, coordinates in mm [x, y, z]
+    
+    Returns:
+    - coords_vox: list of 3 ints, coordinates in voxels [i, j, k]
+    '''
+    if atlas_type == 'Nitzsche':
+        # Nitzsche atlas parameters
+        bx = 36.0 - 20.0*(15.0/31.0)
+        mx = 15.0/31.0
+        by = 30.0
+        my = 0.5
+        bz = 26.5
+        mz = 0.5
+    
+    else:
+        raise ValueError(f"Atlas type {atlas_type} not recognized.")
+    x_vox = int(round((coords_mm[0]*mx + bx)))
+    y_vox = int(round((coords_mm[1]*my + by)))
+    z_vox = int(round((coords_mm[2]*mz + bz)))
+    coords_vox = (x_vox, y_vox, z_vox)
+    return coords_vox
+
 def run_human_fsl_preprocessing(datafolder, dataset, sub_ID, run_N, smooth, 
                                 design_template, overwrite_existing=False, wait_time=5.0,
                                 copy_if_exists=True):
