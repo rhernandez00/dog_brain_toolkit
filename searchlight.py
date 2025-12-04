@@ -5,6 +5,7 @@ import os
 import time
 import numpy as np
 import nibabel as nib
+import pandas as pd
 import yaml
 import sys
 from importlib import reload
@@ -125,7 +126,7 @@ def main():
         )
         git_folder = r"C:\github"
         mask_path = os.path.join("P:\\userdata", 'raulh87', 'data', 'EmoB', 'ROI', 'Cope13-Emo-Con_Z3.1.nii.gz')
-        
+        mask_path = os.path.join("P:\\userdata", 'raulh87', 'data', 'EmoB', 'ROI', 'b_GreyMatter2mm.nii.gz')
     else:
         datafolder = os.path.join(
             '/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'data'
@@ -134,6 +135,8 @@ def main():
         git_folder = os.path.join('/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'github')
         mask_path = os.path.join(
         '/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'data', 'EmoB', 'ROI', 'Cope13-Emo-Con_Z3.1.nii.gz')
+        mask_path = os.path.join(
+        '/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'data', 'EmoB', 'ROI', 'b_GreyMatter2mm.nii.gz')
 
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
 
@@ -191,9 +194,9 @@ def main():
         # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz")
         atlas_for_labels = 'Czeibert' # takes for dogs: Czeibert, Johnson. For humans: AAL, Harvard
-        label_dict = pd.read_excel(os.path.join(
-        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.xlsx"
-    ))
+        # label_dict = pd.read_excel(os.path.join(
+        # path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.xlsx"
+    # ))
         label_nii_data = nib.load(os.path.join(
         path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', f"{atlas_for_labels}_labels2mm.nii.gz"
     )).get_fdata()
@@ -264,7 +267,7 @@ def main():
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             
             rsa_utils.calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, 
-                                                mask_img, task, radius, rsa_model=rsa_model,
+                                                task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
                                                 method=method, replace_file=True, verbose=verbose, 
                                                 min_percentage_available=min_percentage_available
@@ -289,14 +292,15 @@ def main():
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
-            
+            print(f"rsa_model {rsa_model}")
             rsa_utils.calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model, 
-                                                mask_img, task, radius, rsa_model=rsa_model,
+                                                task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
                                                 method=method, verbose=verbose, 
                                                 min_percentage_available=min_percentage_available,
                                                 reps=reps, replace_rnd_files=False, wait_time=300, reps_group=reps_group,
                                                 )
+            
             print("### Done computing group rnd mean model similarity maps ###")
             #Map computing
         if step == 6: # Calculate per voxel distribution. Load all group model similarity maps. Calculate per voxel mean and std across maps. Save as nifti.

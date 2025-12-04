@@ -16,8 +16,388 @@ from scipy.ndimage import label, generate_binary_structure
 
 import numpy as np
 from scipy import ndimage
-
 import preprocess_functions
+
+def get_label_from_stim(cat, items_dict, label_type):
+    """Get label from stim using items_dict and label_type."""
+    for item in items_dict.values():
+        if item['stim_ID'] == cat:
+            if label_type in item:
+                return item[label_type]
+            else:
+                raise ValueError(f"Label type {label_type} not found in items_dict.")
+    raise ValueError(f"Stim {cat} not found in items_dict.")
+
+def calculate_difference_map(datafolder, dataset, specie, model, comparison_model,
+                             radius, method, replace_file=False, verbose=False):
+    '''Calculate difference map between two similarity maps.
+    datafolder: str, path to data folder
+    dataset: str, name of dataset
+    specie: str, 'D' for dog, 'H' for human
+    model: str, GLM model used
+    comparison_model: str, name of the comparison model (the model indicates the main folder)
+    radius: int, radius for searchlight
+    method: str, method for pairwise similarity calculation
+    replace_file: bool, whether to replace existing files
+    verbose: bool, whether to print verbose output
+    '''
+    # load comparisons file "P:\userdata\raulh87\data\EmoB\rsa_models\happy\comparisons.csv"
+    comparisons_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
+                        comparison_model + os.sep + 'comparisons.csv')
+    # read comparisons file
+    comparisons_df = pd.read_csv(comparisons_file)
+    for comp_name in comparisons_df['comparisons']:
+        # split by _
+        parts = comp_name.split('_')
+        stim_a = parts[0]
+        stim_b = parts[1]
+        if verbose:
+            print(f"Calculating difference map for {stim_a} - {stim_b}...")
+        # determine output mean
+        result_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                        model + os.sep + comparison_model + os.sep + 
+                        f"{specie}-r-{radius}_{method}_{stim_a}_minus_{stim_b}.nii.gz")
+        # check if output file already exists
+        if os.path.exists(result_map_path) and not replace_file:
+            if verbose:
+                print(f"Skipping: Found existing output file {result_map_path}. Use replace_file=True to overwrite.")
+            continue
+        # load the two similarity maps
+        # "P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\happy\D-r-3_mahalanobis_cat_angry_mean.nii.gz"
+        sim_map_a_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                        model + os.sep + comparison_model + os.sep + 
+                        f"{specie}-r-{radius}_{method}_cat_{stim_a}_mean.nii.gz")
+        sim_map_b_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                        model + os.sep + comparison_model + os.sep + 
+                        f"{specie}-r-{radius}_{method}_cat_{stim_b}_mean.nii.gz")
+
+        sim_map_a = nib.load(sim_map_a_path).get_fdata()
+        sim_map_b = nib.load(sim_map_b_path).get_fdata()
+        # calculate difference map
+        diff_map = sim_map_a - sim_map_b
+        # save difference map
+        nib.save(nib.Nifti1Image(diff_map, affine=nib.load(sim_map_a_path).affine), result_map_path)
+        if verbose:
+            print(f"Saved difference map to {result_map_path}")
+
+
+# def calculate_similarity_maps_by_group_rnd(datafolder, dataset, session_and_run_all_dict,
+#                                        specie, model, comparison_model, model_dict, task, radius,
+#                                         stim_types, method, mask_img,
+#                                         replace_file=False, min_percentage_available=1.0,
+#                                         verbose=False, avoid_pairs_by_label=None):
+#     '''Calculate permutations for group average similarity maps for all pairwise combinations in comparisons.
+#     datafolder: str, path to data folder
+#     dataset: str, name of dataset
+#     sub_N: int, subject number
+#     session_and_run_dict: list of dicts, each dict contains 'session' and 'run' keys
+#     specie: str, 'D' for dog, 'H' for human
+#     model: str, GLM model used
+#     comparisons: list of tuples, each tuple contains two stimulus types to compare
+#     task: str, task name
+#     radius: int, radius for searchlight
+#     method: str, method for pairwise similarity calculation
+#     replace_file: bool, whether to replace existing files
+#     verbose: bool, whether to print verbose output
+#     comparison_model: str, name of the comparison model (the model indicates the main folder)
+#     avoid_pairs_by_label: will check if pairs belong to same label and avoid them if True. Default is None.
+#     '''
+#     # load comparisons file "P:\userdata\raulh87\data\EmoB\rsa_models\happy\comparisons.csv"
+#     comparisons_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
+#                         comparison_model + os.sep + 'comparisons.csv')
+#     # read comparisons file
+
+#     cats_list = []
+#     comparisons_df = pd.read_csv(comparisons_file)
+#     for comp_name in comparisons_df['comparisons']:
+#         # split by _
+#         parts = comp_name.split('_')
+#         stim_a = parts[0]
+#         stim_b = parts[1]
+#         cats_list.append(stim_a)
+#         cats_list.append(stim_b)
+#     # get unique categories
+#     unique_cats = list(set(cats_list))
+#     # load each category file
+#     for cat in unique_cats:
+#         # build cat comparisons_file
+#         # "P:\userdata\raulh87\data\EmoB\rsa_models\happy\cat_happy.csv"
+#         category_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
+#                         comparison_model + os.sep + f"cat_{cat}.csv")
+#         # if verbose
+#         if verbose:
+#             print(f"Calculating group similarity map for category {cat}...")
+#         # determine output mean
+#         result_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+#                         model + os.sep + comparison_model + os.sep + 
+#                         f"{specie}-r-{radius}_{method}_cat_{cat}_mean.nii.gz")
+#         result_map_path_std = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+#                         model + os.sep + comparison_model + os.sep + 
+#                         f"{specie}-r-{radius}_{method}_cat_{cat}_std.nii.gz")
+#         # check if output file already exists
+#         if os.path.exists(result_map_path) and not replace_file:
+#             if verbose:
+#                 print(f"Skipping: Found existing output file {result_map_path}. Use replace_file=True to overwrite.")
+#             continue
+        
+#         # read category file
+#         category_df = pd.read_csv(category_file)
+#         files_in_database = 0
+#         files_list = [] # list of files to process
+#         for sub_N in session_and_run_all_dict.keys():
+#             session_and_run_dict = session_and_run_all_dict[sub_N]
+#             for entry in session_and_run_dict:
+#                 # add a counter
+#                 session = entry['session']
+#                 session = f"{session:02d}"
+#                 run_N = entry['run']
+#                 items_dict = model_dict[f"run{run_N:02d}"]
+#                 # loop over all pairs in category_df
+#                 for index, row in category_df.iterrows():
+#                     # identify from items_dict the stim_ID matching cat1 and cat2
+#                     cat1 = row['cat1']
+#                     cat2 = row['cat2']
+#                     if avoid_pairs_by_label is not None:
+#                         label1 = get_label_from_stim(cat1, items_dict, avoid_pairs_by_label)
+#                         label2 = get_label_from_stim(cat2, items_dict, avoid_pairs_by_label)
+#                         print(f"Comparing {cat1} ({avoid_pairs_by_label}: {label1}) and {cat2} ({avoid_pairs_by_label}: {label2})")
+
+#                         if label1 == label2:
+#                             if verbose:
+#                                 print(f"Skipping pair {cat1}-{cat2} for subject {sub_N}, session {session}, run {run_N} due to same {avoid_pairs_by_label} {label1}.")
+#                             continue
+                    
+
+#                     files_in_database += 1
+#                     input_file = os.path.join(
+#                                 datafolder, dataset, 'results', 'RSA', model,
+#                                 f"{specie}-sub-{sub_N:02d}",
+#                                 f"ses-{session}_task-{task}_run-{run_N:02d}",
+#                                 f"r-{radius}_{method}_{cat1}_{cat2}.nii.gz"
+#                             )
+#                     if os.path.exists(input_file):
+#                         files_list.append(input_file)
+#         # make sure output folder exists
+#         output_folder = os.path.dirname(result_map_path)
+#         os.makedirs(output_folder, exist_ok=True)
+#         # make sure files_in_database is not zero
+#         if files_in_database == 0:
+#             raise ValueError("No files found in database. Check session_and_run_all_dict.")
+        
+#         # check if enough files are available
+#         percentage_available = len(files_list) / files_in_database
+#         if percentage_available < min_percentage_available:
+#             if verbose:
+#                 print(f"Skipping: Only {percentage_available*100:.2f}% of files available for category {cat}, which is below the threshold of {min_percentage_available*100:.2f}%.")
+#             continue
+#         else:
+#             if verbose:
+#                 print(f"Found {len(files_list)} files ({percentage_available*100:.2f}%) to process for group average for category {cat}.")
+
+#         nifti_mean(files_list, result_map_path=result_map_path, result_map_path_std=result_map_path_std, 
+#                 mask_img=mask_img, verbose=verbose)
+                    
+def calculate_similarity_maps_by_group(datafolder, dataset, session_and_run_all_dict,
+                                       specie, model, comparison_model, model_dict, task, radius,
+                                        method, mask_img,
+                                        replace_file=False, min_percentage_available=1.0,
+                                        verbose=False, avoid_pairs_by_label=None):
+    '''Calculate group average similarity maps for all pairwise combinations in comparisons.
+    datafolder: str, path to data folder
+    dataset: str, name of dataset
+    sub_N: int, subject number
+    session_and_run_dict: list of dicts, each dict contains 'session' and 'run' keys
+    specie: str, 'D' for dog, 'H' for human
+    model: str, GLM model used
+    comparisons: list of tuples, each tuple contains two stimulus types to compare
+    task: str, task name
+    radius: int, radius for searchlight
+    method: str, method for pairwise similarity calculation
+    replace_file: bool, whether to replace existing files
+    verbose: bool, whether to print verbose output
+    comparison_model: str, name of the comparison model (the model indicates the main folder)
+    avoid_pairs_by_label: will check if pairs belong to same label and avoid them if True. Default is None.
+    '''
+    # load comparisons file "P:\userdata\raulh87\data\EmoB\rsa_models\happy\comparisons.csv"
+    comparisons_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
+                        comparison_model + os.sep + 'comparisons.csv')
+    # read comparisons file
+
+    cats_list = []
+    comparisons_df = pd.read_csv(comparisons_file)
+    for comp_name in comparisons_df['comparisons']:
+        # split by _
+        parts = comp_name.split('_')
+        stim_a = parts[0]
+        stim_b = parts[1]
+        cats_list.append(stim_a)
+        cats_list.append(stim_b)
+    # get unique categories
+    unique_cats = list(set(cats_list))
+    # load each category file
+    for cat in unique_cats:
+        # build cat comparisons_file
+        # "P:\userdata\raulh87\data\EmoB\rsa_models\happy\cat_happy.csv"
+        category_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
+                        comparison_model + os.sep + f"cat_{cat}.csv")
+        # if verbose
+        if verbose:
+            print(f"Calculating group similarity map for category {cat}...")
+        # determine output mean
+        result_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                        model + os.sep + comparison_model + os.sep + 
+                        f"{specie}-r-{radius}_{method}_cat_{cat}_mean.nii.gz")
+        result_map_path_std = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                        model + os.sep + comparison_model + os.sep + 
+                        f"{specie}-r-{radius}_{method}_cat_{cat}_std.nii.gz")
+        # check if output file already exists
+        if os.path.exists(result_map_path) and not replace_file:
+            if verbose:
+                print(f"Skipping: Found existing output file {result_map_path}. Use replace_file=True to overwrite.")
+            continue
+        
+        # read category file
+        category_df = pd.read_csv(category_file)
+        files_in_database = 0
+        files_list = [] # list of files to process
+        for sub_N in session_and_run_all_dict.keys():
+            session_and_run_dict = session_and_run_all_dict[sub_N]
+            for entry in session_and_run_dict:
+                # add a counter
+                session = entry['session']
+                session = f"{session:02d}"
+                run_N = entry['run']
+                items_dict = model_dict[f"run{run_N:02d}"]
+                # loop over all pairs in category_df
+                for index, row in category_df.iterrows():
+                    # identify from items_dict the stim_ID matching cat1 and cat2
+                    cat1 = row['cat1']
+                    cat2 = row['cat2']
+                    if avoid_pairs_by_label is not None:
+                        label1 = get_label_from_stim(cat1, items_dict, avoid_pairs_by_label)
+                        label2 = get_label_from_stim(cat2, items_dict, avoid_pairs_by_label)
+                        print(f"Comparing {cat1} ({avoid_pairs_by_label}: {label1}) and {cat2} ({avoid_pairs_by_label}: {label2})")
+
+                        if label1 == label2:
+                            if verbose:
+                                print(f"Skipping pair {cat1}-{cat2} for subject {sub_N}, session {session}, run {run_N} due to same {avoid_pairs_by_label} {label1}.")
+                            continue
+                    
+
+                    files_in_database += 1
+                    input_file = os.path.join(
+                                datafolder, dataset, 'results', 'RSA', model,
+                                f"{specie}-sub-{sub_N:02d}",
+                                f"ses-{session}_task-{task}_run-{run_N:02d}",
+                                f"r-{radius}_{method}_{cat1}_{cat2}.nii.gz"
+                            )
+                    if os.path.exists(input_file):
+                        files_list.append(input_file)
+        # make sure output folder exists
+        output_folder = os.path.dirname(result_map_path)
+        os.makedirs(output_folder, exist_ok=True)
+        # make sure files_in_database is not zero
+        if files_in_database == 0:
+            raise ValueError("No files found in database. Check session_and_run_all_dict.")
+        
+        # check if enough files are available
+        percentage_available = len(files_list) / files_in_database
+        if percentage_available < min_percentage_available:
+            if verbose:
+                print(f"Skipping: Only {percentage_available*100:.2f}% of files available for category {cat}, which is below the threshold of {min_percentage_available*100:.2f}%.")
+            continue
+        else:
+            if verbose:
+                print(f"Found {len(files_list)} files ({percentage_available*100:.2f}%) to process for group average for category {cat}.")
+
+        nifti_mean(files_list, result_map_path=result_map_path, result_map_path_std=result_map_path_std, 
+                mask_img=mask_img, verbose=verbose)           
+            
+
+        
+
+
+    
+    
+
+
+def calculate_similarity_maps_by_list(datafolder, dataset, session_and_run_all_dict,
+                                specie, model, stim_list, category_name, mask_img, task, radius,
+                                method, replace_file=False, min_percentage_available=1.0,
+                                verbose=False):
+    '''Calculate group average similarity maps for all pairwise combinations in stim_list.
+    datafolder: str, path to data folder
+    dataset: str, name of dataset
+    sub_N: int, subject number
+    session_and_run_dict: list of dicts, each dict contains 'session' and 'run' keys
+    specie: str, 'D' for dog, 'H' for human
+    model: str, GLM model used
+    stim_list: list of str, stimulus types
+    mask: str, path to mask file
+    task: str, task name
+    radius: int, radius for searchlight
+    method: str, method for pairwise similarity calculation
+    replace_file: bool, whether to replace existing files
+    verbose: bool, whether to print verbose output
+    
+    '''
+    print(f"Calculating group similarity maps for {category_name}...")
+    
+    # check if output file already exists
+    output_mean = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                    model + os.sep + category_name + os.sep + 'mean' + os.sep +
+                    f"{specie}-r-{radius}_{method}_mean.nii.gz")
+    output_std = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                    model + os.sep + category_name + os.sep + 'mean' + os.sep +
+                    f"{specie}-r-{radius}_{method}_std.nii.gz")
+    if os.path.exists(output_mean) and not replace_file:
+        print(f"Skipping: Found existing output file {output_mean}. Use replace_file=True to overwrite.")
+        return
+    
+    # get list of participants
+    participants = list(session_and_run_all_dict.keys())
+
+    print("Gathering model similarity maps across participants/sessions/runs...")
+    files_in_database = 0
+    files_list = [] # list of files to process
+    for sub_N in participants:
+        session_and_run_dict = session_and_run_all_dict[sub_N]
+        for entry in session_and_run_dict:
+            # add a counter
+            files_in_database += 1
+            session = entry['session']
+            session = f"{session:02d}"
+            run_N = entry['run']
+    
+            # combine all pairwise combinations in stim_list
+            for i, stim_i in enumerate(stim_list):
+                for j, stim_j in enumerate(stim_list):
+                    if i >= j:
+                        continue  # avoid duplicates and self-comparison
+                    input_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{run_N:02d}",
+                        f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                    )
+                    if os.path.exists(input_file):
+                        files_list.append(input_file)
+    # make sure files_in_database is not zero
+    if files_in_database == 0:
+        raise ValueError("No files found in database. Check session_and_run_all_dict.")
+    # check if enough files are available
+    percentage_available = len(files_list) / files_in_database
+    if percentage_available < min_percentage_available:
+        print(f"Skipping: Only {percentage_available*100:.2f}% of files available, which is below the threshold of {min_percentage_available*100:.2f}%.")
+        return
+    else:
+        print(f"Found {len(files_list)} files ({percentage_available*100:.2f}%) to process for group average.")
+    # calculate mean and std maps
+    nifti_mean(files_list, result_map_path=output_mean, result_map_path_std=output_std, 
+               mask_img=mask_img, verbose=verbose)
+    
+
+
 
 def create_sphere_mask(sample_img, coords_vox, radius):
     '''
@@ -62,10 +442,12 @@ def create_sphere_mask(sample_img, coords_vox, radius):
     sphere_out = nib.Nifti1Image(mask, affine=sample_img.affine, header=hdr)
     return sphere_out
 
-def calculate_similarity_plots(datafolder,
+def calculate_similarity_in_roi(datafolder,
                                dataset,
-                               participants_dict,
+                               sub_N,
+                               session_and_run_dict,
                                stim_types,
+                               task,
                                model='basic-block',
                                method='correlation',
                                specie='D',
@@ -74,6 +456,8 @@ def calculate_similarity_plots(datafolder,
                                verbose=False,
                                **kwargs):
     '''
+    Calculate pairwise similarity between stimulus types within a specified ROI.
+
     Input arguments:
     --datafolder: Path to data folder
     --dataset: Dataset to use 
@@ -115,12 +499,12 @@ def calculate_similarity_plots(datafolder,
             coords_vox = utils.mm_to_vox(kwargs['coords_mm'])
         elif 'coords_vox' in kwargs:
             coords_vox = kwargs['coords_vox']
-        # take first entry of participants_dict to get sub_N, session, run_N
-        first_entry = participants_dict[0]
-        sub_N = first_entry['sub_N']
+        # take first entry of session_and_run_dict to get session, run_N
+        first_entry = session_and_run_dict[0]
         session = first_entry['session']
         run_N = first_entry['run']
-        
+        # correct session to 2 digits
+        session = f"{session:02d}"
         sample_file_path = os.path.join(
                     datafolder, dataset, 'results', 'GLM', model,
                     f"{specie}-sub-{sub_N:02d}",
@@ -173,12 +557,15 @@ def calculate_similarity_plots(datafolder,
         return -float(np.linalg.norm(x - y))
 
     # initialize results dataframe
-    results_df = pd.DataFrame(columns=['sub_N', 'session', 'run_N', 'stim_i', 'stim_j', 'similarity'])
+    results_df = pd.DataFrame()
 
-    for entry in participants_dict:
-        sub_N = entry['sub_N']
+    for entry in session_and_run_dict:
         session = entry['session']
         run_N = entry['run']
+        # correct session to 2 digits
+        session = f"{session:02d}"
+        if verbose:
+            print(f"Calculating subject {sub_N}, session {session}, run {run_N}")
         for i, stim_i in enumerate(stim_types):
             for j, stim_j in enumerate(stim_types):
                 if i >= j:
@@ -219,8 +606,8 @@ def calculate_similarity_plots(datafolder,
                     'stim_j': stim_j,
                     'similarity': similarity
                 }
-                # append to results_df
-                results_df = results_df.append(new_row, ignore_index=True)
+                # concat to results_df
+                results_df = pd.concat([results_df, pd.DataFrame([new_row])], ignore_index=True)
     return results_df
 
 def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius,
@@ -1149,6 +1536,8 @@ def read_model_dict(model_path, erase_existing_npy=False, return_all_comparisons
     categories = model_table.columns.tolist()
     # drop first element
     categories = categories[1:]
+    # print(categories)
+    # categories = ['H-1', 'H-2', 'H-3', 'H-4', 'H-5', 'H-6', 'A-1', 'A-2', 'A-3', 'A-4', 'A-5', 'A-6', 'C-1', 'C-2', 'C-3', 'C-4', 'C-5', 'C-6']
     # build pairwise dictionary
     pairs = [] # to store pairs
 
@@ -2196,7 +2585,7 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
             f.write(line + '\n')
 
 
-def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, mask_img,
+def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model,
                                           task, radius, rsa_model, rsa_method,
                                           method, replace_file, min_percentage_available=1.0, verbose=False):
     '''Calculate the group model similarity map.
@@ -2335,7 +2724,8 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     log_json['output_mean_file'] = mean_model_map_path
     log_json['output_std_file'] = std_model_map_path
     # calculate mean model similarity map by averaging all files in files_list
-    nifti_mean(files_list, mean_model_map_path, std_model_map_path, mask_img=mask_img)
+    # nifti_mean(files_list, mean_model_map_path, std_model_map_path, mask_img=mask_img)
+    nifti_mean(files_list, mean_model_map_path, std_model_map_path)
     #mask_img
 
     print("Done computing mean and std model similarity maps.")
@@ -2349,12 +2739,15 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
         yaml.dump(log_json, f)
     
 def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model, 
-                                            mask_img, task, radius, rsa_model,
+                                            task, radius, rsa_model,
                                             rsa_method='pearson',
                                             method='pearson', verbose=False, 
                                             min_percentage_available=1.0,
                                             reps=1000, replace_rnd_files=False, wait_time=300,reps_group=1000
                                             ):
+    # print the variable rsa_model
+    print(f"rsa_model: {rsa_model}")
+    # 
     participants = list(session_and_run_all_dict.keys())
     print("Checking for existing output files...")
     # check that outptut folder exists
@@ -2438,7 +2831,8 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             print(f"rnd {rnd_N:05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
         try:
             # calculate group model similarity map
-            nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
+            # nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
+            nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False)
         except Exception as e:
             print(f"Error {e} calculating group model similarity map for rnd {rnd_N:05d}. Skipping...")
         # remove temp file
@@ -3132,6 +3526,7 @@ def cluster_masks_3d(vol, threshold=None, two_sided=False, connectivity=3, dtype
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import maximum_filter, label, generate_binary_structure
+import shutil
 
 def world_coords(ijk, affine):
     ijk = np.asarray(ijk)
@@ -3287,8 +3682,24 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,
                                          label_nii_data=label_nii_data)
+    # create copy of res_image using the name of the rsa_model
+    res_image_copy = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                f"{rsa_model}_z_corrected.nii.gz"
+                )
+    
     out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
                 f"{specie}-r-{radius}_{method}_{rsa_method}.xlsx")
+    
+    out_path_copy = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
+                f"{rsa_model}.xlsx")
     clusters_to_excel(results, out_path)
     print(f"Files written in: {out_path}")
+    # create copy of res_image and out_path
+    # Copy the result image and Excel table to new filenames
+    shutil.copyfile(res_image, res_image_copy)
+    shutil.copyfile(out_path, out_path_copy)
+    print(f"Copied result image to: {res_image_copy}")
+    print(f"Copied Excel table to: {out_path_copy}")
