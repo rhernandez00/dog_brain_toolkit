@@ -2049,6 +2049,10 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
         f"{specie}-sub-{sub_N:02d}",
         f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}.nii.gz"
     )
+    # Input structural NIfTI file # os.path.join(bids_folder, f"{sub_ID}_T1.nii.gz"))
+    structural_nifti = os.path.join(
+        datafolder, dataset, 'BIDS',f"{specie}-sub-{sub_N:02d}_T1.nii.gz"
+    )
     
     # Extract TR and volumes
     data = nib.load(input_nifti)
@@ -2068,8 +2072,11 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
         'input':     (input_nifti,    'set feat_files(1)'),
         'atlas':     (atlas_file,     'set fmri(regstandard)'),
         'movement':  (mov_txt,     'set confoundev_files(1)'),
+        'structural': (structural_nifti, 'set highres_files(1)'),
         #'condition': (cond_file,      'set fmri(custom1)'),
     }
+
+
     # add conditions based on stim_types
     for i, stim in enumerate(stim_types, start=1):
         # "C:\data\EmoB\models\all_types\D-sub-01\ses-01_task-EmoB_run-01\A.txt"

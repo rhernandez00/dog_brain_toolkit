@@ -159,7 +159,6 @@ def main():
     import utils_EmoB
     reload(utils_EmoB)
 
-    # mask = r"C:\github\dog_brain_toolkit\Atlas\Dog\Nitzsche" + os.sep + mask_type + '.nii.gz'
 
     project_dict = {
         "Dataset": config["dataset"],
@@ -189,7 +188,6 @@ def main():
 
     if specie == 'D':
         specie_label = 'Dog'
-        mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Dog', atlas_type, mask_type + '.nii.gz')
         design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_DHRF.fsf'
         # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz")
@@ -203,19 +201,17 @@ def main():
         
     elif specie == 'H':
         specie_label = 'Hum'
-        mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', mask_type + '.nii.gz')
-        raise NotImplementedError("Human specie not implemented yet")
+        design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
+        # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
+        atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "  MNI152_T1_2mm_brain.nii.gz")     
     else:
         raise ValueError("Specie must be 'D' for Dog or 'H' for Human")
-
+    
+    mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, mask_type + '.nii.gz')
     # if participants_forced is not empty, use only those participants
     if len(participants_forced) > 0:
         participants = participants_forced
-    
-    # load mask image and binarize
-    mask_img = nib.load(mask_path).get_fdata()
-    mask_img = (mask_img > 0).astype(int)
-    
+        
     for step in steps_to_run:
         if step == 0: # compute beta maps by participant/session/run
             print("### Step 0: Computing beta maps ###")
