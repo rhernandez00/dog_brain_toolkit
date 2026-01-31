@@ -180,7 +180,7 @@ def main():
     model_dict = config['model_dict']
     participants = config["participants"]
     stim_types = config['stim_types']
-    atlas_type = config["atlas_type"]
+    #atlas_type = config["atlas_type"]
 
 
     # list of missing files per subject/session/run
@@ -192,6 +192,7 @@ def main():
         # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz")
         atlas_for_labels = 'Czeibert' # takes for dogs: Czeibert, Johnson. For humans: AAL, Harvard
+        atlas_type = 'Nitzsche'  # for dogs only Nitzsche is used for masks
         # label_dict = pd.read_excel(os.path.join(
         # path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.xlsx"
     # ))
@@ -201,12 +202,14 @@ def main():
         
     elif specie == 'H':
         specie_label = 'Hum'
+        atlas_type = 'MNI'
         design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
         # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "  MNI152_T1_2mm_brain.nii.gz")     
     else:
         raise ValueError("Specie must be 'D' for Dog or 'H' for Human")
     
+    # This is the mask used for searchlight, determines which voxels are included
     mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, mask_type + '.nii.gz')
     # if participants_forced is not empty, use only those participants
     if len(participants_forced) > 0:

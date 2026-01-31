@@ -943,8 +943,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             session = str(session).zfill(2)
         # check if the events file exists
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep +
-                    'sub-' + str(sub_N).zfill(2) + os.sep +
-                    'sub-' + str(sub_N).zfill(2) +
+                    specie + '-sub-' + str(sub_N).zfill(2) + os.sep +
+                    specie + '-sub-' + str(sub_N).zfill(2) +
                     '_ses-' + session +
                     '_task-' + task +
                     '_run-' + str(run_N).zfill(2) + '_events.csv')
@@ -1507,7 +1507,7 @@ from pathlib import Path
 import numpy as np
 from scipy.signal import detrend as _sp_detrend
 
-def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", output_file=None):
+def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", output_file=None, add_movement_params=True):
     """
     Compute framewise displacement (FD) and return a binary mask of frames below threshold.
     Also optionally saves the motion parameters and FD mask to a text file.
@@ -1524,7 +1524,8 @@ def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", outp
         Detrending method: 'linear-demean', 'linear-nodemean', or 'none' (default is 'linear-demean').
     output_file : str or Path, optional
         If provided, saves a .txt file with motion params and the FD mask as the last column.
-
+    add_movement_params : bool, optional
+        If True, includes motion parameters in the output file (default is True).
     Returns
     -------
     numpy.ndarray
@@ -1543,12 +1544,14 @@ def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", outp
     mask = (fd >= threshold).astype(np.int8)
 
     if output_file:
-        output_data = np.hstack([motion, mask[:, None]])
-        np.savetxt(output_file, output_data, fmt="%.6f", delimiter="\t")
-        print
-        # print output file
-        print(f"Motion parameters and FD mask saved to {output_file}")
-
+        if add_movement_params: # version where the motion parameters are included
+            output_data = np.hstack([motion, mask[:, None]])
+            np.savetxt(output_file, output_data, fmt="%.6f", delimiter="\t")
+            print(f"Motion parameters and FD column saved to {output_file}")
+        else: # version where only the mask is included
+            np.savetxt(output_file, mask, fmt="%d", delimiter="\t")
+            # print output file
+            print(f"FD column saved to {output_file}")
 
 
     return mask

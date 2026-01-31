@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 import os
 import numpy as np
+from nilearn.image import resample_to_img
 from time import time, perf_counter
 import shutil
 # import random
@@ -2148,10 +2149,18 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                 (cross-validated across runs).
                 Folding strategies:
                     - run-wise: each run is a fold
-    Input:
-        - beta maps per condition and run
-        - mask
-        - folding strategy (in case of Mahalanobis)
+    Inputs:
+        - datafolder: str. Path to data folder
+        - dataset: str. Dataset name
+        - sub_N: int. Subject number
+        - session_and_run_dict: list of dicts. Each dict contains 'session' and 'run' keys.
+        - specie: str. Species identifier ('H' or 'D')
+        - model: str. Model name for beta maps
+        - stim_types: list of str. List of stimulus types
+        - mask: np.ndarray. Mask for searchlight. This marks the voxels to include in the analysis.
+        - task: str. Task name
+
+        
     '''
     print(f"Calculating pairwise similarity maps for sub-{sub_N:02d} using method: {method} ")
     ## check if output files already exist
@@ -2320,17 +2329,30 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
         Multiple runs:
             - run-wise: each run is a fold
     
-    Input:
-        - beta maps per condition and run
-        - mask
-        - folding strategy
+    Inputs:
+        - datafolder: str. Path to data folder
+        - dataset: str. Dataset name
+        - sub_N: int. Subject number
+        - session_and_run_dict: list of dicts. Each dict contains 'session' and 'run' keys.
+        - specie: str. Species identifier ('H' or 'D')
+        - model: str. Model name for beta maps
+        - stim_types: list of str. List of stimulus types
+        - mask: path. Mask for searchlight. This is the search space, the computation is performed only within the mask.
+        - task: str. Task name
+        - radius: float. Searchlight radius in voxel units
+        - replace_file: bool. If True, replace existing output files
+        - mah_fold: str. Folding strategy for Mahalanobis distance
+        - sigma: np.ndarray or None. Noise covariance matrix
+        - shrinkage: str. Shrinkage method for covariance estimation
+        - return_rdm: bool. If True, return full RDM matrix
     Output:
         - similarity_map for each pairwise condition comparison
     '''
     # verbose = True
     # print(verbose)
     # load mask
-    mask = nib.load(mask).get_fdata().astype(bool)
+    mask_img_obj = nib.load(mask)
+    mask_img = mask_img_obj.get_fdata().astype(bool)
     
 
     print("Loading beta maps...")
@@ -2355,10 +2377,22 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             if not os.path.exists(input_file):
                 raise FileNotFoundError(f"Beta map file not found: {input_file}")
             # load map
-            map_data = nib.load(input_file).get_fdata()
+            map_img_obj = nib.load(input_file)
+            map_data = map_img_obj.get_fdata()
             # make sure map_data has same shape as mask
-            if map_data.shape != mask.shape:
-                raise ValueError(f"Beta map shape {map_data.shape} does not match mask shape {mask.shape}.")
+            if map_data.shape != mask_img.shape:
+                # resample mask to match map (nearest neighbor = IMPORTANT for masks)
+                mask_img_obj = resample_to_img(
+                    source_img=mask_img_obj,
+                    target_img=map_img_obj,
+                    interpolation="nearest"
+                )
+                mask_img = mask_img_obj.get_fdata().astype(bool)
+                # issue a warning
+                print(f"Warning: Beta map shape {map_data.shape} does not match mask shape {mask_img.shape}. Resampled mask to match beta map.")
+
+                # if map_data.shape != mask_img.shape:
+                    # raise ValueError(f"Beta map shape {map_data.shape} does not match mask shape {mask_img.shape}.")
 
             # store in session_and_run_dict
             session_and_run_dict[indx]['maps'][stim] = map_data
@@ -2368,7 +2402,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     print("Preparing for crossnobis (cross-validated Mahalanobis)...")
 
     # prepare for searchlight
-    ndim = mask.ndim # dimensions based on mask
+    ndim = mask_img.ndim # dimensions based on mask
     r = float(radius)
     rad = int(np.floor(r))
 
@@ -2384,19 +2418,19 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             if i >= j:
                 continue  # avoid duplicates and self-comparison
             key = (stim_i, stim_j)
-            similarity_maps[key] = np.full(mask.shape, np.nan, dtype=float)
+            similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
     # iterate over all voxels in mask
-    it = np.argwhere(mask)
+    it = np.argwhere(mask_img)
     for center in it: # iterate over each sphere center
         # get neighboring voxels within radius
         neigh = center + offsets
         # in-bounds
-        inb = np.all((neigh >= 0) & (neigh < np.array(mask.shape)), axis=1)
+        inb = np.all((neigh >= 0) & (neigh < np.array(mask_img.shape)), axis=1)
         neigh = neigh[inb]
         if neigh.size == 0:
             continue
         # apply mask within sphere
-        msub = mask[tuple(neigh.T)]
+        msub = mask_img[tuple(neigh.T)]
         if not np.any(msub):
             continue
         neigh = neigh[msub]

@@ -393,10 +393,15 @@ def run_individual_GLM(project_dict, model, sub_N, session_and_run_list):
         datafolder = os.path.join(
             "P:\\userdata", project_dict['User'], 'data'
         )
+        git_folder = r"C:\github"
     else:
         datafolder = os.path.join(
             '/home', project_dict['User'], 'mnt', 'a471', 'userdata', project_dict['User'], 'data'
         )
+        git_folder = os.path.join('/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'github')
+        # P:\userdata\raulh87\github
+        
+    path_to_dog_brain_toolkit = os.path.join(git_folder, 'dog_brain_toolkit')
     # project_dict['Datafolder'] = datafolder
     print(f"Data folder: {datafolder}")
 
@@ -405,12 +410,23 @@ def run_individual_GLM(project_dict, model, sub_N, session_and_run_list):
     atlas_type = project_dict['Atlas_type']
     task = project_dict['Task']
     # Species label for atlas subfolder
-    specie_label = 'Dog' if specie == 'D' else 'Hum'
-    img_type = 'brain2mm'
-    # Atlas file
-    atlas_file = os.path.join(
-        os.getcwd(), 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz"
-    )
+    # specie_label = 'Dog' if specie == 'D' else 'Hum'
+    # img_type = 'brain2mm'
+    # # Atlas file
+    # atlas_file = os.path.join(
+    #     os.getcwd(), 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz"
+    # )
+    if specie == 'D':
+        specie_label = 'Dog'
+        img_type = 'brain2mm'
+        atlas_file = os.path.join(
+            path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz"
+        )
+    elif specie == 'H':
+        specie_label = 'Hum'
+        atlas_file = os.path.join(
+            path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
+
 
     # Output directory for FSL
     fsl_out = os.path.join(
@@ -418,9 +434,9 @@ def run_individual_GLM(project_dict, model, sub_N, session_and_run_list):
         f"{specie}-sub-{sub_N:02d}"
     )
 
-    # Prepare FSF template replacement dictionary
-    design_in = os.path.join(datafolder, dataset, 'FSL_designs', 'individual_' + str(N_runs) + '.fsf')
-    design_out = os.path.join(datafolder, dataset, 'FSL_designs', 'individual_' + str(N_runs) +  '_sub-' + str(sub_N).zfill(2) + '_modified.fsf')
+    # Prepare FSF template replacement dictionary # modified 26/Jan/2026, added _H
+    design_in = os.path.join(datafolder, dataset, 'FSL_designs', 'individual_' + str(N_runs) + '_H.fsf')
+    design_out = os.path.join(datafolder, dataset, 'FSL_designs', 'individual_' + str(N_runs) +  '_H_sub-' + str(sub_N).zfill(2) + '_modified.fsf')
 
 
     labels_to_replace = ['outputdir', 'atlas']
