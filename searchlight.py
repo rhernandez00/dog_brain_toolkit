@@ -15,10 +15,10 @@ import argparse
 Input arguments:
 --steps_to_run: List of steps to run (default: [1,2,3,4,5,6,7,8,9,10])
 --model: GLM model to use (default: 'basic')
---method: Method for pairwise similarity calculation (default: 'correlation')
+--method: Method for pairwise similarity calculation (default: 'mahalanobis')
 --rsa_model: RSA model to use
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
---specie: 'D' for Dog, 'H' for Human (default: 'D')
+--specie: 'D' for Dog, 'H' for Human (default: 'H')
 --mask_type: Type of brain mask to use (default: 'b_GreyMatter2mm')
 --radius: Radius for searchlight (default: 3)
 --z_threshold: Z threshold for z maps (default: 3.1)
@@ -30,6 +30,7 @@ Input arguments:
 --min_dist_mm: Minimum distance between peaks in mm (default: 8.0)
 --atlas_type: Type of atlas to use in case of dogs (default: 'Nitzsche')
 --replace_file: Overwrite existing output files (default: False)
+--shuffle_participants: shuffle participants order in permutations (default: False)
 
 --participants_forced: List of participants to include (default: [])
 --verbose: Verbose output (default: False)
@@ -44,15 +45,13 @@ def parse_arguments():
                         help='List of steps to run')
     parser.add_argument('--model', type=str, default='basic',
                         help='GLM model to use')
-    # parser.add_argument('--mask_path', type=str, required=True,
-    #                     help='Path to mask file')
-    parser.add_argument('--method', type=str, default='correlation',
+    parser.add_argument('--method', type=str, default='mahalanobis',
                         help='Method for pairwise similarity calculation')
-    parser.add_argument('--rsa_model', type=str, required=True,
+    parser.add_argument('--rsa_model', type=str, required=False,
                         help='RSA model to use')
     parser.add_argument('--rsa_method', type=str, default='kendall',
                         help='Method to compare similarity maps with model')
-    parser.add_argument('--specie', type=str, default='D',
+    parser.add_argument('--specie', type=str, default='H',
                         help="'D' for Dog, 'H' for Human")
     parser.add_argument('--mask_type', type=str, default='b_GreyMatter2mm',
                         help='Type of brain mask to use')
@@ -74,11 +73,13 @@ def parse_arguments():
                         help='Type of atlas to use in case of dogs')
     parser.add_argument('--replace_file', action='store_true',
                         help='Overwrite existing output files')
+    parser.add_argument('--shuffle_participants', action='store_true',
+                        help='Shuffle participants order in permutations')
     parser.add_argument('--participants_forced', type=int, nargs='+', default=[],
                         help='List of participants to include')
     parser.add_argument('--verbose', action='store_true',
                         help='Verbose output')
-    parser.add_argument('--wait_time', type=int, default=300,
+    parser.add_argument('--wait_time', type=int, default=3000,
                         help='Wait time between steps in seconds')
     parser.add_argument('--overwrite_movement', action='store_true',
                         help='Overwrite existing movement files')
@@ -125,19 +126,13 @@ def main():
             "P:\\userdata", 'raulh87', 'data'
         )
         git_folder = r"C:\github"
-        mask_path = os.path.join("P:\\userdata", 'raulh87', 'data', 'EmoB', 'ROI', 'Cope13-Emo-Con_Z3.1.nii.gz')
-        mask_path = os.path.join("P:\\userdata", 'raulh87', 'data', 'EmoB', 'ROI', 'b_GreyMatter2mm.nii.gz')
     else:
         datafolder = os.path.join(
             '/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'data'
         )
         #'/home/raulh87/mnt/a471/userdata/raulh87/github
         git_folder = os.path.join('/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'github')
-        mask_path = os.path.join(
-        '/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'data', 'EmoB', 'ROI', 'Cope13-Emo-Con_Z3.1.nii.gz')
-        mask_path = os.path.join(
-        '/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'data', 'EmoB', 'ROI', 'b_GreyMatter2mm.nii.gz')
-
+        
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
 
     # Load config.yaml
@@ -188,29 +183,64 @@ def main():
 
     if specie == 'D':
         specie_label = 'Dog'
+        apply_coords_transform=False #assumes that atlas and everything is tiun the same space
         design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_DHRF.fsf'
         # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
-        atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, f"{img_type}.nii.gz")
+        atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, img_type + ".nii.gz")
         atlas_for_labels = 'Czeibert' # takes for dogs: Czeibert, Johnson. For humans: AAL, Harvard
         atlas_type = 'Nitzsche'  # for dogs only Nitzsche is used for masks
         # label_dict = pd.read_excel(os.path.join(
         # path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.xlsx"
     # ))
         label_nii_data = nib.load(os.path.join(
-        path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', f"{atlas_for_labels}_labels2mm.nii.gz"
+        path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
     )).get_fdata()
         
     elif specie == 'H':
         specie_label = 'Hum'
+        apply_coords_transform=True #assumes that atlas and results are in different spaces, applies coordinate transform to get correct labels in excel output
         atlas_type = 'MNI'
         design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
         # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
-        atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "  MNI152_T1_2mm_brain.nii.gz")     
+        atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
+        # force to participants to be 1-40 (exclude 36)
+        participants = [i for i in range(1, 41) if i != 36]
+        # "C:\github\dog_brain_toolkit\Atlas\Hum\AAL3.nii.gz"
+        # get  label_nii_data path P:\userdata\raulh87\data\EmoB\ROI\AAL3.nii.gz
+        label_nii_data = nib.load(os.path.join(
+            datafolder, dataset, 'ROI', 'AAL3.nii.gz'
+        )).get_fdata()
+        # get label_dict
+        # "P:\userdata\raulh87\github\dog_brain_toolkit\Atlas\Hum\AAL_dictionary.csv"
+        label_dict = pd.read_csv(os.path.join(
+            path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL_dictionary.csv'
+        ))
+   
     else:
-        raise ValueError("Specie must be 'D' for Dog or 'H' for Human")
+        raise ValueError("Specie must be 'D' for Dog or '`H' for Human")
     
     # This is the mask used for searchlight, determines which voxels are included
-    mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, mask_type + '.nii.gz')
+    if specie == 'D':
+        print(f"specie is D, mask_type: {mask_type}")
+        if mask_type == 'cope13':
+            ## ----mask should match with the beta maps (GLM space) ---
+            mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
+        else:
+            mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, mask_type + '.nii.gz')
+        
+    elif specie == 'H':
+        print(f"specie is H, mask_type: {mask_type}")
+        if mask_type == 'cope13':
+            print('getting cope 13')
+            # get mask from GLM results, cope13
+            # mask = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + 'initial' + os.sep + 'group' + os.sep + 'H-group_cope13.gfeat' + os.sep + 'cope1.feat' + os.sep + 'thresh_zstat1.nii.gz'
+            # mask = r"P:\userdata\raulh87\data\EmoB\ROI\H\cope13.nii.gz"
+            mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
+        else:
+            print('not getting cope 13')
+            # get path
+            mask = datafolder + os.sep + dataset + os.sep + 'ROI' + os.sep + specie + os.sep + mask_type + '.nii.gz'
+    print(f"Using mask: {mask}")
     # if participants_forced is not empty, use only those participants
     if len(participants_forced) > 0:
         participants = participants_forced
@@ -218,6 +248,11 @@ def main():
     for step in steps_to_run:
         if step == 0: # compute beta maps by participant/session/run
             print("### Step 0: Computing beta maps ###")
+            # if specie == H warn and skip
+            if specie == 'H':
+                print("Warning: Step 0 (computing beta maps) is done another way in humans. Skipping...")
+                continue
+
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 for entry in session_and_run_dict:
@@ -234,6 +269,12 @@ def main():
             print("#### Done computing beta maps ####")
         if step == 1: # compute pairwise similarity maps between beta maps by participant
             print("### Step 1: Computing pairwise similarity maps ###")
+            if args.shuffle_participants:
+                # flip participants
+                participants = participants[::-1]
+
+                # np.random.shuffle(participants)
+                # print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
@@ -246,6 +287,9 @@ def main():
 
         if step == 2: # Compute similarity between pairwise similarity maps and a model by participant
             print("### Step 2: Computing similarity between pairwise similarity maps and a model ###")
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
+                print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
@@ -274,13 +318,17 @@ def main():
             print("### Done computing group model similarity map ###")
         if step == 4: # Calculate rnd by repeating step 2 with permuted model
             print("### Step 4: Calculating permutations for model similarity maps ###")
+            # if shuffle_participants is true, shuffle participants order
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
+                print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
                                     method=method, rsa_method=rsa_method, replace_file=replace_file, 
                                     verbose=verbose, wait_time=wait_time, rnd=True, reps=reps,
-                                    create_subject_mean=False, replace_rnd_files=True)
+                                    create_subject_mean=False, replace_rnd_files=False)
                 
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"### Done computing rnd similarity between pairwise maps and model ###")
@@ -323,7 +371,12 @@ def main():
                                         method, rsa_method,
                                         rsa_model,
                                         verbose=verbose)
-            
+        if step == 11:
+            print("### Step 11 (7.5 actually): Calculating z map for real data ###")
+            rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
+                                        method, rsa_method,
+                                        rsa_model,
+                                        verbose=verbose)
             print("### Done computing z maps for rnd distribution ###")
         if step == 8: # Threshold z maps, calculate cluster size distribution 
             print("### Step 8: Calculating cluster size distribution ###")
@@ -348,7 +401,8 @@ def main():
             print("### Step 10: Summarizing results and saving to Excel ###")
             rsa_utils.create_tables(datafolder, dataset, specie, model, rsa_model, radius, 
                   method, rsa_method, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
-                  label_dict=label_dict, label_nii_data=label_nii_data)
+                  label_dict=label_dict, label_nii_data=label_nii_data, 
+                  apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
 
 
 if __name__ == "__main__":

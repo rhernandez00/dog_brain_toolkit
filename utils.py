@@ -34,15 +34,36 @@ import re
 import nibabel as nib
 import time
 
-def mm_to_vox(coords_mm, atlas_type='Nitzsche'):
-    '''Convert mm coordinates to voxel coordinates for a given atlas type.
-    Parameters:
-    - atlas_type: str, type of atlas (Default: 'Nitzsche')
-    - coords_mm: list or array of 3 floats, coordinates in mm [x, y, z]
-    
-    Returns:
-    - coords_vox: list of 3 ints, coordinates in voxels [i, j, k]
-    '''
+def mm_to_vox(coords_mm, atlas_type='Nitzche', *, sample_img=None, rounding="nearest", clip=False,
+              assume_lps=False, one_based=False):
+    """
+    Convert world/mm coordinates -> voxel indices using the NIfTI affine of sample_img.
+
+    Parameters
+    ----------
+    coords_mm : (3,) or (N,3) array-like
+        Coordinates in mm (x, y, z) in the SAME world space as sample_img.
+    sample_img : str or nibabel.Nifti1Image
+        Image that defines the target voxel grid (e.g., your stat map / atlas / results image).
+        Can be a filepath or a loaded nibabel image.
+    rounding : {"nearest","floor","ceil","none"}
+        How to turn continuous voxel coords into integer indices.
+        Use "nearest" for ITK-SNAP navigation most of the time.
+    clip : bool
+        If True, clip indices to stay inside image bounds.
+    assume_lps : bool
+        If your coords_mm come from an LPS convention (common in DICOM),
+        convert to RAS (NIfTI-style) by flipping x and y: (x,y,z)->(-x,-y,z).
+        Leave False if coords are already in NIfTI world/mm (common for FSL/nilearn outputs).
+    one_based : bool
+        If True, return 1-based voxel indices (some tools display that way).
+        ITK-SNAP voxel indexing is typically 0-based, so usually keep False.
+
+    Returns
+    -------
+    vox : tuple(int,int,int) or list[tuple]
+        Voxel indices in sample_img space.
+    """
     if atlas_type == 'Nitzsche':
         # Nitzsche atlas parameters
         bx = 36.0 - 20.0*(15.0/31.0)
@@ -51,14 +72,109 @@ def mm_to_vox(coords_mm, atlas_type='Nitzsche'):
         my = 0.5
         bz = 26.5
         mz = 0.5
+        x_vox = int(round((coords_mm[0]*mx + bx)))
+        y_vox = int(round((coords_mm[1]*my + by)))
+        z_vox = int(round((coords_mm[2]*mz + bz)))
+        coords_vox = (x_vox, y_vox, z_vox)
+        return coords_vox
+   
     
+
+    img = nib.load(sample_img) if isinstance(sample_img, str) else sample_img
+    A = np.asarray(img.affine, dtype=float)
+    Ainv = np.linalg.inv(A)
+
+    pts = np.asarray(coords_mm, dtype=float)
+    if pts.shape == (3,):
+        pts = pts[None, :]
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"coords_mm must be shape (3,) or (N, 3). Got {pts.shape}")
+
+    if assume_lps:
+        pts = pts.copy()
+        pts[:, 0] *= -1
+        pts[:, 1] *= -1
+
+    hom = np.c_[pts, np.ones((pts.shape[0], 1), dtype=float)]
+    vox_f = (Ainv @ hom.T).T[:, :3]  # floating voxel coords
+
+    if rounding == "nearest":
+        vox = np.rint(vox_f).astype(int)
+    elif rounding == "floor":
+        vox = np.floor(vox_f).astype(int)
+    elif rounding == "ceil":
+        vox = np.ceil(vox_f).astype(int)
+    elif rounding == "none":
+        vox = vox_f
     else:
-        raise ValueError(f"Atlas type {atlas_type} not recognized.")
-    x_vox = int(round((coords_mm[0]*mx + bx)))
-    y_vox = int(round((coords_mm[1]*my + by)))
-    z_vox = int(round((coords_mm[2]*mz + bz)))
-    coords_vox = (x_vox, y_vox, z_vox)
-    return coords_vox
+        raise ValueError("rounding must be one of: 'nearest', 'floor', 'ceil', 'none'")
+
+    if clip:
+        shp = np.array(img.shape[:3], dtype=float if rounding == "none" else int)
+        lo = 0.0 if rounding == "none" else 0
+        hi = (shp - 1.0) if rounding == "none" else (shp - 1)
+        vox = np.minimum(np.maximum(vox, lo), hi)
+
+    if one_based and rounding != "none":
+        vox = vox + 1
+
+    out = [tuple(v) for v in vox]
+    return out[0] if len(out) == 1 else out
+
+
+def vox_to_mm(coords_vox, sample_img, *, assume_lps=False, one_based=False):
+    """
+    Convert voxel indices -> world/mm coordinates using the NIfTI affine of sample_img.
+    (Handy for sanity-checking round-trips.)
+    """
+    img = nib.load(sample_img) if isinstance(sample_img, str) else sample_img
+    A = np.asarray(img.affine, dtype=float)
+
+    vox = np.asarray(coords_vox, dtype=float)
+    if vox.shape == (3,):
+        vox = vox[None, :]
+    if vox.ndim != 2 or vox.shape[1] != 3:
+        raise ValueError(f"coords_vox must be shape (3,) or (N, 3). Got {vox.shape}")
+
+    if one_based:
+        vox = vox - 1.0
+
+    hom = np.c_[vox, np.ones((vox.shape[0], 1), dtype=float)]
+    mm = (A @ hom.T).T[:, :3]
+
+    if assume_lps:
+        mm = mm.copy()
+        mm[:, 0] *= -1
+        mm[:, 1] *= -1
+
+    out = [tuple(m) for m in mm]
+    return out[0] if len(out) == 1 else out
+
+# def mm_to_vox(coords_mm, atlas_type='Nitzsche'):
+#     '''Convert mm coordinates to voxel coordinates for a given atlas type.
+#     Parameters:
+#     - atlas_type: str, type of atlas (Default: 'Nitzsche')
+#     - coords_mm: list or array of 3 floats, coordinates in mm [x, y, z]
+    
+#     Returns:
+#     - coords_vox: list of 3 ints, coordinates in voxels [i, j, k]
+#     '''
+#     if atlas_type == 'Nitzsche':
+#         # Nitzsche atlas parameters
+#         bx = 36.0 - 20.0*(15.0/31.0)
+#         mx = 15.0/31.0
+#         by = 30.0
+#         my = 0.5
+#         bz = 26.5
+#         mz = 0.5
+    
+#     else:
+#         raise ValueError(f"Atlas type {atlas_type} not recognized.")
+#     x_vox = int(round((coords_mm[0]*mx + bx)))
+#     y_vox = int(round((coords_mm[1]*my + by)))
+#     z_vox = int(round((coords_mm[2]*mz + bz)))
+#     coords_vox = (x_vox, y_vox, z_vox)
+#     return coords_vox
 
 def run_human_fsl_preprocessing(datafolder, dataset, sub_ID, run_N, smooth, 
                                 design_template, overwrite_existing=False, wait_time=5.0,

@@ -19,6 +19,110 @@ import numpy as np
 from scipy import ndimage
 import preprocess_functions
 
+def transform_coords(
+    coords_input,
+    results_img,
+    original_img,
+    *,
+    rounding="nearest",
+    clip=False,
+    assume_one_based=False,
+):
+    """
+    Transforms voxel coordinates from the *results space* to the *original atlas space*.
+
+    Parameters
+    ----------
+    coords_input : array-like
+        Iterable of (i, j, k) voxel indices in the results space.
+        Can be a single tuple (i, j, k) or an (N, 3) array-like.
+
+    results_img : nibabel.Nifti1Image or str
+        The reference image that defines the voxel grid of your results coordinates
+        (e.g., your searchlight/stat map like pe1.nii.gz).
+        Can be a loaded nibabel image or a filepath.
+
+    original_img : nibabel.Nifti1Image or str
+        The original atlas image defining the desired voxel grid (e.g., original_atlas_space.nii.gz).
+        Can be a loaded nibabel image or a filepath.
+
+    rounding : {"nearest","floor","ceil","none"}, optional
+        How to convert continuous voxel coords into integer voxel indices.
+        "nearest" (default) is typically what you want.
+
+    clip : bool, optional
+        If True, clip output voxel indices to be within the bounds of original_img shape.
+
+    assume_one_based : bool, optional
+        If your input coords are 1-based (some tools do this), set True.
+        Then we convert to 0-based internally and convert back to 1-based at the end.
+
+    Returns
+    -------
+    transformed_coords : list[tuple[int,int,int]]
+        List of (i, j, k) voxel indices in the original atlas space.
+    """
+    # Lazy import so this function can be used in environments where nibabel
+    # is only needed when loading paths.
+    import nibabel as nib
+
+    def _as_img(x):
+        if isinstance(x, str):
+            return nib.load(x)
+        return x
+
+    res_img = _as_img(results_img)
+    orig_img = _as_img(original_img)
+
+    A_res = np.asarray(res_img.affine, dtype=float)
+    A_orig = np.asarray(orig_img.affine, dtype=float)
+
+    # Matrix that maps results-voxel -> original-voxel (in homogeneous coords)
+    # orig_vox = inv(A_orig) @ A_res @ res_vox
+    M = np.linalg.inv(A_orig) @ A_res
+
+    coords = np.asarray(coords_input, dtype=float)
+    if coords.shape == (3,):
+        coords = coords[None, :]
+    if coords.ndim != 2 or coords.shape[1] != 3:
+        raise ValueError(f"coords_input must be shape (3,) or (N, 3). Got {coords.shape}")
+
+    if assume_one_based:
+        coords = coords - 1.0  # to 0-based
+
+    hom = np.c_[coords, np.ones((coords.shape[0], 1), dtype=float)]
+    out = (M @ hom.T).T[:, :3]  # continuous voxel coords in original space
+
+    if rounding == "nearest":
+        out = np.rint(out)
+    elif rounding == "floor":
+        out = np.floor(out)
+    elif rounding == "ceil":
+        out = np.ceil(out)
+    elif rounding == "none":
+        # keep as float (rarely useful for ITK-SNAP navigation, but sometimes for debugging)
+        pass
+    else:
+        raise ValueError("rounding must be one of: 'nearest', 'floor', 'ceil', 'none'")
+
+    if rounding != "none":
+        out = out.astype(int)
+
+    if clip:
+        # Clip using the spatial dims only (first 3)
+        shp = np.array(orig_img.shape[:3], dtype=int)
+        if rounding == "none":
+            # clip floats
+            out = np.minimum(np.maximum(out, 0.0), shp - 1.0)
+        else:
+            out = np.minimum(np.maximum(out, 0), shp - 1)
+
+    if assume_one_based and rounding != "none":
+        out = out + 1  # back to 1-based
+
+    # Return list of tuples
+    return [tuple(map(int, xyz)) if rounding != "none" else tuple(xyz) for xyz in out]
+
 def get_label_from_stim(cat, items_dict, label_type):
     """Get label from stim using items_dict and label_type."""
     for item in items_dict.values():
@@ -29,6 +133,8 @@ def get_label_from_stim(cat, items_dict, label_type):
                 raise ValueError(f"Label type {label_type} not found in items_dict.")
     raise ValueError(f"Stim {cat} not found in items_dict.")
 
+
+## update the file structure here: ------------------------------------------
 def calculate_difference_map(datafolder, dataset, specie, model, comparison_model,
                              radius, method, replace_file=False, verbose=False):
     '''Calculate difference map between two similarity maps.
@@ -198,67 +304,70 @@ def calculate_difference_map(datafolder, dataset, specie, model, comparison_mode
 #         nifti_mean(files_list, result_map_path=result_map_path, result_map_path_std=result_map_path_std, 
 #                 mask_img=mask_img, verbose=verbose)
                     
-def calculate_similarity_maps_by_group(datafolder, dataset, session_and_run_all_dict,
+def calculate_similarity_maps_by_class(datafolder, dataset, session_and_run_all_dict,
                                        specie, model, comparison_model, model_dict, task, radius,
-                                        method, mask_img,
+                                        method, mask,
                                         replace_file=False, min_percentage_available=1.0,
                                         verbose=False, avoid_pairs_by_label=None):
-    '''Calculate group average similarity maps for all pairwise combinations in comparisons.
+    '''Calculate class average similarity maps for all pairwise combinations in comparison_model.
     datafolder: str, path to data folder
     dataset: str, name of dataset
     sub_N: int, subject number
     session_and_run_dict: list of dicts, each dict contains 'session' and 'run' keys
     specie: str, 'D' for dog, 'H' for human
     model: str, GLM model used
-    comparisons: list of tuples, each tuple contains two stimulus types to compare
     task: str, task name
     radius: int, radius for searchlight
     method: str, method for pairwise similarity calculation
     replace_file: bool, whether to replace existing files
     verbose: bool, whether to print verbose output
-    comparison_model: str, name of the comparison model (the model indicates the main folder)
+    comparison_model: str, name of the comparison model 
     avoid_pairs_by_label: will check if pairs belong to same label and avoid them if True. Default is None.
     '''
-    # load comparisons file "P:\userdata\raulh87\data\EmoB\rsa_models\happy\comparisons.csv"
-    comparisons_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
-                        comparison_model + os.sep + 'comparisons.csv')
-    # read comparisons file
+    # load comparisons file, this file should have the two classes to compare in the first two lines, e.g. line 1: happy, line 2: neutral.
+    comparisons_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + 
+                        'by_class' + os.sep + 'classes' + os.sep + 'comp_' + comparison_model + '.txt')
+                        # comparison_model + os.sep + 'comparisons.csv')
+    
+    # get mask affine
+    mask_affine = nib.load(mask).affine
+    mask_img_obj = nib.load(mask)
+    mask_img = mask_img_obj.get_fdata().astype(bool)
 
-    cats_list = []
-    comparisons_df = pd.read_csv(comparisons_file)
-    for comp_name in comparisons_df['comparisons']:
-        # split by _
-        parts = comp_name.split('_')
-        stim_a = parts[0]
-        stim_b = parts[1]
-        cats_list.append(stim_a)
-        cats_list.append(stim_b)
-    # get unique categories
-    unique_cats = list(set(cats_list))
+    # read comparisons file, obtain class_a in line 1 and class_b in line 2
+    with open(comparisons_file, 'r') as f:
+        lines = f.read().splitlines()
+        if len(lines) < 2:
+            raise ValueError(f"Comparison model file {comparisons_file} must have at least two lines, one for each class.")
+        class_a = lines[0]
+        class_b = lines[1]
+
+    unique_classes = [class_a, class_b] # override unique_cats with the classes defined in the comparison model file, to make sure only those are processed
+
     # load each category file
-    for cat in unique_cats:
-        # build cat comparisons_file
-        # "P:\userdata\raulh87\data\EmoB\rsa_models\happy\cat_happy.csv"
-        category_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
-                        comparison_model + os.sep + f"cat_{cat}.csv")
+    for class_name in unique_classes:
+        # build class file
+        # "P:\userdata\raulh87\data\EmoB\rsa_models\happy\class_happy.csv"
+        class_file = (datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep +
+                        'by_class' + os.sep + 'classes' + os.sep + f"class_{class_name}.csv")
         # if verbose
         if verbose:
-            print(f"Calculating group similarity map for category {cat}...")
+            print(f"Calculating group similarity map for category {class_name}...")
         # determine output mean
         result_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                        model + os.sep + comparison_model + os.sep + 
-                        f"{specie}-r-{radius}_{method}_cat_{cat}_mean.nii.gz")
+                        model + os.sep + 'by_class' + os.sep + 'classes' + os.sep +
+                        f"{specie}-r-{radius}_{method}_class_{class_name}_mean.nii.gz")
         result_map_path_std = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                        model + os.sep + comparison_model + os.sep + 
-                        f"{specie}-r-{radius}_{method}_cat_{cat}_std.nii.gz")
+                        model + os.sep + 'by_class' + os.sep + 'classes' + os.sep +
+                        f"{specie}-r-{radius}_{method}_class_{class_name}_std.nii.gz")
         # check if output file already exists
         if os.path.exists(result_map_path) and not replace_file:
             if verbose:
                 print(f"Skipping: Found existing output file {result_map_path}. Use replace_file=True to overwrite.")
             continue
         
-        # read category file
-        category_df = pd.read_csv(category_file)
+        # read class file
+        class_df = pd.read_csv(class_file)
         files_in_database = 0
         files_list = [] # list of files to process
         for sub_N in session_and_run_all_dict.keys():
@@ -269,19 +378,19 @@ def calculate_similarity_maps_by_group(datafolder, dataset, session_and_run_all_
                 session = f"{session:02d}"
                 run_N = entry['run']
                 items_dict = model_dict[f"run{run_N:02d}"]
-                # loop over all pairs in category_df
-                for index, row in category_df.iterrows():
-                    # identify from items_dict the stim_ID matching cat1 and cat2
-                    cat1 = row['cat1']
-                    cat2 = row['cat2']
+                # loop over all pairs in class_df
+                for index, row in class_df.iterrows():
+                    # identify from items_dict the stim_ID matching class_a and class_b
+                    class_a = row['cat1']
+                    class_b = row['cat2']
                     if avoid_pairs_by_label is not None:
-                        label1 = get_label_from_stim(cat1, items_dict, avoid_pairs_by_label)
-                        label2 = get_label_from_stim(cat2, items_dict, avoid_pairs_by_label)
-                        print(f"Comparing {cat1} ({avoid_pairs_by_label}: {label1}) and {cat2} ({avoid_pairs_by_label}: {label2})")
+                        label1 = get_label_from_stim(class_a, items_dict, avoid_pairs_by_label)
+                        label2 = get_label_from_stim(class_b, items_dict, avoid_pairs_by_label)
+                        print(f"Comparing {class_a} ({avoid_pairs_by_label}: {label1}) and {class_b} ({avoid_pairs_by_label}: {label2})")
 
                         if label1 == label2:
                             if verbose:
-                                print(f"Skipping pair {cat1}-{cat2} for subject {sub_N}, session {session}, run {run_N} due to same {avoid_pairs_by_label} {label1}.")
+                                print(f"Skipping pair {class_a}-{class_b} for subject {sub_N}, session {session}, run {run_N} due to same {avoid_pairs_by_label} {label1}.")
                             continue
                     
 
@@ -290,7 +399,7 @@ def calculate_similarity_maps_by_group(datafolder, dataset, session_and_run_all_
                                 datafolder, dataset, 'results', 'RSA', model,
                                 f"{specie}-sub-{sub_N:02d}",
                                 f"ses-{session}_task-{task}_run-{run_N:02d}",
-                                f"r-{radius}_{method}_{cat1}_{cat2}.nii.gz"
+                                f"r-{radius}_{method}_{class_a}_{class_b}.nii.gz"
                             )
                     if os.path.exists(input_file):
                         files_list.append(input_file)
@@ -305,11 +414,11 @@ def calculate_similarity_maps_by_group(datafolder, dataset, session_and_run_all_
         percentage_available = len(files_list) / files_in_database
         if percentage_available < min_percentage_available:
             if verbose:
-                print(f"Skipping: Only {percentage_available*100:.2f}% of files available for category {cat}, which is below the threshold of {min_percentage_available*100:.2f}%.")
+                print(f"Skipping: Only {percentage_available*100:.2f}% of files available for category {class_name}, which is below the threshold of {min_percentage_available*100:.2f}%.")
             continue
         else:
             if verbose:
-                print(f"Found {len(files_list)} files ({percentage_available*100:.2f}%) to process for group average for category {cat}.")
+                print(f"Found {len(files_list)} files ({percentage_available*100:.2f}%) to process for group average for category {class_name}.")
 
         nifti_mean(files_list, result_map_path=result_map_path, result_map_path_std=result_map_path_std, 
                 mask_img=mask_img, verbose=verbose)           
@@ -455,6 +564,7 @@ def calculate_similarity_in_roi(datafolder,
                                roi_type='sphere',
                                atlas_type='Nitzsche',
                                verbose=False,
+                               sample_img=None,
                                **kwargs):
     '''
     Calculate pairwise similarity between stimulus types within a specified ROI.
@@ -487,6 +597,21 @@ def calculate_similarity_in_roi(datafolder,
     --verbose: Verbose output (default: False)
 
     '''
+    # in case of the method being mahalanobis and sphere, get it directly from the maps
+    if method == 'mahalanobis' and roi_type == 'sphere':
+        # load meta_similarity_map
+        meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, method=method, radius=radius, verbose=verbose)
+        # get the values
+        # .....
+        # return results_df
+
+
+    # double check that the atlas matches the specie
+    if specie == 'D' and atlas_type not in ['Nitzsche', 'Johnson', 'Datta']:
+        raise ValueError(f"Invalid atlas_type {atlas_type} for specie {specie}. Valid options: 'Nitzsche', 'Johnson', 'Datta'.")
+    elif specie == 'H' and atlas_type not in ['MNI', 'AAL']:
+        raise ValueError(f"Invalid atlas_type {atlas_type} for specie {specie}. Valid options: 'MNI', 'AAL'.")
+
     if roi_type == 'sphere':
         # check if either coords_vox or coords_mm is provided
         if 'coords_vox' not in kwargs and 'coords_mm' not in kwargs:
@@ -497,7 +622,12 @@ def calculate_similarity_in_roi(datafolder,
             radius = kwargs['radius']
         # if the coordinates are in mm, convert to voxels
         if 'coords_mm' in kwargs:
-            coords_vox = utils.mm_to_vox(kwargs['coords_mm'])
+            if specie == 'D':
+                coords_vox = utils.mm_to_vox(kwargs['coords_mm'], atlas_type=atlas_type)
+            elif specie == 'H':
+                coords_vox = utils.mm_to_vox(kwargs['coords_mm'], sample_img=sample_img)
+            else:
+                raise ValueError(f"Invalid specie {specie}. Valid options: 'D', 'H'.")
         elif 'coords_vox' in kwargs:
             coords_vox = kwargs['coords_vox']
         # take first entry of session_and_run_dict to get session, run_N
@@ -513,8 +643,19 @@ def calculate_similarity_in_roi(datafolder,
                     'stats', f'pe1.nii.gz'
                 )
         sample_img = nib.load(sample_file_path)
-        mask = create_sphere_mask(sample_img, coords_vox, radius)
+        # print sample_img dimensions
+        print(f"Sample image shape: {sample_img.shape}")
+        # print coords_vox
+        print(f"Coordinates in voxels: {coords_vox}")
+        
 
+        mask = create_sphere_mask(sample_img, coords_vox, radius)
+        
+        if verbose:
+            # print dimensions of mask and sample_img
+            print(f"Sample image shape: {sample_img.shape}, mask shape: {mask.shape}")
+            # print number of voxels > 0 in mask
+            print(f"Number of voxels in sphere mask: {np.sum(mask.get_fdata() > 0)}")
 
     elif roi_type == 'segment':
         if 'segmentation_segments' not in kwargs:
@@ -1049,6 +1190,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
 
     print(f"Pairwise vs model for: {specie}-sub-{sub_N:02d}, model {model}, rsa_model {rsa_model}...")
     # load the mask to use as reference
+    print(f"loading {mask}")
     ref_img = nib.load(mask).get_fdata()
     mask_affine = nib.load(mask).affine
     
@@ -1107,8 +1249,26 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
             print("Skipping computation as replace_file is False.")
             return  # all files exist, skip computation
         else:
-            # issue error, not implemented
-            raise NotImplementedError("Replacing existing files is not implemented.")
+            # delete all existing files to recompute
+            print("Replacing existing files as replace_file is True.")
+            for entry in session_and_run_dict:
+                session = entry['session']  
+                run_N = entry['run']
+                # correct session to 2 digits
+                session = f"{session:02d}"
+                # determine filename
+                filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                            model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                            f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                            f"r-{radius}_{method}_{rsa_method}.nii.gz")
+                if os.path.exists(filename):
+                    os.remove(filename)
+                    if verbose:
+                        print(f"Removed existing file: {filename}.")
+                else:
+                    if verbose:
+                        print(f"File to remove not found (already missing): {filename}.")
+
     
     ### To this point, at least one output file is missing, proceed to check input files ###
     
@@ -1197,31 +1357,31 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
         
     
         # try to compute pairwise similarity maps
-        try:  # if error, remove temp file and continue
+        # try:  # if error, remove temp file and continue
             # calculate comparison with model
-            compare_with_model(
-                ref_img=ref_img,
-                mask_affine=mask_affine,
-                datafolder=datafolder,
-                sub_N=sub_N,
-                session=session,
-                run_N=run_N,
-                specie=specie,
-                model=model,
-                dataset=dataset,
-                task=task,
-                radius=radius,
-                rsa_model=rsa_model,
-                method=method,
-                rsa_method=rsa_method,
-                replace_file=replace_file,
-                verbose=verbose,
-                rnd=rnd,
-                reps=reps,
-                replace_rnd_files=replace_rnd_files
-            )
-        except Exception as e:
-            print(f"Error computing pairwise similarity maps for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}: {e}")
+        compare_with_model(
+            ref_img=ref_img,
+            mask_affine=mask_affine,
+            datafolder=datafolder,
+            sub_N=sub_N,
+            session=session,
+            run_N=run_N,
+            specie=specie,
+            model=model,
+            dataset=dataset,
+            task=task,
+            radius=radius,
+            rsa_model=rsa_model,
+            method=method,
+            rsa_method=rsa_method,
+            replace_file=replace_file,
+            verbose=verbose,
+            rnd=rnd,
+            reps=reps,
+            replace_rnd_files=replace_rnd_files
+        )
+        # except Exception as e:
+        #     print(f"Error computing pairwise similarity maps for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}: {e}")
                     
     # remove temp file
     if os.path.exists(tmp_file):
@@ -1307,21 +1467,6 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
 
-    # stim_types = config['stim_types']
-    model_dict = config['model_dict']
-    run_list = config["runs"]
-    session_list = config["sessions"]
-
-    project_dict = {
-        "Dataset": config["dataset"],
-        "Task": config["task"],
-        "Participants": config["participants"],
-        "Runs": config["runs"],
-        "Sessions": config["sessions"],
-        "Specie": config["specie"],
-        "Atlas_type": config["atlas_type"],
-        "Datafolder": datafolder,
-    }
     # load rsa model dictionary
     rsa_model_dict = read_model_dict(rsa_model_path)
     # build model_vector
@@ -1331,10 +1476,9 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     for i, pair in enumerate(rsa_model_dict['pairs']):
         model_vector[i] = rsa_model_dict['model'][pair[0]][pair[1]]
 
-    
-    
-    
-    meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, sub_N, session, run_N, config_path, method=method, radius=radius, verbose=verbose)
+    print("Loading meta similarity map...")
+    meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, method=method, radius=radius, verbose=verbose)
+    print("Meta similarity map loaded.")
     # create similarity_table (x, y, z) of all voxels in the mask, results will be added here
     similarity_table = np.column_stack(np.where(ref_img > 0))
     # add 1 to x, y, z to match 1-based indexing in itk-snap
@@ -1351,8 +1495,12 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     # build output filename _[4 digit padded rnd_N]
     # output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}_{rnd_N:04d}.nii.gz")
 
+    rnd_N_list = list(range(0, reps))
+    # randomize the elements in rnd_N_list
+    random.shuffle(rnd_N_list)
+    
 
-    for rnd_N in range(0, reps):
+    for indx, rnd_N in enumerate(rnd_N_list):
         # create an result_map based on the reference image
         result_map = np.zeros(ref_img.shape)
         if rnd:
@@ -1363,12 +1511,15 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
             output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}_{rnd_N:04d}.nii.gz")
             # check if output_file exists
             if os.path.exists(output_file) and not replace_rnd_files:
-                print(f"rnd {rnd_N:04d}/{reps:04d} exist, skipping")
+                print(f"rnd {(indx+1):04d}/{reps:04d} exist, skipping")
                 continue
+            else:
+                print(f"{output_file} does not exist or replace_rnd_files is {replace_rnd_files}, computing rnd {(indx+1):04d}/{reps:04d}")
+
 
             model_vector = shuffle_vector(model_vector)
         else:
-            if rnd_N > 0:
+            if indx > 0:
                 print("real data, skipping further repetitions")
                 break
             output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
@@ -1461,7 +1612,7 @@ def remove_existing_rnd_files(datafolder, dataset, sub_N, session, run_N, specie
                 print(f"Removing {file_path}")
             os.remove(file_path)
 
-def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, sub_N, session, run_N, config_path, method='pearson', radius=3, verbose=False):
+def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, method='pearson', radius=3, verbose=False):
     # loads the meta similarity map for given parameters
     # Load config.yaml
 
@@ -1480,7 +1631,7 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, sub_N
             if indx1 >= indx2:
                 continue
             # load similarity comparison
-            map = load_pairwise_similarity_map(datafolder, dataset, sub_N, session, run_N, cat1, cat2, config_path, method=method, radius=radius, verbose=verbose)
+            map = load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, run_N, cat1, cat2, config_path, method=method, radius=radius, verbose=verbose)
             if verbose:
                 pair_name = f"{cat1}_{cat2}"
                 print(f"Loaded pair {pair_name} into index {k}")
@@ -1490,14 +1641,14 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, sub_N
             k += 1
     return meta_similarity_map
 
-def load_pairwise_similarity_map(datafolder, dataset, sub_N, session, run_N, stim_1_name, stim_2_name, config_path, method='pearson', radius=3, verbose=False):
+def load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, run_N, stim_1_name, stim_2_name, config_path, method='pearson', radius=3, verbose=False):
     # Loads similarity map that compares two stimuli for given parameters
 
     # Load config.yaml
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
     model = config['model']
-    specie = config['specie']
+    
     task = config['task']
 
     file_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep + f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz"
@@ -2797,8 +2948,12 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
     # create output folder if it does not exist
     os.makedirs(output_folder, exist_ok=True)
     
+    rnd_N_list = list(range(0, reps_group))
+    # randomly shuffle rnd_N_list
+    random.shuffle(rnd_N_list)
+
     # check if output file already exists
-    for rnd_N in range(0, reps_group):
+    for indx, rnd_N in enumerate(rnd_N_list):
         # output file path
         mean_model_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
@@ -2808,11 +2963,14 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
         if os.path.exists(mean_model_map_path):
             if not replace_rnd_files:
                 if verbose:
-                    print(f"rnd {rnd_N:05d}/{reps_group:05d} exist, skipping...")
+                    print(f"rnd {(indx+1):05d}/{reps_group:05d} exist, skipping...")
                 continue
             else:
                 if verbose:
-                    print(f"rnd {rnd_N:05d}/{reps_group:05d} exist, replacing...")
+                    print(f"rnd {(indx+1):05d}/{reps_group:05d} exist, replacing...")
+        else:
+            if verbose:
+                print(f"rnd {(indx+1):05d}/{reps_group:05d}, file {mean_model_map_path} does not exist, calculating...")
         
         # check if temp file exists and how long ago it was modified
         if os.path.exists(mean_model_map_path_tmp):
@@ -2820,14 +2978,14 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             elapsed_time = time() - mod_time
             if elapsed_time < wait_time:
                 if verbose:
-                    print(f"rnd {rnd_N:05d}/{reps_group:05d} skipping as it is being processed by another instance. Skipping...")
+                    print(f"rnd {(indx+1):05d}/{reps_group:05d} skipping as it is being processed by another instance. Skipping...")
                 continue
             else:
                 if verbose:
-                    print(f"rnd {rnd_N:05d}/{reps_group:05d} old temp found, calculating model similarity map...")
+                    print(f"rnd {(indx+1):05d}/{reps_group:05d} old temp found, calculating model similarity map...")
         else:
             if verbose:
-                print(f"rnd {rnd_N:05d}/{reps_group:05d} temporal file created {mean_model_map_path_tmp}...")
+                print(f"rnd {(indx+1):05d}/{reps_group:05d} temporal file created {mean_model_map_path_tmp}...")
             # create temp file
             with open(mean_model_map_path_tmp, 'w') as f:
                 f.write(f"Temporary file for rnd {rnd_N:05d}\n")
@@ -2863,13 +3021,13 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
         # check if enough files are available
         available_percentage = len(files_list) / file_counter
         if available_percentage < min_percentage_available:
-            print(f"rnd {rnd_N:05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
+            print(f"rnd {(indx+1):05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
             # remove temp file
             if os.path.exists(mean_model_map_path_tmp):
                 os.remove(mean_model_map_path_tmp)
             continue
         else:
-            print(f"rnd {rnd_N:05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
+            print(f"rnd {(indx+1):05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
         try:
             # calculate group model similarity map
             # nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
@@ -3616,11 +3774,46 @@ def pick_subpeaks(affine, stat, cluster_mask, min_dist_mm=8.0, max_peaks=None):
             break
     return kept
 
-def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0, 
-                               max_peaks_per_cluster=3, label_dict=None, label_nii_data=None):
+def extract_clusters_and_peaks(
+    nifti_path,
+    stat_thresh=None,
+    min_dist_mm=8.0,
+    max_peaks_per_cluster=3,
+    label_dict=None,
+    label_nii_data=None,
+    label_affine=None,
+):
     img = nib.load(nifti_path)
     stat = img.get_fdata()
     affine = img.affine
+    # print dimensions of image in terms of number of voxels in each dimension
+    print(f"Image shape (voxels): {stat.shape}")
+
+    # Normalize label inputs (allow passing a NIfTI image or a path)
+    if label_nii_data is not None and label_dict is not None:
+        if isinstance(label_nii_data, (str, os.PathLike)):
+            label_img = nib.load(str(label_nii_data))
+            label_nii_data = label_img.get_fdata()
+            if label_affine is None:
+                label_affine = label_img.affine
+        elif hasattr(label_nii_data, "get_fdata") and hasattr(label_nii_data, "affine"):
+            # nibabel image-like
+            label_img = label_nii_data
+            label_nii_data = label_img.get_fdata()
+            if label_affine is None:
+                label_affine = label_img.affine
+        else:
+            # numpy array
+            if label_affine is None:
+                # Backward-compatible fallback only if shapes match exactly
+                if hasattr(label_nii_data, "shape") and label_nii_data.shape == stat.shape:
+                    label_affine = affine
+                else:
+                    raise ValueError(
+                        "label_nii_data was provided as a numpy array, but label_affine is missing and "
+                        "label_nii_data.shape != stat.shape. Pass a nibabel image (nib.load(...)) or "
+                        "provide label_affine so peak mm coordinates can be mapped into atlas voxel space."
+                    )
 
     # threshold (if not already cluster-thresholded)
     if stat_thresh is not None:
@@ -3643,15 +3836,42 @@ def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0,
             min_dist_mm=min_dist_mm,
             max_peaks=max_peaks_per_cluster
         )
+        # peaks must be a list of (z, (i,j,k), (x,y,z))
+        print("this the print for peaks")
+        print(peaks)
+        print("end of print for peaks")
         # go through every peak and label region
         if label_dict is not None and label_nii_data is not None:
             print(f"Labelling peaks for cluster {c}...")
             for idx in range(len(peaks)):
-                ijk = peaks[idx][1]
-                label_val = label_nii_data[ijk]
+                stat_ijk = peaks[idx][1]
+                peak_xyz_mm = np.asarray(peaks[idx][2], dtype=float)
+
+                # Map peak mm coords -> label voxel coords (handles differing grids)
+                label_ijk_f = nib.affines.apply_affine(np.linalg.inv(label_affine), peak_xyz_mm)
+                label_ijk = tuple(np.rint(label_ijk_f).astype(int))
+
+                print(f"stat ijk: {stat_ijk} -> label ijk: {label_ijk}")
+                print(f"label_nii_data shape: {label_nii_data.shape}")
+
+                in_bounds = all(0 <= label_ijk[d] < label_nii_data.shape[d] for d in range(3))
+                if in_bounds:
+                    label_val = int(label_nii_data[label_ijk])
+                else:
+                    label_val = 0
                 # find the row matching with label_val in label_dict
+                
+                # create a version of label_dict['Number'] with int values (in case they are strings in the original dataframe)
+                label_dict_list = label_dict['Number'].tolist()
+                label_dict_list = [int(x) for x in label_dict_list]
+                print(f"label_dict_list: {label_dict_list}")
+                print(f"label_val: {label_val}")
+
                 label_row = label_dict[label_dict['Number'] == label_val]
-                region_name = label_row['Region'].values[0] if not label_row.empty else "Unknown"
+                if not in_bounds:
+                    region_name = "OutOfAtlas"
+                else:
+                    region_name = label_row['Region'].values[0] if not label_row.empty else "Unknown"
                 # add region name to peaks
                 peaks[idx] = (peaks[idx][0], peaks[idx][1], peaks[idx][2], region_name)
 
@@ -3668,11 +3888,19 @@ def extract_clusters_and_peaks(nifti_path, stat_thresh=None, min_dist_mm=8.0,
         })
     return results
 
-def clusters_to_excel(results, out_path):
+def clusters_to_excel(results, out_path, apply_coords_transform=False, atlas_file=None, mask=None):
     """
     Build a hierarchical (cluster -> subpeak) table from `results`
     and save it as an Excel file.
     """
+    if apply_coords_transform:
+        # get the original image to apply coordinate transform
+        original_img = nib.load(atlas_file)
+        # get the results image to apply coordinate transform
+        results_img = nib.load(mask)
+
+
+
     rows = []
     # print('hit new 2')
     for cluster in results:
@@ -3683,6 +3911,20 @@ def clusters_to_excel(results, out_path):
 
         for sub_idx, peak in enumerate(cluster['peaks'], start=1):
             i, j, k = peak['ijk']
+            
+            
+            # apply coordinate transform if requested
+            if apply_coords_transform:
+            # get inputs for transform_coords
+                coords_input = (i, j, k)
+                # get new_coordinates
+                new_coordinates = transform_coords(coords_input,results_img,original_img)[0]
+                print(f"new coordinates are {new_coordinates}")
+                print(f"type of new coordinates: {type(new_coordinates)}")
+                # update i, j, k with new_coordinates
+                i, j, k = new_coordinates
+
+
             x_mm, y_mm, z_mm = peak['xyz_mm']
             region = peak['region']
 
@@ -3713,7 +3955,7 @@ def clusters_to_excel(results, out_path):
 
 def create_tables(datafolder, dataset, specie, model, rsa_model, radius, 
                   method, rsa_method, min_dist_mm=8.0, max_peaks_per_cluster=3, 
-                  label_dict=None, label_nii_data=None):
+                  label_dict=None, label_nii_data=None, apply_coords_transform=True, atlas_file=None, mask=None):
     res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
                 f"{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz"
@@ -3736,7 +3978,7 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
     out_path_copy = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
                 f"{rsa_model}.xlsx")
-    clusters_to_excel(results, out_path)
+    clusters_to_excel(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
     print(f"Files written in: {out_path}")
     # create copy of res_image and out_path
     # Copy the result image and Excel table to new filenames
