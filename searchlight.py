@@ -42,6 +42,7 @@ Input arguments:
 --radius: Radius for searchlight (default: 3)
 --z_threshold: Z threshold for z maps (default: 3.1)
 --cluster_threshold: Cluster threshold for cluster correction (default: 0.05)
+--peak_id: peak_id for running step 12, if not provided, it will calculate based on roi_database.csv
 
 --reps: Number of repetitions for permutations in individual run (default: 100)
 --reps_group: Number of repetitions for permutations in group analysis (default: 1000)
@@ -80,6 +81,8 @@ def parse_arguments():
                         help='Z threshold for z maps')
     parser.add_argument('--cluster_threshold', type=float, default=0.05,
                         help='Cluster threshold for cluster correction')
+    parser.add_argument('--peak_id', type=str, default=None,
+                        help='peak_id for running step 12, if not provided, it will calculate based on roi_database.csv')
     parser.add_argument('--reps', type=int, default=50,
                         help='Number of repetitions for permutations in individual run')
     parser.add_argument('--reps_group', type=int, default=1000,
@@ -131,7 +134,7 @@ def main():
     verbose = args.verbose
     wait_time = args.wait_time
     overwrite_movement = args.overwrite_movement
-
+    peak_id = args.peak_id
     dataset = 'EmoB'
     task = 'EmoB'
 
@@ -161,7 +164,7 @@ def main():
         config = yaml.safe_load(f)
 
     # stim_types = config['stim_types']
-    model_dict = config['model_dict']
+    
 
     path_to_dog_brain_toolkit = os.path.join(git_folder, 'dog_brain_toolkit')
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
@@ -193,7 +196,7 @@ def main():
     smooth = config["smooth"]
     img_type = config["img_type"]
     model = config["model"]
-    model_dict = config['model_dict']
+    
     participants = config["participants"]
     stim_types = config['stim_types']
     #atlas_type = config["atlas_type"]
@@ -458,15 +461,36 @@ def main():
             print("### Done computing cross-participant similarity ###")
         if step == 12: # Calculate similarity across all pairs in a model, save files as txt
             print("### Step 12: Creating similarity files in voxel coordinates: ###")
-            print(f"voxel coordinates {voxel_coords}")
+            # load roi_database
+            # "P:\userdata\raulh87\data\EmoB\ROI\roi_database.csv"
+            roi_database_path = os.path.join(
+                datafolder, dataset, 'ROI', 'roi_database.csv'
+            )
+            roi_database = pd.read_csv(roi_database_path)
+            # filter roi_database to include only rows with matching specie
+            roi_database = roi_database[roi_database['specie'] == specie]
+
+            # get session and run list for all participants and save in a dict
             session_and_run_all_dict = {}
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
-            rsa_utils.calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie,
-                                        mask=mask, model=model, task=task, radius=radius, method=method, 
-                                        rsa_model=rsa_model, voxel_coords=voxel_coords, config_path=config_path, verbose=True, shuffle_participants=True,
-                                        wait_time=wait_time)
+            # if peak_id is not provided, iterate over roi_database and calculate for each peak_id
+            if peak_id is None:
+                for index, row in roi_database.iterrows():
+                    print(f"Calculating similarity for peak_id {row['peak_id']} at coordinates {row['voxel_coords']}...")
+                    voxel_coords = row['voxel_coords']
+                    # voxel_coors is a string in format like this: "(x, y, z)", convert it to a tuple of integers
+                    voxel_coords = voxel_coords.strip("()") # remove parentheses
+                    voxel_coords = voxel_coords.split(",") # split by comma
+                    voxel_coords = tuple(int(coord) for coord in voxel_coords) # convert to tuple of integers
+
+                    print(f"voxel_coords: {voxel_coords}")
+                    print(f"type of voxel_coords: {type(voxel_coords)}")
+                    rsa_utils.calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie,
+                                                mask=mask, model=model, task=task, radius=radius, method=method, 
+                                                rsa_model=rsa_model, voxel_coords=voxel_coords, config_path=config_path, verbose=True, shuffle_participants=True,
+                                                wait_time=wait_time)
             print("### Done computing similarity across all pairs in a model ###")
         
 
