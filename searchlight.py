@@ -216,8 +216,7 @@ def main():
         # if radius is None, use 3 as default for dogs
         if radius is None:
             radius = 3
-        if coords is None:
-            voxel_coords = (24, 19, 36) # splenial gyrus L SpG
+        
 
         # label_dict = pd.read_excel(os.path.join(
         # path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.xlsx"
@@ -248,9 +247,7 @@ def main():
         # for humans, if radius is None, use 4 as default
         if radius is None:
             radius = 4
-        if coords is None:
-            voxel_coords = (36, 12, 15) # Occipital_Sup_R (SOG)
-
+        
     else:
         raise ValueError("Specie must be 'D' for Dog or '`H' for Human")
     

@@ -2134,8 +2134,8 @@ def similarity_searchlight(map_1, map_2, mask, radius, method):
                 val = _euclidean(x, y)
             elif method == "mahalanobis":
                 raise NotImplementedError("This version is deprecated.")
-                
         similarity_map[tuple(center)] = val
+                
 
     return similarity_map
 
@@ -2167,9 +2167,9 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
 
     Returns
     -------
-    D : ndarray
+    D : ndarray, shape (n_conditions, n_conditions) or (n_conditions * (n_conditions - 1) / 2,)
         Crossnobis distances (unbiased estimate of squared Mahalanobis distance).
-        Can be negative around zero.
+        
 
     Notes
     -----
@@ -2595,7 +2595,8 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                 When multiple runs are available, calculate distance across runs 
                 (cross-validated across runs).
                 Folding strategies:
-                    - run-wise: each run is a fold
+                    - run-wise (deprecated, do not use): each run is a fold
+                    - stim-wise: 
     Inputs:
         - datafolder: str. Path to data folder
         - dataset: str. Dataset name
@@ -2725,7 +2726,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius, replace_file=False,
                           mah_fold=mah_fold, sigma=sigma,
-                          shrinkage=shrinkage, return_rdm=return_rdm, verbose=verbose)
+                          shrinkage=shrinkage, return_rdm=return_rdm, verbose=verbose, save_inverted=False)
     else:
         if len(missing) > 0:
             print(f"Missing input files for {method} for sub-{sub_N:02d}:")
@@ -2758,7 +2759,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
 def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius, replace_file=False,
                           mah_fold='run-wise', sigma=None,
-                          shrinkage='ledoitwolf', return_rdm=True, verbose=False):
+                          shrinkage='ledoitwolf', return_rdm=True, verbose=False, save_inverted=False):
     '''
     Calculate Mahalanobis distance maps using searchlight approach.
     - Uses cross-validation based on specified folding strategy.
@@ -2774,7 +2775,13 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             - max-fold: max partitions possible
             - odd-even: splits data into odd and even trials
         Multiple runs:
-            - run-wise: each run is a fold
+            Each run is a fold:
+            - run-wise: labels are all stimuli types on one run, across runs. 
+                Output: single map for each pair of stimuli types listed in stim_types 
+            - stim-wise: labels are stimulus types (category instead of specific stimulus)
+            strips stim_type to determine category, then uses category as label
+                Output: single map for each pair of stimulus categories (e.g. faces vs bodies) instead of specific stimulus types (e.g. face-1 vs face-2)
+                
     
     Inputs:
         - datafolder: str. Path to data folder
@@ -2792,6 +2799,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
         - sigma: np.ndarray or None. Noise covariance matrix
         - shrinkage: str. Shrinkage method for covariance estimation
         - return_rdm: bool. If True, return full RDM matrix
+        - save_inverted: bool. If True, save inverted Mahalanobis maps
     Output:
         - similarity_map for each pairwise condition comparison
     '''
@@ -2800,7 +2808,16 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     # load mask
     mask_img_obj = nib.load(mask)
     mask_img = mask_img_obj.get_fdata().astype(bool)
-    
+    # if mah_fold is 'stim-wise', make sure stim_types can be stripped to determine categories
+    if mah_fold == 'stim-wise':
+        # check if each stim in stim_types can be stripped to determine category (e.g. face-1 -> face, body-2 -> body)
+        categories = set()
+        for stim in stim_types:
+            if '-' in stim:
+                category = stim.split('-')[0]
+                categories.add(category)
+            else:
+                raise ValueError(f"Stimulus type {stim} does not contain a '-' to determine category for stim-wise folding.")
 
     print("Loading beta maps...")
 
@@ -2884,10 +2901,9 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
         # get indices of valid voxels
         indices = tuple(neigh.T)
         
-        # prepare partitions based on mah_fold
-        if len(session_and_run_dict) > 1:
-            # multiple runs available
-            if mah_fold == 'run-wise':
+        # assign labels and partitions based on mah_fold
+        if len(session_and_run_dict) > 1: # multiple runs available, runs are partitions
+            if mah_fold == 'run-wise': # labels are all stimuli types on one run, across runs. Output: single map for each pair of stimuli types, where distance is calculated across runs (cross-validated across runs)
                 # prepare data matrix Y (stim_types x voxels)
                 Y_list, labels, partitions = [], [], []
                 for run_idx, entry in enumerate(session_and_run_dict):
@@ -2899,6 +2915,23 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                         labels.append(stim)
                         partitions.append(run_N)
                 Y = np.vstack(Y_list)
+            elif mah_fold == 'stim-wise': # labels are based on stimuli types
+                # prepare data matrix Y (stim_types x voxels)
+                Y_list, labels, partitions = [], [], []
+                for run_idx, entry in enumerate(session_and_run_dict):
+                    run_N = entry['run']
+                    for stim_idx, stim in enumerate(stim_types):
+                        map_data = entry['maps'][stim]
+                        voxel_values = map_data[indices]
+                        Y_list.append(voxel_values)
+                        # determine category by stripping stim string
+                        if '-' in stim:
+                            category = stim.split('-')[0]
+                        else:
+                            raise ValueError(f"Stimulus type {stim} does not contain a '-' to determine category for stim-wise folding.")
+                        labels.append(category)
+                        partitions.append(run_N)  # still use runs as partitions for cross-validation
+            
             else:
                 raise ValueError(f"Unknown mah_fold strategy for multiple runs: {mah_fold}")
         else:
@@ -2943,12 +2976,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                     f"r-{radius}_mahalanobis_{stim_i}_{stim_j}.nii.gz"
                 )
                 # same but with stimuli inverted
-                output_fileb = os.path.join(
-                    datafolder, dataset, 'results', 'RSA', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
-                    f"r-{radius}_mahalanobis_{stim_j}_{stim_i}.nii.gz"
-                )
+                
                 # create output directory if it doesn't exist
                 output_dir = os.path.dirname(output_file)
                 if not os.path.exists(output_dir):
@@ -2957,8 +2985,15 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                 affine = nib.load(input_file).affine  # use affine from last loaded map
                 sim_map_nifti = nib.Nifti1Image(similarity_maps[key], affine)
                 nib.save(sim_map_nifti, output_file)
-                nib.save(sim_map_nifti, output_fileb)
                 print(f"Saved similarity map: {output_file}")
+                if save_inverted:
+                    output_fileb = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{run_N:02d}",
+                        f"r-{radius}_mahalanobis_{stim_j}_{stim_i}.nii.gz"
+                    )
+                    nib.save(sim_map_nifti, output_fileb)
 
 def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
                                        run_N, specie, model, stim_types, mask, 
