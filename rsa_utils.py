@@ -1451,11 +1451,19 @@ def kendall_tau_a(a, b):
 def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                     specie, model, stim_types, mask, task, radius, rsa_model,
                     method='pearson', rsa_method='kendall', replace_file=False, verbose=False, wait_time=300,
-                    rnd=False, reps=1000, create_subject_mean=False, replace_rnd_files=False,
-                    mask_type=None):
+                    rnd=False, reps=1000, create_subject_mean=False, replace_rnd_files=False, mah_fold='stim-wise',
+                    mask_type=None, categories=None):
     '''
     Compare pairwise similarity maps with a model.
     '''
+    
+    if method == 'mahalanobis':
+        # get categories from stim_types, assuming they are in the format "category-stimulus#"
+        categories = set()
+        for stim in stim_types:
+            if '-' in stim:
+                category = stim.split('-')[0]
+                categories.add(category)
     ###- Pending: Implement logic to check for existing output files, remove manually for now ###
 
     # if calculating permutations, create_subject_mean should be False
@@ -1468,59 +1476,84 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     ref_img = nib.load(mask).get_fdata()
     mask_affine = nib.load(mask).affine
     
+    file_list = [] # to keep track of the files available
     all_exist = True # this is a flag to indicate if all output files exist
-    # Check for existing output files
-    for entry in session_and_run_dict:
-        session = entry['session']
-        run_N = entry['run']
-        # correct session to 2 digits
-        session = f"{session:02d}"
-        ## check whether this is real data or if running permutations
-        
-        if rnd: # permutations, check in RSA_rnd if all permutations exist
-            folder_permutations = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
-                        model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
-                        f"ses-{session}_task-{task}_run-{run_N:02d}")
-            # check if folder exists
-            if os.path.exists(folder_permutations):
-                # check if there are files matching r-{radius}_{method}_{rsa_method}_rnd-*.nii.gz
-                existing_files = glob.glob(folder_permutations + os.sep + f"r-{radius}_{method}_{rsa_method}_*.nii.gz")
-                if len(existing_files) >= reps:
+    # if method is not mahalabinobis
+    if method != 'mahalanobis':
+        # Check for existing output files
+        for entry in session_and_run_dict:
+            session = entry['session']
+            run_N = entry['run']
+            # correct session to 2 digits
+            session = f"{session:02d}"
+            ## check whether this is real data or if running permutations
+            
+            if rnd: # permutations, check in RSA_rnd if all permutations exist
+                folder_permutations = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
+                            model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                            f"ses-{session}_task-{task}_run-{run_N:02d}")
+                # check if folder exists
+                if os.path.exists(folder_permutations):
+                    # check if there are files matching r-{radius}_{method}_{rsa_method}_rnd-*.nii.gz
+                    existing_files = glob.glob(folder_permutations + os.sep + f"r-{radius}_{method}_{rsa_method}_*.nii.gz")
+                    if len(existing_files) >= reps:
+                        if verbose:
+                            print(f"Skipping: Found {len(existing_files)} permutation model comparison files in {folder_permutations}.")
+                            # all done, exit function
+                        continue
+                    else:
+                        if verbose:
+                            print(f"Running missing. Found only {len(existing_files)} permutation model comparison files in {folder_permutations}, need {reps}.")
+                        all_exist = False
+                else: # folder does not exist, not necessary to check files
                     if verbose:
-                        print(f"Skipping: Found {len(existing_files)} permutation model comparison files in {folder_permutations}.")
+                        print(f"Running missing. Folder {folder_permutations} does not exist.")
+                    all_exist = False
+                    break
+
+            else: # real data, check for the specific file
+                if mask is not None:
+                    output_file = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                                model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                                f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                                f"{mask_type}-r-{radius}_{method}_{rsa_method}.nii.gz")
+                else:
+                    output_file = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                                model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                                f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                                f"r-{radius}_{method}_{rsa_method}.nii.gz")
+                if os.path.exists(output_file):
+                    if verbose:
+                        print(f"Skipping: Found existing model comparison file: {output_file}.")
                         # all done, exit function
                     continue
-                else:
+                else: # file does not exist
                     if verbose:
-                        print(f"Running missing. Found only {len(existing_files)} permutation model comparison files in {folder_permutations}, need {reps}.")
+                        print(f"Missing. File {output_file} does not exist.")
                     all_exist = False
-            else: # folder does not exist, not necessary to check files
-                if verbose:
-                    print(f"Running missing. Folder {folder_permutations} does not exist.")
-                all_exist = False
-                break
+                    break
 
-        else: # real data, check for the specific file
-            if mask is not None:
-                filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                            model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
-                            f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                            f"{mask_type}-r-{radius}_{method}_{rsa_method}.nii.gz")
-            else:
-                filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                            model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
-                            f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                            f"r-{radius}_{method}_{rsa_method}.nii.gz")
-            if os.path.exists(filename):
+    elif method == 'mahalanobis': # check for mahalanobis files, for which there is only per category pairs
+        if mah_fold == 'stim-wise':
+            # build output_file path
+            output_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model, rsa_model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"{mask_type}-r-{radius}_{method}_mahalanobis.nii.gz")
+            if os.path.exists(output_file):
                 if verbose:
-                    print(f"Skipping: Found existing model comparison file: {filename}.")
+                    print(f"Skipping: Found existing model comparison file: {output_file}.")
                     # all done, exit function
-                continue
-            else: # file does not exist
+            else:
                 if verbose:
-                    print(f"Missing. File {filename} does not exist.")
+                    print(f"Missing. File {output_file} does not exist.")
                 all_exist = False
-                break
+        else: # issue error
+            raise NotImplementedError("Only 'stim-wise' fold is implemented for mahalanobis method.")
+
+    
+        
+        
 
     # if all files exist, skip computation
     if all_exist:
@@ -1529,32 +1562,42 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
             print("Skipping computation as replace_file is False.")
             return  # all files exist, skip computation
         else:
-            # delete all existing files to recompute
-            print("Replacing existing files as replace_file is True.")
-            for entry in session_and_run_dict:
-                session = entry['session']  
-                run_N = entry['run']
-                # correct session to 2 digits
-                session = f"{session:02d}"
-                # determine filename
-                # if mask is not None:
-                if mask is not None:
-                    filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                                model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
-                                f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                                f"{mask_type}-r-{radius}_{method}_{rsa_method}.nii.gz")
-                else:
-                    filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
-                                model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
-                                f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                                f"r-{radius}_{method}_{rsa_method}.nii.gz")
-                if os.path.exists(filename):
-                    os.remove(filename)
+            # if not mahalanobis
+            if method != 'mahalanobis':
+                # delete all existing files to recompute
+                print("Removing existing files as replace_file is True.")
+                for entry in session_and_run_dict:
+                    session = entry['session']  
+                    run_N = entry['run']
+                    # correct session to 2 digits
+                    session = f"{session:02d}"
+                    # determine filename
+                    # if mask is not None:
+                    if mask is not None:
+                        filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                                    model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                                    f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                                    f"{mask_type}-r-{radius}_{method}_{rsa_method}.nii.gz")
+                    else:
+                        filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
+                                    model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                                    f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
+                                    f"r-{radius}_{method}_{rsa_method}.nii.gz")
+                    if os.path.exists(filename):
+                        os.remove(filename)
+                        if verbose:
+                            print(f"Removed existing file: {filename}.")
+                    else:
+                        if verbose:
+                            print(f"File to remove not found (already missing): {filename}.")
+            else: # mahalanobis, only one file
+                if os.path.exists(output_file):
+                    os.remove(output_file)
                     if verbose:
-                        print(f"Removed existing file: {filename}.")
+                        print(f"Removed existing file: {output_file}.")
                 else:
                     if verbose:
-                        print(f"File to remove not found (already missing): {filename}.")
+                        print(f"File to remove not found (already missing): {output_file}.")
 
     
     ### To this point, at least one output file is missing, proceed to check input files ###
@@ -1564,37 +1607,57 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     # initialize pairs_available_array a boolean array to indicate if all pairwise similarity maps are available for each run
     # initialize it to False
     all_available = True
-    pairs_available_array = np.zeros(len(session_and_run_dict), dtype=bool)
-    for index, entry in enumerate(session_and_run_dict):
-        session = entry['session']
-        run_N = entry['run']
-        # correct session to 2 digits
-        session = f"{session:02d}"
-        # check if all beta maps exist
-        pairs_available = True
-        for i, stim_i in enumerate(stim_types):
-            for j, stim_j in enumerate(stim_types):
+    if method != 'mahalanobis': # for mahalanobis, there is only one file per subject, no need to check pairwise similarity maps
+        pairs_available_array = np.zeros(len(session_and_run_dict), dtype=bool)
+        for index, entry in enumerate(session_and_run_dict):
+            session = entry['session']
+            run_N = entry['run']
+            # correct session to 2 digits
+            session = f"{session:02d}"
+            # check if all beta maps exist
+            pairs_available = True
+            for i, stim_i in enumerate(stim_types):
+                for j, stim_j in enumerate(stim_types):
+                    if i >= j:
+                        continue  # only upper triangle
+                    # build filename for pairwise similarity map
+                    filename  = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{run_N:02d}",
+                        f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                    )
+                    # check if file exists
+                    if not os.path.exists(filename):
+                        if verbose:
+                            print(f"Missing pairwise similarity map: {filename}")
+                        pairs_available = False
+                        break
+            if not pairs_available:
+                pairs_available_array[index] = False
+                all_available = False
+        # if any of the runs are missing pairwise similarity maps, skip computation
+        if not all_available:
+            print("Some input pairwise similarity maps are missing. Skipping computation.")
+            return
+    elif method == 'mahalanobis':
+        for i, cat1 in enumerate(categories):
+            for j, cat2 in enumerate(categories):
                 if i >= j:
-                    continue  # only upper triangle
-                filename  = os.path.join(
+                    continue  # avoid duplicates and self-comparison
+                # build filename for pairwise similarity map
+                filename = os.path.join(
                     datafolder, dataset, 'results', 'RSA', model,
                     f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
-                    f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                    f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
                 )
                 # check if file exists
                 if not os.path.exists(filename):
                     if verbose:
                         print(f"Missing pairwise similarity map: {filename}")
-                    pairs_available = False
+                    all_available = False
                     break
-        if not pairs_available:
-            pairs_available_array[index] = False
-            all_available = False
-    # if any of the runs are missing pairwise similarity maps, skip computation
-    if not all_available:
-        print("Some input pairwise similarity maps are missing. Skipping computation.")
-        return
+
     print("All input files are available.")
     
     ### All input files are available, check if there are temporary files to indicate other instance processing it ###
@@ -1630,29 +1693,53 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
 
     ### Now, all input files are available, and no recent temporary file exists,
 
-    
-    
-    # go through each session and run,
-    for entry in session_and_run_dict:
-        session = entry['session']
-        run_N = entry['run']
-        # correct session to 2 digits
-        session = f"{session:02d}"
-        ## check for existing temp files, skip if recent temp files, if they are old, skip calculation, otherwise go on
-        print(f"sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}, all checks, computing pairwise similarity maps...")
-        # create folder if not exists
+    if method != 'mahalanobis':    
+        # go through each session and run,
+        for entry in session_and_run_dict:
+            session = entry['session']
+            run_N = entry['run']
+            # correct session to 2 digits
+            session = f"{session:02d}"
+            ## check for existing temp files, skip if recent temp files, if they are old, skip calculation, otherwise go on
+            print(f"sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}, all checks, computing pairwise similarity maps...")
+            # create folder if not exists
+            
         
-    
-        # try to compute pairwise similarity maps
-        # try:  # if error, remove temp file and continue
-            # calculate comparison with model
+            # try to compute pairwise similarity maps
+            # try:  # if error, remove temp file and continue
+                # calculate comparison with model
+            compare_with_model(
+                ref_img=ref_img,
+                mask_affine=mask_affine,
+                datafolder=datafolder,
+                sub_N=sub_N,
+                session=session,
+                run_N=run_N,
+                specie=specie,
+                model=model,
+                dataset=dataset,
+                task=task,
+                radius=radius,
+                rsa_model=rsa_model,
+                method=method,
+                rsa_method=rsa_method,
+                replace_file=replace_file,
+                verbose=verbose,
+                rnd=rnd,
+                reps=reps,
+                replace_rnd_files=replace_rnd_files,
+                mask_type=mask_type,
+            )
+        # except Exception as e:
+        #     print(f"Error computing pairwise similarity maps for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}: {e}")
+    elif method == 'mahalanobis':
         compare_with_model(
             ref_img=ref_img,
             mask_affine=mask_affine,
             datafolder=datafolder,
             sub_N=sub_N,
-            session=session,
-            run_N=run_N,
+            session=None,
+            run_N=None,
             specie=specie,
             model=model,
             dataset=dataset,
@@ -1668,9 +1755,6 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
             replace_rnd_files=replace_rnd_files,
             mask_type=mask_type,
         )
-        # except Exception as e:
-        #     print(f"Error computing pairwise similarity maps for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}: {e}")
-                    
     # remove temp file
     if os.path.exists(tmp_file):
         # try to remove
@@ -1747,6 +1831,15 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
         If True, use a randomized model. For permutation testing.
     """
     print(f"Comparing meta similarity map with model {rsa_model}")
+    # if method is mahalanobis, make sure that session and run_N are None, otherwise stop
+    if method == 'mahalanobis':
+        # check that session and run_N are None
+        if session is not None or run_N is not None:
+            raise ValueError("For mahalanobis method, session and run_N must be None.")
+        else:
+            # set both to 0
+            session, run_N = 0, 0
+
     print(f"for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}...")
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
@@ -1763,7 +1856,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     
     for i, pair in enumerate(rsa_model_dict['pairs']):
         model_vector[i] = rsa_model_dict['model'][pair[0]][pair[1]]
-
+    
     print("Loading meta similarity map...")
     meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, method=method, radius=radius, verbose=verbose)
     print("Meta similarity map loaded.")
@@ -1775,13 +1868,6 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     similarity_table = np.hstack((similarity_table, np.full((similarity_table.shape[0], 1), np.nan)))
     # initialize warning table
     warning_table = []
-    
-    # create temporal file to indicate that this participant is being processed
-    output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + 
-                     model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + 
-                     f"ses-{session}_task-{task}_run-{run_N:02d}")
-    # build output filename _[4 digit padded rnd_N]
-    # output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}_{rnd_N:04d}.nii.gz")
 
     rnd_N_list = list(range(0, reps))
     # randomize the elements in rnd_N_list
@@ -1794,7 +1880,16 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
         if rnd:
             # if rnd is True, permute the model values
             # rsa_model_dict = shuffle_model(rsa_model_dict)
-            output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
+            # if method is not mahalanobis, output includes session and run
+            if method != 'mahalanobis':
+                output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                os.sep + 'RSA_rnd' + os.sep + model + os.sep + rsa_model + os.sep + 
+                f"{specie}-sub-{sub_N:02d}" + os.sep +
+                f"ses-{session}_task-{task}_run-{run_N:02d}")
+            else:
+                output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                os.sep + 'RSA_rnd' + os.sep + model + os.sep + rsa_model + os.sep + 
+                f"{specie}-sub-{sub_N:02d}")
             # build output filename _[4 digit padded rnd_N]
             output_file = os.path.join(output_folder, f"r-{radius}_{method}_{rsa_method}_{rnd_N:04d}.nii.gz")
             # check if output_file exists
@@ -1803,14 +1898,23 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
                 continue
             else:
                 print(f"{output_file} does not exist or replace_rnd_files is {replace_rnd_files}, computing rnd {(indx+1):04d}/{reps:04d}")
-
-
             model_vector = shuffle_vector(model_vector)
         else:
             if indx > 0:
-                print("real data, skipping further repetitions")
+                if verbose:
+                    print("real data, skipping further repetitions")
                 break
-            output_folder = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}"
+            # if method is not mahalanobis, output includes session and run
+            if method != 'mahalanobis':
+                output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + 
+                model + os.sep + rsa_model + os.sep +  
+                f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                f"ses-{session}_task-{task}_run-{run_N:02d}")
+            else:
+                output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + 
+                model + os.sep + rsa_model + os.sep +  
+                f"{specie}-sub-{sub_N:02d}")
+
             # build output filename
             output_file = os.path.join(output_folder, f"{mask_type}-r-{radius}_{method}_{rsa_method}.nii.gz")
         # check if output_file exists
@@ -1892,7 +1996,6 @@ def remove_existing_rnd_files(datafolder, dataset, sub_N, session, run_N, specie
             print(f"No existing folder {output_folder} to remove files from.")
         return
     # go through all the possible files and remove them
-    # "P:\userdata\raulh87\data\EmoB\results\RSA_rnd\basic\emotion_valence\D-sub-01\ses-01_task-EmoB_run-01\r-3_pearson_kendall_0000.nii.gz"
     for rep in range(reps):
         file_path = output_folder + os.sep + f"r-{radius}_{method}_{rep:04d}.nii.gz"
         if os.path.exists(file_path):
@@ -1934,7 +2037,9 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, speci
             if indx1 >= indx2:
                 continue
             # load similarity comparison
-            map = load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, run_N, cat1, cat2, config_path, method=method, radius=radius, verbose=verbose)
+            map = load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, 
+                                               run_N, cat1, cat2, config_path, method=method, 
+                                               radius=radius, verbose=verbose)
             if verbose:
                 pair_name = f"{cat1}_{cat2}"
                 print(f"Loaded pair {pair_name} into index {k}")
@@ -1953,8 +2058,19 @@ def load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, ru
     model = config['model']
     
     task = config['task']
-
-    file_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep + f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz"
+    if method != 'mahalanobis':
+        # build file path for pairwise similarity map
+        file_path = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                    os.sep + 'RSA' + os.sep + model + os.sep + 
+                    f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                    f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep + 
+                    f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz")
+    else: # method is mahalanobis, the file name is different, it does not include session and run
+        # build file path for Mahalanobis similarity map
+        file_path = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                    os.sep + 'RSA' + os.sep + model + os.sep + 
+                    f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                    f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz")
     if verbose:
         print(f"Loading {file_path}")
     map = nib.load(file_path).get_fdata()
@@ -2567,9 +2683,9 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
 
 def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius, 
-                          method, replace_file, mah_fold='run-wise',
+                          method, replace_file, mah_fold='stim-wise',
                           sigma=None, shrinkage='ledoitwolf', return_rdm=True,
-                          verbose=False):
+                          verbose=False, skip_prefile_check=False, categories=None):
     '''
     Calculate pairwise similarity maps using searchlight approach.
     - Checks if input files are available.
@@ -2607,36 +2723,88 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         - stim_types: list of str. List of stimulus types
         - mask: np.ndarray. Mask for searchlight. This marks the voxels to include in the analysis.
         - task: str. Task name
+        - radius: int. Searchlight radius in voxels
+        - method: str. Similarity method ('pearson', 'kendall', 'euclidean', 'mahalanobis', 'correlation')
+        - replace_file: bool. If True, replace existing output files. If False, skip calculation if output files exist.
+        - mah_fold: str. Folding strategy for Mahalanobis distance with cross-validation. Options:
+            - 'max-fold': max partitions possible within run (for single run)
+            - 'odd-even': splits data into odd and even trials (for single run)
+            - 'run-wise': each run is a fold (deprecated, do not use)
+            - 'stim-wise': folds based on stimulus categories (for multiple runs)
+        - sigma: None or array (n_features, n_features), optional. Noise covariance for Mahalanobis. If None, it is estimated from pooled run-residuals with shrinkage.
+        - shrinkage: {'ledoitwolf','oas','ridge','identity'}, optional.
+        - return_rdm: bool, optional. If True return a (n_conditions x n_conditions) symmetric RDM. If False return the condensed upper-triangular vector.
+        - verbose: bool. If True, print detailed logs of the process.
+        - skip_prefile_check: bool. If True, skip the check for input beta files and proceed to calculation.
 
         
     '''
+    # if mah_fold is stim-wise, get categories
+    if mah_fold == 'stim-wise':
+        if categories == None: # if categories is not provided, extract from stim_types
+            categories = set()
+            for stim in stim_types:
+                if '-' in stim:
+                    category = stim.split('-')[0]
+                    categories.add(category)
     print(f"Calculating pairwise similarity maps for sub-{sub_N:02d} using method: {method} ")
-    ## check if output files already exist
-    print("Checking for existing similarity map files...")
-    all_exist = True
-    for indx, entry in enumerate(session_and_run_dict):
-        session = entry['session']
-        run_N = entry['run']
-        # correct session to 2 digits
-        session = f"{session:02d}"
-        for i, stim_i in enumerate(stim_types):
-            for j, stim_j in enumerate(stim_types):
-                if i >= j:
-                    continue  # avoid duplicates and self-comparison
-                output_file = os.path.join(
-                    datafolder, dataset, 'results', 'RSA', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
-                    f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
-                )
-                # check if output_file exists
-                if not os.path.exists(output_file):
-                    if verbose:
-                        print(f"Not found {output_file}.")
-                    all_exist = False
-                else:
-                    if verbose:
-                        print(f"Found {output_file} exists.")
+    
+    if skip_prefile_check:
+        print("Skipping check for existing output files as skip_prefile_check is True.")
+        all_exist = False  # force calculation
+    else: # check if output files already exist (only for non-Mahalanobis methods, as Mahalanobis with stim-wise folding has a different file structure)
+        # if method is not mahalanobis
+        if method != 'mahalanobis':
+            ## check if output files already exist
+            print("Checking for existing similarity map files...")
+            all_exist = True
+
+            for indx, entry in enumerate(session_and_run_dict):
+                session = entry['session']
+                run_N = entry['run']
+                # correct session to 2 digits
+                session = f"{session:02d}"
+                for i, stim_i in enumerate(stim_types):
+                    for j, stim_j in enumerate(stim_types):
+                        if i >= j:
+                            continue  # avoid duplicates and self-comparison
+                        output_file = os.path.join(
+                            datafolder, dataset, 'results', 'RSA', model,
+                            f"{specie}-sub-{sub_N:02d}",
+                            f"ses-{session}_task-{task}_run-{run_N:02d}",
+                            f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                        )
+                        # check if output_file exists
+                        if not os.path.exists(output_file):
+                            if verbose:
+                                print(f"Not found {output_file}.")
+                            all_exist = False
+                        else:
+                            if verbose:
+                                print(f"Found {output_file} exists.")
+        else:
+            # method is mahalanobis, check if mah_fold is stim-wise, if so check for output files accordingly
+            if mah_fold == 'stim-wise':
+                print("Checking for existing Mahalanobis similarity map files with stim-wise folding...")
+                all_exist = True
+                for i, cat1 in enumerate(categories):
+                    for j, cat2 in enumerate(categories):
+                        if i >= j:
+                            continue  # avoid duplicates and self-comparison
+                        output_file = os.path.join(
+                            datafolder, dataset, 'results', 'RSA', model,
+                            f"{specie}-sub-{sub_N:02d}",
+                            f"r-{radius}_{method}_{cat1}_{cat2}.nii.gz"
+                        )
+                        # check if file exists
+                        if not os.path.exists(output_file):
+                            if verbose:
+                                print(f"Not found {output_file}.")
+                            all_exist = False
+                        else:
+                            if verbose:
+                                print(f"Found {output_file} exists.")
+
     
     ## check if there is any output file missing
     if all_exist:
@@ -2654,60 +2822,67 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
     missing_run_dict = {}  # keep track of missing files for session/run
     ## check if input beta files are available
     missing = {}
-    # iterate over session_and_run_dict
-    for entry in session_and_run_dict:
-        session = entry['session']
-        run_N = entry['run']
-        # correct session to 2 digits
-        session = f"{session:02d}"
-        pair_check = 0 # keep track of pairs that can be calculated
-        # add an entry for this session/run in missing_run_dict
-        missing_run_dict[(session, run_N)] = []
+    if skip_prefile_check:
+        print("Skipping check for input beta files as skip_prefile_check is True.")
+    else:
+        missing_files_to_process = 0 # keep track of the output files that cannot be calculated due to missing input files
+        missing_run_dict = {}  # keep track of missing files for session/run
+        ## check if input beta files are available
+        missing = {}
+        # iterate over session_and_run_dict
+        for entry in session_and_run_dict:
+            session = entry['session']
+            run_N = entry['run']
+            # correct session to 2 digits
+            session = f"{session:02d}"
+            pair_check = 0 # keep track of pairs that can be calculated
+            # add an entry for this session/run in missing_run_dict
+            missing_run_dict[(session, run_N)] = []
 
-        missing_flag = False  # flag to indicate if any input file is missing for this session/run
-        # iterate over stim_types
-        for i, stim_i in enumerate(stim_types):
-            for j, stim_j in enumerate(stim_types):
-                if i >= j:
-                    continue  # avoid duplicates and self-comparison
-                input_file_i = os.path.join(
-                    datafolder, dataset, 'results', 'GLM', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                    'stats', f'pe{(i+1)*2 - 1}.nii.gz'
-                )
-                input_file_j = os.path.join(
-                    datafolder, dataset, 'results', 'GLM', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                    'stats', f'pe{(j+1)*2 - 1}.nii.gz'
-                )
-                if not os.path.exists(input_file_i):
-                    if verbose:
-                        print(f"Missing input file: {input_file_i}")
-                    missing_key = (session, run_N, stim_i)
-                    missing[missing_key] = input_file_i
-                    # flag that this session/run has missing files
-                    missing_flag = True
-                else:
-                    if verbose:
-                        print(f"Found input file: {input_file_i}")
-                    pair_check += 1
-                if not os.path.exists(input_file_j):
-                    if verbose:
-                        print(f"Missing input file: {input_file_j}")
-                    missing_key = (session, run_N, stim_j)
-                    missing[missing_key] = input_file_j
-                    # flag that this session/run has missing files
-                    missing_flag = True
-                else:
-                    if verbose:
-                        print(f"Found input file: {input_file_j}")
-                    pair_check += 1
-            # if missing_flag is True, add this session/run to missing_run_dict
-        if missing_flag:
-            missing_run_dict[(session, run_N)].append('missing input files')
-            missing_files_to_process += 1
+            missing_flag = False  # flag to indicate if any input file is missing for this session/run
+            # iterate over stim_types
+            for i, stim_i in enumerate(stim_types):
+                for j, stim_j in enumerate(stim_types):
+                    if i >= j:
+                        continue  # avoid duplicates and self-comparison
+                    input_file_i = os.path.join(
+                        datafolder, dataset, 'results', 'GLM', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                        'stats', f'pe{(i+1)*2 - 1}.nii.gz'
+                    )
+                    input_file_j = os.path.join(
+                        datafolder, dataset, 'results', 'GLM', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
+                        'stats', f'pe{(j+1)*2 - 1}.nii.gz'
+                    )
+                    if not os.path.exists(input_file_i):
+                        if verbose:
+                            print(f"Missing input file: {input_file_i}")
+                        missing_key = (session, run_N, stim_i)
+                        missing[missing_key] = input_file_i
+                        # flag that this session/run has missing files
+                        missing_flag = True
+                    else:
+                        if verbose:
+                            print(f"Found input file: {input_file_i}")
+                        pair_check += 1
+                    if not os.path.exists(input_file_j):
+                        if verbose:
+                            print(f"Missing input file: {input_file_j}")
+                        missing_key = (session, run_N, stim_j)
+                        missing[missing_key] = input_file_j
+                        # flag that this session/run has missing files
+                        missing_flag = True
+                    else:
+                        if verbose:
+                            print(f"Found input file: {input_file_j}")
+                        pair_check += 1
+                # if missing_flag is True, add this session/run to missing_run_dict
+            if missing_flag:
+                missing_run_dict[(session, run_N)].append('missing input files')
+                missing_files_to_process += 1
     
     ## All input files are available, proceed to calculate pairwise similarity maps
     # if method is 'mahalanobis', run mahalanobis for all runs, otherwise run 
@@ -2758,7 +2933,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
 
 def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius, replace_file=False,
-                          mah_fold='run-wise', sigma=None,
+                          mah_fold='stim-wise', sigma=None,
                           shrinkage='ledoitwolf', return_rdm=True, verbose=False, save_inverted=False):
     '''
     Calculate Mahalanobis distance maps using searchlight approach.
@@ -2875,14 +3050,24 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     grid = np.stack(np.meshgrid(*ranges, indexing='ij'), axis=-1).reshape(-1, ndim)
     keep = (grid.astype(float) ** 2).sum(axis=1) <= r * r + 1e-12
     offsets = grid[keep]
-    # initialize similarity_maps
-    similarity_maps = {}
-    for i, stim_i in enumerate(stim_types):
-        for j, stim_j in enumerate(stim_types):
-            if i >= j:
-                continue  # avoid duplicates and self-comparison
-            key = (stim_i, stim_j)
-            similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
+    if mah_fold == 'run-wise':
+        # initialize similarity_maps based on stim_types
+        similarity_maps = {}
+        for i, stim_i in enumerate(stim_types):
+            for j, stim_j in enumerate(stim_types):
+                if i >= j:
+                    continue  # avoid duplicates and self-comparison
+                key = (stim_i, stim_j)
+                similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
+    elif mah_fold == 'stim-wise':
+        # initialize similarity_maps based on categories
+        similarity_maps = {}
+        for indx1, cat1 in enumerate(categories):
+            for indx2, cat2 in enumerate(categories):
+                if indx1 >= indx2:
+                    continue  # avoid duplicates and self-comparison
+                key = (cat1, cat2)
+                similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
     # iterate over all voxels in mask
     it = np.argwhere(mask_img)
     for center in it: # iterate over each sphere center
@@ -2931,6 +3116,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                             raise ValueError(f"Stimulus type {stim} does not contain a '-' to determine category for stim-wise folding.")
                         labels.append(category)
                         partitions.append(run_N)  # still use runs as partitions for cross-validation
+                Y = np.vstack(Y_list)
             
             else:
                 raise ValueError(f"Unknown mah_fold strategy for multiple runs: {mah_fold}")
@@ -2942,58 +3128,60 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             a = 1
             #print(f"Calculating crossnobis at voxel {tuple(center)} with {Y.shape[0]} observations and {Y.shape[1]} features.")
         D = crossnobis(Y, labels, partitions, sigma=sigma, shrinkage=shrinkage, return_rdm=return_rdm)
-        # store distances in similarity_maps
-        for i, stim_i in enumerate(stim_types):
-            for j, stim_j in enumerate(stim_types):
-                if i >= j:
-                    continue  # avoid duplicates and self-comparison
-                key = (stim_i, stim_j)
-                similarity_maps[key][tuple(neigh.T)] = D[i, j]
+        if mah_fold == 'run-wise':
+            # store distances in similarity_maps
+            for i, stim_i in enumerate(stim_types):
+                for j, stim_j in enumerate(stim_types):
+                    if i >= j:
+                        continue  # avoid duplicates and self-comparison
+                    key = (stim_i, stim_j)
+                    similarity_maps[key][tuple(neigh.T)] = D[i, j]
+        elif mah_fold == 'stim-wise':
+            # store distances in similarity_maps category-wise
+            for indx1, cat1 in enumerate(categories):
+                for indx2, cat2 in enumerate(categories):
+                    if indx1 >= indx2:
+                        continue  # avoid duplicates and self-comparison
+                    # find indices of stim_types that belong to these categories
+                    key = (cat1, cat2)
+                    similarity_maps[key][tuple(neigh.T)] = D[indx1, indx2]
     print("Searchlight calculation completed.")
     print("Saving similarity maps...")
+    
     ## Save similarity maps
-    # for each session/run
-    for entry in session_and_run_dict:
-        session = entry['session']
-        run_N = entry['run']
-        # correct session to 2 digits
-        session = f"{session:02d}"
-        if verbose:
-            print(f"session {session}, run {run_N} for sub-{sub_N:02d}...")
-        # save similarity maps
-        for i, stim_i in enumerate(stim_types):
-            for j, stim_j in enumerate(stim_types):
-                if i >= j:
-                    continue  # avoid duplicates and self-comparison
-                if verbose:
-                    print(f"Saving similarity map for {stim_i} vs {stim_j}...")
-                key = (stim_i, stim_j)
-                # build output path
-                output_file = os.path.join(
+    
+    # save similarity maps for each pair of stimulus types
+    for i, cat1 in enumerate(categories):
+        for j, cat2 in enumerate(categories):
+            if i >= j:
+                continue  # avoid duplicates and self-comparison
+            if verbose:
+                print(f"Saving similarity map for {cat1} vs {cat2}...")
+            key = (cat1, cat2)
+            # build output path
+            output_file = os.path.join(
+                datafolder, dataset, 'results', 'RSA', model,
+                f"{specie}-sub-{sub_N:02d}",
+                f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
+            )
+            # same but with stimuli inverted
+            
+            # create output directory if it doesn't exist
+            output_dir = os.path.dirname(output_file)
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+            # save NIfTI
+            affine = nib.load(input_file).affine  # use affine from last loaded map
+            sim_map_nifti = nib.Nifti1Image(similarity_maps[key], affine)
+            nib.save(sim_map_nifti, output_file)
+            print(f"Saved similarity map: {output_file}")
+            if save_inverted:
+                output_fileb = os.path.join(
                     datafolder, dataset, 'results', 'RSA', model,
                     f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
-                    f"r-{radius}_mahalanobis_{stim_i}_{stim_j}.nii.gz"
+                    f"r-{radius}_mahalanobis_{cat2}_{cat1}.nii.gz"
                 )
-                # same but with stimuli inverted
-                
-                # create output directory if it doesn't exist
-                output_dir = os.path.dirname(output_file)
-                if not os.path.exists(output_dir):
-                    os.makedirs(output_dir)
-                # save NIfTI
-                affine = nib.load(input_file).affine  # use affine from last loaded map
-                sim_map_nifti = nib.Nifti1Image(similarity_maps[key], affine)
-                nib.save(sim_map_nifti, output_file)
-                print(f"Saved similarity map: {output_file}")
-                if save_inverted:
-                    output_fileb = os.path.join(
-                        datafolder, dataset, 'results', 'RSA', model,
-                        f"{specie}-sub-{sub_N:02d}",
-                        f"ses-{session}_task-{task}_run-{run_N:02d}",
-                        f"r-{radius}_mahalanobis_{stim_j}_{stim_i}.nii.gz"
-                    )
-                    nib.save(sim_map_nifti, output_fileb)
+                nib.save(sim_map_nifti, output_fileb)
 
 def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
                                        run_N, specie, model, stim_types, mask, 
@@ -3164,7 +3352,7 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     
     print("Checking for existing output files...")
     if mask_type is None:
-    # check if output file already exists
+        # check if output file already exists
         output = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
                         f"{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz")
@@ -3196,29 +3384,55 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     files_in_database = 0
     files_list = [] # list of files to process
     for sub_N in participants:
-        session_and_run_dict = session_and_run_all_dict[sub_N]
-        for entry in session_and_run_dict:
-            # add a counter
+        # if method is not 'mahalanobis', get each run and session
+        if method != 'mahalanobis':
+            session_and_run_dict = session_and_run_all_dict[sub_N]
+            for entry in session_and_run_dict:
+                # add a counter
+                files_in_database += 1
+                session = entry['session']
+                session = f"{session:02d}"
+                run_N = entry['run']
+                # check if model similarity map exists
+                if mask_type is None:
+                    model_sim_map_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model, rsa_model,
+                        f"{specie}-sub-{sub_N:02d}", 
+                        f"ses-{session}_task-{task}_run-{run_N:02d}",
+                        f"r-{radius}_{method}_{rsa_method}.nii.gz"
+                    )
+                else:
+                    model_sim_map_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model, rsa_model,
+                        f"{specie}-sub-{sub_N:02d}", 
+                        f"ses-{session}_task-{task}_run-{run_N:02d}",
+                        f"{mask_type}-r-{radius}_{method}_{rsa_method}.nii.gz"
+                    )
+
+                if not os.path.exists(model_sim_map_file):
+                    log.append(f"Model similarity map {model_sim_map_file} not found. Skipping.")
+                    if verbose:
+                        print(log[-1])
+                    continue
+                else:
+                    log.append(f"Adding model similarity map {model_sim_map_file} to processing list.")
+                    if verbose:
+                        print(log[-1])
+                files_list.append(model_sim_map_file)
+        else: # method is 'mahalanobis', only one map per participant
             files_in_database += 1
-            session = entry['session']
-            session = f"{session:02d}"
-            run_N = entry['run']
-            # check if model similarity map exists
             if mask_type is None:
                 model_sim_map_file = os.path.join(
                     datafolder, dataset, 'results', 'RSA', model, rsa_model,
                     f"{specie}-sub-{sub_N:02d}", 
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
                     f"r-{radius}_{method}_{rsa_method}.nii.gz"
                 )
             else:
                 model_sim_map_file = os.path.join(
                     datafolder, dataset, 'results', 'RSA', model, rsa_model,
                     f"{specie}-sub-{sub_N:02d}", 
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
                     f"{mask_type}-r-{radius}_{method}_{rsa_method}.nii.gz"
                 )
-
             if not os.path.exists(model_sim_map_file):
                 log.append(f"Model similarity map {model_sim_map_file} not found. Skipping.")
                 if verbose:
@@ -3229,6 +3443,7 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
                 if verbose:
                     print(log[-1])
             files_list.append(model_sim_map_file)
+
     # make sure files_in_database is not zero
     if files_in_database == 0:
         # no files expected? there is an error
@@ -3238,8 +3453,8 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     available_percentage = len(files_list) / files_in_database
     if available_percentage < min_percentage_available:
         log.append(f"Only {available_percentage*100:.2f}% of data available. Minimum required is {min_percentage_available*100:.2f}%. Skipping group model similarity map calculation.")
-        if verbose:
-            print(log[-1])
+        # if verbose:
+        print(log[-1])
         return
     else:
         log.append(f"{available_percentage*100:.2f}% of data available. Proceeding with group model similarity map calculation.")
@@ -3317,15 +3532,15 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
         mean_model_map_path_tmp = mean_model_map_path.replace('.nii.gz', '_tmp.txt')
         if os.path.exists(mean_model_map_path):
             if not replace_rnd_files:
-                if verbose:
-                    print(f"rnd {(indx+1):05d}/{reps_group:05d} exist, skipping...")
+                if verbose: 
+                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} exist, skipping...")
                 continue
             else:
                 if verbose:
-                    print(f"rnd {(indx+1):05d}/{reps_group:05d} exist, replacing...")
+                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} exist, replacing...")
         else:
             if verbose:
-                print(f"rnd {(indx+1):05d}/{reps_group:05d}, file {mean_model_map_path} does not exist, calculating...")
+                print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d}, file {mean_model_map_path} does not exist, calculating...")
         
         # check if temp file exists and how long ago it was modified
         if os.path.exists(mean_model_map_path_tmp):
@@ -3333,14 +3548,14 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             elapsed_time = time() - mod_time
             if elapsed_time < wait_time:
                 if verbose:
-                    print(f"rnd {(indx+1):05d}/{reps_group:05d} skipping as it is being processed by another instance. Skipping...")
+                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} skipping as it is being processed by another instance. Skipping...")
                 continue
             else:
                 if verbose:
-                    print(f"rnd {(indx+1):05d}/{reps_group:05d} old temp found, calculating model similarity map...")
+                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} old temp found, calculating model similarity map...")
         else:
             if verbose:
-                print(f"rnd {(indx+1):05d}/{reps_group:05d} temporal file created {mean_model_map_path_tmp}...")
+                print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} temporal file created {mean_model_map_path_tmp}...")
             # create temp file
             with open(mean_model_map_path_tmp, 'w') as f:
                 f.write(f"Temporary file for rnd {rnd_N:05d}\n")
@@ -3350,45 +3565,60 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
         files_list = [] # list of files to process
         file_counter = 0 # keep track of the possible files
         for sub_N in participants:
-            session_and_run_dict = session_and_run_all_dict[sub_N]
-            for entry in session_and_run_dict:
-                file_counter += 1 # add a file counter
-                session = entry['session']
-                session = f"{session:02d}"
-                run_N = entry['run']
-                # determine rnd_individual_N (rand sample from reps) for this subject/session/run
-                rnd_individual_N = np.random.randint(0, reps)
+            # if method is not 'mahalanobis', get each run and session
+            if method != 'mahalanobis':
+                session_and_run_dict = session_and_run_all_dict[sub_N]
+                for entry in session_and_run_dict:
+                    file_counter += 1 # add a file counter
+                    session = entry['session']
+                    session = f"{session:02d}"
+                    run_N = entry['run']
+                    # determine rnd_individual_N (rand sample from reps) for this subject/session/run
+                    rnd_individual_N = np.random.randint(0, reps)
 
-                # build model similarity map file path
+                    # build model similarity map file path
+                    model_sim_map_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
+                        f"{specie}-sub-{sub_N:02d}", 
+                        f"ses-{session}_task-{task}_run-{run_N:02d}",
+                        f"r-{radius}_{method}_{rsa_method}_{rnd_individual_N:04d}.nii.gz"
+                    )
+                    # make sure file exists
+                    if not os.path.exists(model_sim_map_file):
+                        if verbose:
+                            print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} Not found skipping {model_sim_map_file}.")
+                        continue
+                    # file exists, add to list
+                    files_list.append(model_sim_map_file)
+            else:
+                file_counter += 1 # add a file counter
+                rnd_individual_N = np.random.randint(0, reps)
                 model_sim_map_file = os.path.join(
                     datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
                     f"{specie}-sub-{sub_N:02d}", 
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
                     f"r-{radius}_{method}_{rsa_method}_{rnd_individual_N:04d}.nii.gz"
                 )
-                # make sure file exists
                 if not os.path.exists(model_sim_map_file):
                     if verbose:
-                        print(f"Not found skipping {model_sim_map_file}.")
+                        print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} Not found skipping {model_sim_map_file}.")
                     continue
-                # file exists, add to list
                 files_list.append(model_sim_map_file)
         # check if enough files are available
         available_percentage = len(files_list) / file_counter
         if available_percentage < min_percentage_available:
-            print(f"rnd {(indx+1):05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
+            print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
             # remove temp file
             if os.path.exists(mean_model_map_path_tmp):
                 os.remove(mean_model_map_path_tmp)
             continue
         else:
-            print(f"rnd {(indx+1):05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
+            print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
         try:
             # calculate group model similarity map
             # nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
             nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False)
         except Exception as e:
-            print(f"Error {e} calculating group model similarity map for rnd {rnd_N:05d}. Skipping...")
+            print(f"Error {e} calculating group model similarity map for rsa_model {rsa_model} sub_N {sub_N} rnd {rnd_N:05d}. Skipping...")
         # remove temp file
         if os.path.exists(mean_model_map_path_tmp):
             try:
@@ -4227,6 +4457,10 @@ def extract_clusters_and_peaks(
                 
                 # create a version of label_dict['Number'] with int values (in case they are strings in the original dataframe)
                 label_dict_list = label_dict['Number'].tolist()
+                # replace NaN values with 0 in label_dict_list
+                label_dict_list = [0 if pd.isna(x) else x for x in label_dict_list]
+
+                # print(label_dict_list)
                 label_dict_list = [int(x) for x in label_dict_list]
                 print(f"label_dict_list: {label_dict_list}")
                 print(f"label_val: {label_val}")
@@ -4311,6 +4545,8 @@ def clusters_to_excel(results, out_path, apply_coords_transform=False, atlas_fil
             #     print(f"{key}: {value}")
 
     df = pd.DataFrame(rows)
+    print(f"DataFrame created with {len(df)} rows.")
+    print(df.head())
     # Make it hierarchical: first cluster, then subpeak
     df = df.set_index(['cluster_id', 'subpeak_id']).sort_index()
 
@@ -4331,7 +4567,7 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
         # G:\My Drive\Results\EmoB\current-results
         
         res_image_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{rsa_model}_z_corrected.nii.gz"
+                    f"{specie}_{rsa_model}_z_corrected.nii.gz"
                     )
         
         out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
@@ -4339,7 +4575,7 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                     f"{specie}-r-{radius}_{method}_{rsa_method}.xlsx")
         
         out_path_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{rsa_model}.xlsx")
+                    f"{specie}_{rsa_model}.xlsx")
     else:
         res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
@@ -4347,7 +4583,7 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                     )
         # create copy of res_image using the name of the rsa_model
         res_image_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{mask_type}-{rsa_model}_z_corrected.nii.gz"
+                    f"{mask_type}-{specie}_{rsa_model}_z_corrected.nii.gz"
                     )
         
         out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
@@ -4355,7 +4591,7 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                     f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}.xlsx")
         
         out_path_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{mask_type}-{rsa_model}.xlsx")
+                    f"{mask_type}-{specie}_{rsa_model}.xlsx")
     # res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,

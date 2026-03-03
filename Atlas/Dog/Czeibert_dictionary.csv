@@ -1,0 +1,119 @@
+Number,Region,Latin,Abbreviation,File,File2
+1,No label,No label,NoLabel,NoFile,NoFile
+2,frontal gyrus L,gyrus frontalis L ,frontal gyrus L,L_gFrontalis.nii.gz,L_gFrontalis
+3,frontal gyrus R,gyrus frontalis R ,frontal gyrus R,R_gFrontalis.nii.gz,R_gFrontalis
+4,proreus gyrus L,gyrus proreus L ,proreus gyrus L,L_gProreus.nii.gz,L_gProreus
+5,proreus gyrus R,gyrus proreus R ,proreus gyrus R,R_gProreus.nii.gz,R_gProreus
+6,composite gyrus L rCG,gyrus compositus rostralis L rCG,L rCG,L_gCompositusRostralis.nii.gz,L_gCompositusRostralis
+7,composite gyrus R rCG,gyrus compositus rostralis R rCG,R rCG,R_gCompositusRostralis.nii.gz,R_gCompositusRostralis
+8,precruciate gyrus L,gyrus precruciatus L ,precruciate gyrus L,L_gPrecruciatus.nii.gz,L_gPrecruciatus
+9,precruciate gyrus R,gyrus precruciatus R ,precruciate gyrus R,R_gPrecruciatus.nii.gz,R_gPrecruciatus
+10,postcruciate gyrus L,gyrus postcruciatus L ,postcruciate gyrus L,L_gPostcruciatus.nii.gz,L_gPostcruciatus
+11,postcruciate gyrus R,gyrus postcruciatus R ,postcruciate gyrus R,R_gPostcruciatus.nii.gz,R_gPostcruciatus
+12,marginal gyrus L MG,gyrus marginalis L MG,L MG,L_gMarginalis.nii.gz,L_gMarginalis
+13,marginal gyrus R MG,gyrus marginalis R MG,R MG,R_gMarginalis.nii.gz,R_gMarginalis
+14,ectomarginal gyrus L EMG,gyrus ectomarginalis L EMG,L EMG,L_gEctomarginalis.nii.gz,L_gEctomarginalis
+15,ectomarginal gyrus R EMG,gyrus ectomarginalis R EMG,R EMG,R_gEctomarginalis.nii.gz,R_gEctomarginalis
+16,occipital gyrus L,gyrus occipitalis L ,occipital gyrus L,L_gOccipitalis.nii.gz,L_gOccipitalis
+17,occipital gyrus R,gyrus occipitalis R ,occipital gyrus R,R_gOccipitalis.nii.gz,R_gOccipitalis
+18,rostral suprasylvian gyrus L rSSG,gyrus suprasylvius rostralis L rSSG,L rSSG,L_gSuprasylviusRostralis.nii.gz,L_gSuprasylviusRostralis
+19,rostral suprasylvian gyrus R rSSG,gyrus suprasylvius rostralis R rSSG,R rSSG,R_gSuprasylviusRostralis.nii.gz,R_gSuprasylviusRostralis
+20,mid suprasylvian gyrus L mSSG,gyrus suprasylvius medius L mSSG,L mSSG,L_gSuprasylviusMedius.nii.gz,L_gSuprasylviusMedius
+21,mid suprasylvian gyrus R mSSG,gyrus suprasylvius medius R mSSG,R mSSG,R_gSuprasylviusMedius.nii.gz,R_gSuprasylviusMedius
+22,caudal suprasylvian gyrus L cSSG,gyrus suprasylvius caudalis L cSSG,L cSSG,L_gSuprasylviusCaudalis.nii.gz,L_gSuprasylviusCaudalis
+23,caudal suprasylvian gyrus R cSSG,gyrus suprasylvius caudalis R cSSG,R cSSG,R_gSuprasylviusCaudalis.nii.gz,R_gSuprasylviusCaudalis
+24,rostral ectosylvian gyrus L rESG,gyrus ectosylvius rostralis L rESG,L rESG,L_gEctosylviusRostralis.nii.gz,L_gEctosylviusRostralis
+25,rostral ectosylvian gyrus R rESG,gyrus ectosylvius rostralis R rESG,R rESG,R_gEctosylviusRostralis.nii.gz,R_gEctosylviusRostralis
+26,mid ectosylvian gyrus L mESG,gyrus ectosylvius medius L mESG,L mESG,L_gEctosylviusMedius.nii.gz,L_gEctosylviusMedius
+27,mid ectosylvian gyrus R mESG,gyrus ectosylvius medius R mESG,R mESG,R_gEctosylviusMedius.nii.gz,R_gEctosylviusMedius
+28,caudal ectosylvian gyrus L cESG,gyrus ectosylvius caudalis L cESG,L cESG,L_gEctosylviusCaudalis.nii.gz,L_gEctosylviusCaudalis
+29,caudal ectosylvian gyrus R cESG,gyrus ectosylvius caudalis R cESG,R cESG,R_gEctosylviusCaudalis.nii.gz,R_gEctosylviusCaudalis
+30,rostral sylvian gyrus L SG,gyrus sylvius rostralis L rSG,L rSG,L_gSylviusRostralis.nii.gz,L_gSylviusRostralis
+31,rostral sylvian gyrus R SG,gyrus sylvius rostralis R rSG,R rSG,R_gSylviusRostralis.nii.gz,R_gSylviusRostralis
+32,caudal sylvian gyrus L cSG,gyrus sylvius caudalis L cSG,L cSG,L_gSylviusCaudalis.nii.gz,L_gSylviusCaudalis
+33,caudal sylvian gyrus R cSG,gyrus sylvius caudalis R cSG,R cSG,R_gSylviusCaudalis.nii.gz,R_gSylviusCaudalis
+34,caudal composite gyrus L,gyrus compositus caudalis L,caudal composite gyrus L,L_gCompositusCaudalis.nii.gz,L_gCompositusCaudalis
+35,caudal composite gyrus R,gyrus compositus caudalis R,caudal composite gyrus R,R_gCompositusCaudalis.nii.gz,R_gCompositusCaudalis
+36,rectus gyrus L RG,gyrus rectus L RG,L RG,L_gRectus.nii.gz,L_gRectus
+37,rectus gyrus R RG,gyrus rectus R RG,R RG,R_gRectus.nii.gz,R_gRectus
+38,genual gyrus L,gyrus genualis L ,genual gyrus L,L_gGenualis.nii.gz,L_gGenualis
+39,genual gyrus R,gyrus genualis R ,genual gyrus R,R_gGenualis.nii.gz,R_gGenualis
+40,subcallosa area L,area subcallosa L ,subcallosa area L,L_aSubcallosa.nii.gz,L_aSubcallosa
+41,subcallosa area R,area subcallosa R ,subcallosa area R,R_aSubcallosa.nii.gz,R_aSubcallosa
+42,cingulate gyrus L CG,gyrus cinguli L CG,L CG,L_gCinguli.nii.gz,L_gCinguli
+43,cingulate gyrus R CG,gyrus cinguli R CG,R CG,R_gCinguli.nii.gz,R_gCinguli
+44,presplenial gyrus L,gyrus presplenialis L ,presplenial gyrus L,L_gPresplenialis.nii.gz,L_gPresplenialis
+45,presplenial gyrus R,gyrus presplenialis R ,presplenial gyrus R,R_gPresplenialis.nii.gz,R_gPresplenialis
+46,splenial gyrus L SpG,gyrus splenialis L ,L SpG,L_gSplenialis.nii.gz,L_gSplenialis
+47,splenial gyrus R SpG,gyrus splenialis R ,R SpG,R_gSplenialis.nii.gz,R_gSplenialis
+48,parahippocampal gyrus L,gyrus parahippocampalis L ,parahippocampal gyrus L,L_gParahippocampalis.nii.gz,L_gParahippocampalis
+49,parahippocampal gyrus R,gyrus parahippocampalis R ,parahippocampal gyrus R,R_gParahippocampalis.nii.gz,R_gParahippocampalis
+50,hippocampus  L,hippocampus L ,hippocampus  L,L_hippocampus.nii.gz,L_hippocampus
+51,hippocampus  R,hippocampus R ,hippocampus  R,R_hippocampus.nii.gz,R_hippocampus
+52,piriform lobe L,lobus piriformis L ,piriform lobe L,L_lPiriformis.nii.gz,L_lPiriformis
+53,piriform lobe R,lobus piriformis R ,piriform lobe R,R_lPiriformis.nii.gz,R_lPiriformis
+54,olfactory tubercle L,tuberculum olfactorium L ,olfactory tubercle L,L_tOlfactorium.nii.gz,L_tOlfactorium
+55,olfactory tubercle R,tuberculum olfactorium R ,olfactory tubercle R,R_tOlfactorium.nii.gz,R_tOlfactorium
+56,diagonal gyrus L,gyrus diagonalis L ,diagonal gyrus L,L_gDiagonalis.nii.gz,L_gDiagonalis
+57,diagonal gyrus R,gyrus diagonalis R ,diagonal gyrus R,R_gDiagonalis.nii.gz,R_gDiagonalis
+58,paraterminal gyrus L,gyrus paraterminalis L ,paraterminal gyrus L,L_gParaterminalis.nii.gz,L_gParaterminalis
+59,paraterminal gyrus R,gyrus paraterminalis R ,paraterminal gyrus R,R_gParaterminalis.nii.gz,R_gParaterminalis
+60,lateral olfactory gyrus L,gyrus olfactorius lateralis L ,lateral olfactory gyrus L,L_gOlfactoriusLateralis.nii.gz,L_gOlfactoriusLateralis
+61,lateral olfactory gyrus R,gyrus olfactorius lateralis R ,lateral olfactory gyrus R,R_gOlfactoriusLateralis.nii.gz,R_gOlfactoriusLateralis
+62,thalamus  L,thalamus L ,thalamus  L,L_Thalamus.nii.gz,L_Thalamus
+63,thalamus  R,thalamus R ,thalamus  R,R_Thalamus.nii.gz,R_Thalamus
+64,olfactory bulb L,bulbus olfactorius L ,olfactory bulb L,L_bOlfactorius.nii.gz,L_bOlfactorius
+65,olfactory bulb R,bulbus olfactorius R ,olfactory bulb R,R_bOlfactorius.nii.gz,R_bOlfactorius
+66,caudate nucleus L,nucleus caudatus L NC,caudate nucleus L,L_nCaudatus.nii.gz,L_nCaudatus
+67,caudate nucleus R,nucleus caudatus R NC,caudate nucleus R,R_nCaudatus.nii.gz,R_nCaudatus
+68,insular cortex L,insular cortex L ,insular cortex L,L_InsularCortex.nii.gz,L_InsularCortex
+69,insular cortex R,insular cortex R ,insular cortex R,R_InsularCortex.nii.gz,R_InsularCortex
+70,hypophysis ,hypophysis ,hypophysis ,b_Hypophysis.nii.gz,b_Hypophysis
+71,cerebellar vermis ,vermis cerebelli ,cerebellar vermis ,b_VermisCerebelli.nii.gz,b_VermisCerebelli
+72,pons ,pons ,pons ,b_Pons.nii.gz,b_Pons
+73,medulla oblongata ,medulla oblongata ,medulla oblongata ,b_MedullaOblongata.nii.gz,b_MedullaOblongata
+74,medulla spinal ,medulla spinalis ,medulla spinal ,b_MedullaSpinalis.nii.gz,b_MedullaSpinalis
+75,mesencephalon ,mesencephalon ,mesencephalon ,b_Mesencephalon.nii.gz,b_Mesencephalon
+76,diencephalon ,diencephalon ,diencephalon ,b_Diencephalon.nii.gz,b_Diencephalon
+77,optic nerve ,nervus opticus ,optic nerve ,b_NervusOpticus.nii.gz,b_NervusOpticus
+78,cerebellar hemisphere L,hemispherium cerebelli L ,cerebellar hemisphere L,L_HemispheriumCerebelli.nii.gz,L_HemispheriumCerebelli
+79,cerebellar hemisphere R,hemispherium cerebelli R ,cerebellar hemisphere R,R_HemispheriumCerebelli.nii.gz,R_HemispheriumCerebelli
+80,rostral commissura ,commissura rostralis ,rostral commissura ,b_CommissuraRostralis.nii.gz,b_CommissuraRostralis
+81,olfactory peduncle L,pedunculus olfactorius L ,olfactory peduncle L,L_PedunculusOlfactorius.nii.gz,L_PedunculusOlfactorius
+82,olfactory peduncle R,pedunculus olfactorius R ,olfactory peduncle R,R_PedunculusOlfactorius.nii.gz,R_PedunculusOlfactorius
+83,septal area L,area septalis L ,septal area L,L_aSeptalis.nii.gz,L_aSeptalis
+84,septal area R,area septalis R ,septal area R,R_aSeptalis.nii.gz,R_aSeptalis
+85,spinal tract of the trigemini nervi nucleus L,nucleus et tractus spinalis nervi trigemini L ,spinal tract of the trigemini nervi nucleus L,L_nEtTractusSpinalisNerviTrigemini.nii.gz,L_nEtTractusSpinalisNerviTrigemini
+86,spinal tract of the trigemini nervi nucleus R,nucleus et tractus spinalis nervi trigemini R ,spinal tract of the trigemini nervi nucleus R,R_nEtTractusSpinalisNerviTrigemini.nii.gz,R_nEtTractusSpinalisNerviTrigemini
+87,ventral caudal thalami pars medial nucleus L,nucleus ventralis caudalis thalami pars medialis L ,ventral caudal thalami pars medial nucleus L,L_nVentralisCaudalisThalamiParsMedialis.nii.gz,L_nVentralisCaudalisThalamiParsMedialis
+88,ventral caudal thalami pars medial nucleus R,nucleus ventralis caudalis thalami pars medialis R ,ventral caudal thalami pars medial nucleus R,R_nVentralisCaudalisThalamiParsMedialis.nii.gz,R_nVentralisCaudalisThalamiParsMedialis
+89,amygdala  L,amygdala L ,amygdala  L,L_Amygdala.nii.gz,L_Amygdala
+90,amygdala  R,amygdala R ,amygdala  R,R_Amygdala.nii.gz,R_Amygdala
+91,encephalon ,encephalon ,encephalon ,b_Encephalon.nii.gz,b_Encephalon
+,,,,L_OccipitoTemporal.nii.gz,L_OccipitoTemporal
+,,,,L_OccipitoTemporalGM.nii.gz,L_OccipitoTemporalGM
+,,,,L_gEctosylvius.nii.gz,L_gEctosylvius
+,,,,L_gPerisylvius.nii.gz,L_gPerisylvius
+,,,,L_gSuprasylvius.nii.gz,L_gSuprasylvius
+,,,,L_gSylvius.nii.gz,L_gSylvius
+,,,,L_hypothalamus.nii.gz,L_hypothalamus
+,,,,b_Amygdala.nii.gz,b_Amygdala
+,,,,b_Cortex.nii.gz,b_Cortex
+,,,,b_OccipitoTemporal.nii.gz,b_OccipitoTemporal
+,,,,b_OccipitoTemporalGM.nii.gz,b_OccipitoTemporalGM
+,,,,b_Subcortical.nii.gz,b_Subcortical
+,,,,b_bOlfactorius.nii.gz,b_bOlfactorius
+,,,,b_fullbrain.nii.gz,b_fullbrain
+,,,,b_gCinguli.nii.gz,b_gCinguli
+,,,,b_gEctosylvius.nii.gz,b_gEctosylvius
+,,,,b_gEctosylviusCaudalis.nii.gz,b_gEctosylviusCaudalis
+,,,,b_gEctosylviusMedius.nii.gz,b_gEctosylviusMedius
+,,,,b_gPerisylvius.nii.gz,b_gPerisylvius
+,,,,b_gPerisylvius2.nii.gz,b_gPerisylvius2
+,,,,b_gSuprasylvius.nii.gz,b_gSuprasylvius
+,,,,b_gSuprasylviusCaudalis.nii.gz,b_gSuprasylviusCaudalis
+,,,,b_gSuprasylviusMedius.nii.gz,b_gSuprasylviusMedius
+,,,,b_gSylvius.nii.gz,b_gSylvius
+,,,,b_gSylviusCaudalis.nii.gz,b_gSylviusCaudalis
+,,,,b_gSylviusRostralis.nii.gz,b_gSylviusRostralis
+,,,,b_nCaudatus.nii.gz,b_nCaudatus

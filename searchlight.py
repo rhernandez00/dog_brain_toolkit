@@ -56,6 +56,7 @@ Input arguments:
 --verbose: Verbose output (default: False)
 --wait_time: Wait time between steps in seconds (default: 300)
 --overwrite_movement: Overwrite existing movement files (default: False)
+--skip_prefile_check: Skip prefile check and overwrite files if they exist (default: False)
 '''
 
 # parser function
@@ -83,7 +84,7 @@ def parse_arguments():
                         help='Cluster threshold for cluster correction')
     parser.add_argument('--peak_id', type=str, default=None,
                         help='peak_id for running step 12, if not provided, it will calculate based on roi_database.csv')
-    parser.add_argument('--reps', type=int, default=50,
+    parser.add_argument('--reps', type=int, default=100,
                         help='Number of repetitions for permutations in individual run')
     parser.add_argument('--reps_group', type=int, default=1000,
                         help='Number of repetitions for permutations in group analysis')
@@ -105,6 +106,8 @@ def parse_arguments():
                         help='Wait time between steps in seconds')
     parser.add_argument('--overwrite_movement', action='store_true',
                         help='Overwrite existing movement files')
+    parser.add_argument('--skip_prefile_check', action='store_true',
+                        help='Skip prefile check and overwrite files if they exist')
     parser.add_argument('--coords', type=str, default=None,
                         help='Coordinates for similarity files in voxel space, format: x,y,z')
     return parser.parse_args()
@@ -134,6 +137,7 @@ def main():
     verbose = args.verbose
     wait_time = args.wait_time
     overwrite_movement = args.overwrite_movement
+    skip_prefile_check = args.skip_prefile_check
     peak_id = args.peak_id
     dataset = 'EmoB'
     task = 'EmoB'
@@ -168,6 +172,7 @@ def main():
 
     path_to_dog_brain_toolkit = os.path.join(git_folder, 'dog_brain_toolkit')
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
+    
     sys.path.append(path_to_dog_brain_toolkit)
     import utils
     reload(utils)
@@ -200,6 +205,10 @@ def main():
     participants = config["participants"]
     stim_types = config['stim_types']
     #atlas_type = config["atlas_type"]
+    
+    # get categories from rsa_model definition
+    rsa_model_dict = rsa_utils.read_model_dict(rsa_model_path)
+    categories = rsa_model_dict['categories']
 
 
     # list of missing files per subject/session/run
@@ -216,11 +225,10 @@ def main():
         # if radius is None, use 3 as default for dogs
         if radius is None:
             radius = 3
-        
-
-        # label_dict = pd.read_excel(os.path.join(
-        # path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.xlsx"
-    # ))
+        # get label_dict and label_nii_data for dogs
+        label_dict = pd.read_csv(os.path.join(
+        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"
+    ))
         label_nii_data = nib.load(os.path.join(
         path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
     )).get_fdata()
@@ -277,7 +285,10 @@ def main():
     # if participants_forced is not empty, use only those participants
     if len(participants_forced) > 0:
         participants = participants_forced
-        
+    
+    # print size of label_nii_data
+    print(f"label_nii_data shape: {label_nii_data.shape}")
+
     for step in steps_to_run:
         if step == 0: # compute beta maps by participant/session/run
             print("### Step 0: Computing beta maps ###")
@@ -321,7 +332,8 @@ def main():
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types, mask2, task, radius, 
-                                    method=method, replace_file=replace_file, mah_fold='run-wise', verbose=verbose)
+                                    method=method, replace_file=replace_file, mah_fold='stim-wise', 
+                                    verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories)
                 
                 
                 print(f"Finished sub-{sub_N:02d}...")
@@ -409,16 +421,15 @@ def main():
                                         reps_group=reps_group)
             ## Z -score mean from real data with mean and std from rnd distribution
             # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion-valence-basic\mean\D-r-3_mahalanobis_kendall_mean.nii.gz"
-            rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
+            rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, 
+                                                model, radius,
                                         method, rsa_method,
-                                        rsa_model,
-                                        verbose=verbose)
+                                        rsa_model, verbose=verbose, mask_type=mask_type)
         if step == 75:
             print("### Step 75 (75 actually): Calculating z map for real data ###")
             rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
                                         method, rsa_method,
-                                        rsa_model,
-                                        verbose=verbose, mask_type=mask_type)
+                                        rsa_model, verbose=verbose, mask_type=mask_type)
             print("### Done computing z maps for rnd distribution ###")
         if step == 8: # Threshold z maps, calculate cluster size distribution 
             print("### Step 8: Calculating cluster size distribution ###")
