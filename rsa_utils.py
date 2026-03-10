@@ -16,8 +16,64 @@ import random
 from scipy.ndimage import label, generate_binary_structure
 
 import numpy as np
-from scipy import ndimage
+from scipy import ndimage                                                                                                                                      
 import preprocess_functions
+
+def calculate_movement_parameters(datafolder, dataset, task, specie, sub_N, entry, verbose=False):
+    session = entry['session']
+    run_N = entry['run_N']
+    # path to raw nifti file
+    raw_nifti = os.path.join(
+            datafolder, dataset, 'BIDS',
+            f"{specie}-sub-{sub_N:02d}",
+            f"{specie}-sub-{sub_N:02d}_ses-{session:02d}_task-{task}_run-{run_N:02d}_bold.nii.gz"
+        )
+    mc_path = os.path.join(
+            datafolder, dataset, "preprocessing", f"{specie}_mcflirt",
+            f"{specie}-sub-{sub_N:02d}_ses-{session:02d}_task-{task}_run-{run_N:02d}"
+        )
+    
+
+    # run mcflirt with plots
+    if verbose:
+        print(f"Running mcflirt on {raw_nifti}, output will be saved to {mc_path}...")
+        # build command, include verbose flag for mcflirt
+        command_mcflirt = f"mcflirt -in {raw_nifti} -out {mc_path} -plots -verbose"
+    else:
+        command_mcflirt = f"mcflirt -in {raw_nifti} -out {mc_path} -plots"
+    
+    # run command
+    os.system(command_mcflirt)
+    print(f"Ran mcflirt on {raw_nifti}, output saved to {mc_path}")
+    # get rid of the .nii.gz file that mcflirt creates, we only need the .par file "P:\userdata\raulh87\data\EmoC\preprocessing\D_mcflirt\D-sub-01_ses-01_task-EmoC_run-05.nii.gz"
+    mc_nifti = os.path.join(mc_path, f"{specie}-sub-{sub_N:02d}_ses-{session:02d}_task-{task}_run-{run_N:02d}.nii.gz")
+    if os.path.exists(mc_nifti):
+        os.remove(mc_nifti)
+        
+
+def get_session_and_run_dict(datafolder, dataset, specie, sub_N):
+    '''
+    This function should replace utils_EmoB.get_session_and_run_list
+    Issue: session is to complicated to have in the config file, maybe table?
+    '''
+    # database_table_path = r"P:\userdata\raulh87\data\EmoC\BIDS\D_database-details.csv"
+    database_table_path = os.path.join(datafolder, dataset, 'BIDS', f"{specie}_database-details.csv")
+    # load database details
+    database_df = pd.read_csv(database_table_path)
+    # contains sub_N, session, run_N, bold, slice_timing, events, eyetracker
+    # filter for sub_N
+    subject_df = database_df[database_df['sub_N'] == sub_N]
+    # reset index
+    subject_df = subject_df.reset_index(drop=True)
+
+    # create a dict and iterate over each available row
+    session_and_run_dict = {specie: []}
+    for index, row in subject_df.iterrows():
+        session_and_run_dict[specie].append({'session': row['session'], 'run_N': row['run_N']})
+    return session_and_run_dict[specie]
+
+
+
 
 def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_all_dict, participants, specie,
                                         mask, model, task, radius, method, 
@@ -2685,7 +2741,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                           specie, model, stim_types, mask, task, radius, 
                           method, replace_file, mah_fold='stim-wise',
                           sigma=None, shrinkage='ledoitwolf', return_rdm=True,
-                          verbose=False, skip_prefile_check=False, categories=None):
+                          verbose=False, skip_prefile_check=False, categories=None, shuffle_runs=False):
     '''
     Calculate pairwise similarity maps using searchlight approach.
     - Checks if input files are available.
@@ -2915,6 +2971,10 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         #     print(f"All runs are missing for sub-{sub_N:02d}, skipping...")
         #     return missing
         print(f"Calculating {method} pairwise similarity maps...")
+        if shuffle_runs:
+            print("Shuffling runs for control analysis...")
+            np.random.shuffle(session_and_run_dict)
+
         for entry in session_and_run_dict:
             session = entry['session']
             run_N = entry['run']

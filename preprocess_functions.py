@@ -581,8 +581,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         if session != '':
             session = int(session)
         filename = (datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + 
-                    'sub-' + str(sub_N).zfill(2) + os.sep + 
-                    'sub-' + str(sub_N).zfill(2) + 
+                    specie +'-sub-' + str(sub_N).zfill(2) + os.sep + 
+                    specie + '-sub-' + str(sub_N).zfill(2) + 
                     '_ses-' + str(session).zfill(2) +
                     '_task-' + task +
                     '_run-' + str(run_N).zfill(2) + 
@@ -979,9 +979,9 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session, smo
     ## determine input file and output directory ## 
 
     # input directory in BIDS format
-    input_folder = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep +'sub-' + str(sub_N).zfill(2)
-    filename = input_folder + os.sep +  'sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'   
-    filename_json = input_folder + os.sep +  'sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.json'
+    input_folder = datafolder + os.sep + dataset + os.sep + 'BIDS' + os.sep + specie + '-sub-' + str(sub_N).zfill(2)
+    filename = input_folder + os.sep +  specie + '-sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.nii.gz'   
+    filename_json = input_folder + os.sep +  specie + '-sub-' + str(sub_N).zfill(2) + '_ses-' + session + '_task-' + task + '_run-' + str(run_N).zfill(2) + '_bold.json'
 
     # print filename
     print('Input file: ' + filename)

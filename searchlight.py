@@ -62,13 +62,19 @@ Input arguments:
 # parser function
 def parse_arguments():
     parser = argparse.ArgumentParser(description='RSA Pipeline Execution')
+    # parse dataset
+    parser.add_argument('--dataset', type=str, default='EmoB',
+                        help='Dataset to use')
+    # parse task
+    parser.add_argument('--task', type=str, default=None,
+                        help='Task to use, if not provided, will use the same as dataset')
     parser.add_argument('--steps_to_run', type=int, nargs='+', default=[1,2,3,4,5,6,7,8,9,10],
                         help='List of steps to run')
     parser.add_argument('--model', type=str, default='basic',
                         help='GLM model to use')
     parser.add_argument('--method', type=str, default='mahalanobis',
                         help='Method for pairwise similarity calculation')
-    parser.add_argument('--rsa_model', type=str, required=False,
+    parser.add_argument('--rsa_model', type=str, default=None, required=False,
                         help='RSA model to use')
     parser.add_argument('--rsa_method', type=str, default='kendall',
                         help='Method to compare similarity maps with model')
@@ -98,6 +104,8 @@ def parse_arguments():
                         help='Overwrite existing output files')
     parser.add_argument('--shuffle_participants', action='store_true',
                         help='Shuffle participants order in permutations')
+    parser.add_argument('--shuffle_runs', action='store_true',
+                        help='Shuffle runs order in permutations (only for step 1)')
     parser.add_argument('--participants_forced', type=int, nargs='+', default=[],
                         help='List of participants to include')
     parser.add_argument('--verbose', action='store_true',
@@ -139,14 +147,21 @@ def main():
     overwrite_movement = args.overwrite_movement
     skip_prefile_check = args.skip_prefile_check
     peak_id = args.peak_id
-    dataset = 'EmoB'
-    task = 'EmoB'
-
-    # check if rsa_model ends with -basic if it does, model is basic
-    if rsa_model.endswith('-basic'):
-        model = 'basic'
+    dataset = args.dataset
+    shuffle_runs = args.shuffle_runs
+    # if task is not provided use the same as dataset
+    if args.task is None:
+        task = dataset
     else:
-        model = 'basic-block'
+        task = args.task
+
+    # if user provided rsa_model
+    if rsa_model is not None:
+        # check if rsa_model ends with -basic if it does, model is basic
+        if rsa_model.endswith('-basic'):
+            model = 'basic'
+        else:
+            model = 'basic-block'
 
 
     if os.name == 'nt':  # Windows
@@ -171,7 +186,6 @@ def main():
     
 
     path_to_dog_brain_toolkit = os.path.join(git_folder, 'dog_brain_toolkit')
-    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
     
     sys.path.append(path_to_dog_brain_toolkit)
     import utils
@@ -206,9 +220,12 @@ def main():
     stim_types = config['stim_types']
     #atlas_type = config["atlas_type"]
     
-    # get categories from rsa_model definition
-    rsa_model_dict = rsa_utils.read_model_dict(rsa_model_path)
-    categories = rsa_model_dict['categories']
+    # if rsa_model is not None, get rsa_model_path
+    if rsa_model is not None:
+        rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
+        # get categories from rsa_model definition
+        rsa_model_dict = rsa_utils.read_model_dict(rsa_model_path)
+        categories = rsa_model_dict['categories']
 
 
     # list of missing files per subject/session/run
@@ -228,7 +245,8 @@ def main():
         # get label_dict and label_nii_data for dogs
         label_dict = pd.read_csv(os.path.join(
         path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"
-    ))
+    ))  
+
         label_nii_data = nib.load(os.path.join(
         path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
     )).get_fdata()
@@ -242,8 +260,9 @@ def main():
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
         
         participants = list(range(1, 41))
-        # "C:\github\dog_brain_toolkit\Atlas\Hum\AAL3.nii.gz"
-        # get  label_nii_data path P:\userdata\raulh87\data\EmoB\ROI\AAL3.nii.gz
+        
+
+        # get label_nii_data and label_dict for humans
         label_nii_data = nib.load(os.path.join(
             datafolder, dataset, 'ROI', 'AAL3.nii.gz'
         )).get_fdata()
@@ -323,17 +342,14 @@ def main():
                 
 
             if args.shuffle_participants:
-                # flip participants
-                participants = participants[::-1]
-
-                # np.random.shuffle(participants)
+                np.random.shuffle(participants)
                 # print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types, mask2, task, radius, 
                                     method=method, replace_file=replace_file, mah_fold='stim-wise', 
-                                    verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories)
+                                    verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories, shuffle_runs=shuffle_runs)
                 
                 
                 print(f"Finished sub-{sub_N:02d}...")
@@ -500,6 +516,29 @@ def main():
                                                 rsa_model=rsa_model, voxel_coords=voxel_coords, config_path=config_path, verbose=True, shuffle_participants=True,
                                                 wait_time=wait_time)
             print("### Done computing similarity across all pairs in a model ###")
+        if step == 13: # get movement .par files from each run using mcflirt outputs
+            print("### Step 13: running mcflirt to get movement parameters (.par) ###")
+            # go over each participant
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                for entry in session_and_run_dict:
+                    session = entry['session']
+                    run_N = entry['run_N']
+                    rsa_utils.calculate_movement_parameters(datafolder, dataset, task, specie, sub_N, entry, verbose=verbose)
+                    # calculate fwd files, for D has movement parameters + fwd, for humans only fwd
+                    par_file = os.path.join(datafolder, dataset, 'preprocessing', f"{specie}_mcflirt",
+                                             f"{specie}-sub-{sub_N:02d}_ses-{session:02d}_task-{task}_run-{run_N:02d}.par"
+                                        )
+                    #"P:\userdata\raulh87\data\EmoC\preprocessing\D_mcflirt\D-sub-01_ses-01_task-EmoC_run-05.par"
+                    mov_txt = os.path.join(datafolder, dataset, 'movement',
+                                            f"{specie}-sub-{sub_N:02d}_ses-{session:02d}_task-{task}_run-{run_N:02d}_fwd.txt")
+                    if specie == 'D':
+                        preprocess_functions.fwd(par_file, radius_fwd, threshold_fwd, output_file=mov_txt, add_movement_params=True)
+                    elif specie == 'H':
+                        preprocess_functions.fwd(par_file, radius_fwd, threshold_fwd, output_file=mov_txt, add_movement_params=False)
+                    else:
+                        raise ValueError("Specie must be 'D' for Dog or '`H' for Human")
+    print("### All steps completed! ###")
         
 
 
