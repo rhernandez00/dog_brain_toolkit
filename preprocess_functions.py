@@ -1000,6 +1000,11 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session, smo
 
     # get slice timing parameters
     slice_timming = utils.get_slice_timing(filename_json, slice_timming_path)
+    # make sure the file was created
+    if not os.path.exists(slice_timming_path):
+        print('Slice timing file was not created: ' + slice_timming_path)
+        return
+    
 
     # check if slice_timming is not empty
     if slice_timming is None:

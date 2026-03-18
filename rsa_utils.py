@@ -78,7 +78,7 @@ def get_session_and_run_dict(datafolder, dataset, specie, sub_N):
 def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_all_dict, participants, specie,
                                         mask, model, task, radius, method, 
                                         rsa_model, voxel_coords, config_path, verbose=False, shuffle_participants=True,
-                                        wait_time=300):
+                                        shuffle_runs=False, wait_time=300):
     '''
     Calculates similarity across all pairs in a model, saves files as txt.
     '''
@@ -87,6 +87,9 @@ def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_a
     X, Y, Z = voxel_coords
     for sub_N in participants:
         session_and_run_dict = session_and_run_all_dict[sub_N]
+        # if shuffle_runs is True, shuffle the order of runs for this participant
+        if shuffle_runs:
+            random.shuffle(session_and_run_dict)
         for entry in session_and_run_dict:
             session = entry['session']
             session = f"{session:02d}"
@@ -2803,7 +2806,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                 if '-' in stim:
                     category = stim.split('-')[0]
                     categories.add(category)
-    print(f"Calculating pairwise similarity maps for sub-{sub_N:02d} using method: {method} ")
+    print(f"Calculating pairwise similarity maps for {specie}-sub-{sub_N:02d} using method: {method} ")
     
     if skip_prefile_check:
         print("Skipping check for existing output files as skip_prefile_check is True.")
@@ -2812,7 +2815,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         # if method is not mahalanobis
         if method != 'mahalanobis':
             ## check if output files already exist
-            print("Checking for existing similarity map files...")
+            print(f"Checking for existing similarity map files {specie}-sub-{sub_N:02d}...")
             all_exist = True
 
             for indx, entry in enumerate(session_and_run_dict):
@@ -2955,7 +2958,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         print("All input files are available.")
         print("Calculating Mahalanobis pairwise similarity maps...")
         calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
-                          specie, model, stim_types, mask, task, radius, replace_file=False,
+                          specie, model, stim_types, mask, task, radius=radius, replace_file=False,
                           mah_fold=mah_fold, sigma=sigma,
                           shrinkage=shrinkage, return_rdm=return_rdm, verbose=verbose, save_inverted=False)
     else:
@@ -2972,7 +2975,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         #     return missing
         print(f"Calculating {method} pairwise similarity maps...")
         if shuffle_runs:
-            print("Shuffling runs for control analysis...")
+            print("Shuffling runs...")
             np.random.shuffle(session_and_run_dict)
 
         for entry in session_and_run_dict:
@@ -2987,7 +2990,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
             # If we reach this point, it means all input files are available
             calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
                                        run_N, specie, model, stim_types, mask, 
-                                       task, radius=3, method=method, 
+                                       task, radius=radius, method=method, 
                                        replace_file=replace_file, verbose=verbose)
     return None  # no missing files
 
@@ -4642,16 +4645,18 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                     f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz"
                     )
         # create copy of res_image using the name of the rsa_model
-        res_image_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{mask_type}-{specie}_{rsa_model}_z_corrected.nii.gz"
+        res_image_copy = (res_folder + os.sep + 'RSA' + os.sep + specie + os.sep + 
+                          mask_type + os.sep +
+                    f"{specie}_{rsa_model}_z_corrected.nii.gz"
                     )
         
         out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
                     f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}.xlsx")
         
-        out_path_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{mask_type}-{specie}_{rsa_model}.xlsx")
+        out_path_copy = (res_folder + os.sep + 'RSA' + os.sep + specie + os.sep + 
+                         mask_type + os.sep +
+                    f"{specie}_{rsa_model}.xlsx")
     # res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,

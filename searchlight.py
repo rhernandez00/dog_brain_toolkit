@@ -27,6 +27,7 @@ std across maps. Save as nifti.
 9: Threshold z maps, apply cluster correction, save significant maps
 10: Summarize results, create formatted report and save xlsx
 11: Calculate cross-participant similarity, use one participant as model and calculate similarity with other participants, repeat for all participants
+12: DSM extraction: For each significant cluster, extract the similarity values 
 
 # Keep adding numbers for steps, reorganize later for better structure
 
@@ -347,7 +348,7 @@ def main():
             for sub_N in participants:
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
-                                    specie, model, stim_types, mask2, task, radius, 
+                                    specie, model, stim_types, mask2, task, radius=radius, 
                                     method=method, replace_file=replace_file, mah_fold='stim-wise', 
                                     verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories, shuffle_runs=shuffle_runs)
                 
@@ -484,7 +485,7 @@ def main():
                                                             rsa_model=rsa_model, verbose=verbose)
             print("### Done computing cross-participant similarity ###")
         if step == 12: # Calculate similarity across all pairs in a model, save files as txt
-            print("### Step 12: Creating similarity files in voxel coordinates: ###")
+            print("### Step 12: DSM extraction: ###")
             # load roi_database
             # "P:\userdata\raulh87\data\EmoB\ROI\roi_database.csv"
             roi_database_path = os.path.join(
@@ -514,7 +515,7 @@ def main():
                     rsa_utils.calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie,
                                                 mask=mask, model=model, task=task, radius=radius, method=method, 
                                                 rsa_model=rsa_model, voxel_coords=voxel_coords, config_path=config_path, verbose=True, shuffle_participants=True,
-                                                wait_time=wait_time)
+                                                shuffle_runs=shuffle_runs, wait_time=wait_time)
             print("### Done computing similarity across all pairs in a model ###")
         if step == 13: # get movement .par files from each run using mcflirt outputs
             print("### Step 13: running mcflirt to get movement parameters (.par) ###")
