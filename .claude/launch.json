@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rsa_model_builder",
+      "runtimeExecutable": "C:/ProgramData/anaconda3/python.exe",
+      "runtimeArgs": ["rsa_model_builder.py"],
+      "port": 8051
+    },
+    {
+      "name": "brain_viewer",
+      "runtimeExecutable": "C:/ProgramData/anaconda3/python.exe",
+      "runtimeArgs": ["brain_viewer.py"],
+      "port": 8050
+    }
+  ]
+}
