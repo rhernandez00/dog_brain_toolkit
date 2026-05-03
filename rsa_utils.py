@@ -93,7 +93,7 @@ def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_a
         for entry in session_and_run_dict:
             session = entry['session']
             session = f"{session:02d}"
-            run_N = entry['run']
+            run_N = entry['run_N']
             print(f"Calculating similarity across all pairs for {specie}-sub-{sub_N:02d}, session {session}, run {run_N}...")
             
             # create output path
@@ -274,7 +274,7 @@ def calculate_cross_participant_similarity(datafolder, dataset, session_and_run_
         for entry in session_and_run_dict_model:
             session1 = entry['session']
             session1 = f"{session1:02d}"
-            run_N1 = entry['run']
+            run_N1 = entry['run_N']
             print(f"Loading meta similarity map for {specie}-sub-{sub_N1:02d}, session {session1}, run {run_N1}...")  
             # load meta similarity map for participant1
             # meta_similarity_map1: 4D numpy array of shape (X, Y, Z, n_pairs) where n_pairs is the number of unique pairs of categories in the RSA model, containing the pairwise similarity values for each voxel (coordinate [x, y, z]) and each pair of categories for the model participant
@@ -579,7 +579,7 @@ def calculate_difference_map(datafolder, dataset, specie, model, comparison_mode
 #                 # add a counter
 #                 session = entry['session']
 #                 session = f"{session:02d}"
-#                 run_N = entry['run']
+#                 run_N = entry['run_N']
 #                 items_dict = model_dict[f"run{run_N:02d}"]
 #                 # loop over all pairs in category_df
 #                 for index, row in category_df.iterrows():
@@ -698,7 +698,7 @@ def calculate_similarity_maps_by_class(datafolder, dataset, session_and_run_all_
                 # add a counter
                 session = entry['session']
                 session = f"{session:02d}"
-                run_N = entry['run']
+                run_N = entry['run_N']
                 items_dict = model_dict[f"run{run_N:02d}"]
                 # loop over all pairs in class_df
                 for index, row in class_df.iterrows():
@@ -799,7 +799,7 @@ def calculate_similarity_maps_by_list(datafolder, dataset, session_and_run_all_d
             files_in_database += 1
             session = entry['session']
             session = f"{session:02d}"
-            run_N = entry['run']
+            run_N = entry['run_N']
     
             # combine all pairwise combinations in stim_list
             for i, stim_i in enumerate(stim_list):
@@ -955,7 +955,7 @@ def calculate_similarity_in_roi(datafolder,
         # take first entry of session_and_run_dict to get session, run_N
         first_entry = session_and_run_dict[0]
         session = first_entry['session']
-        run_N = first_entry['run']
+        run_N = first_entry['run_N']
         # correct session to 2 digits
         session = f"{session:02d}"
         sample_file_path = os.path.join(
@@ -1025,7 +1025,7 @@ def calculate_similarity_in_roi(datafolder,
 
     for entry in session_and_run_dict:
         session = entry['session']
-        run_N = entry['run']
+        run_N = entry['run_N']
         # correct session to 2 digits
         session = f"{session:02d}"
         if verbose:
@@ -1511,7 +1511,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                     specie, model, stim_types, mask, task, radius, rsa_model,
                     method='pearson', rsa_method='kendall', replace_file=False, verbose=False, wait_time=300,
                     rnd=False, reps=1000, create_subject_mean=False, replace_rnd_files=False, mah_fold='stim-wise',
-                    mask_type=None, categories=None):
+                    mask_type=None, categories=None, model_dict=None):
     '''
     Compare pairwise similarity maps with a model.
     '''
@@ -1542,7 +1542,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
         # Check for existing output files
         for entry in session_and_run_dict:
             session = entry['session']
-            run_N = entry['run']
+            run_N = entry['run_N']
             # correct session to 2 digits
             session = f"{session:02d}"
             ## check whether this is real data or if running permutations
@@ -1584,8 +1584,8 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                 if os.path.exists(output_file):
                     if verbose:
                         print(f"Skipping: Found existing model comparison file: {output_file}.")
-                        # all done, exit function
                     continue
+                        # all done, exit function
                 else: # file does not exist
                     if verbose:
                         print(f"Missing. File {output_file} does not exist.")
@@ -1627,7 +1627,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                 print("Removing existing files as replace_file is True.")
                 for entry in session_and_run_dict:
                     session = entry['session']  
-                    run_N = entry['run']
+                    run_N = entry['run_N']
                     # correct session to 2 digits
                     session = f"{session:02d}"
                     # determine filename
@@ -1670,7 +1670,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
         pairs_available_array = np.zeros(len(session_and_run_dict), dtype=bool)
         for index, entry in enumerate(session_and_run_dict):
             session = entry['session']
-            run_N = entry['run']
+            run_N = entry['run_N']
             # correct session to 2 digits
             session = f"{session:02d}"
             # check if all beta maps exist
@@ -1756,7 +1756,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
         # go through each session and run,
         for entry in session_and_run_dict:
             session = entry['session']
-            run_N = entry['run']
+            run_N = entry['run_N']
             # correct session to 2 digits
             session = f"{session:02d}"
             ## check for existing temp files, skip if recent temp files, if they are old, skip calculation, otherwise go on
@@ -1830,7 +1830,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
         # gather all output files
         for entry in session_and_run_dict:
             session = entry['session']
-            run_N = entry['run']
+            run_N = entry['run_N']
             # correct session to 2 digits
             session = f"{session:02d}"
             # build output filename
@@ -1901,7 +1901,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
 
     print(f"for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}...")
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
-    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
+    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
  
     # Load config.yaml
     with open(config_path, 'r') as f:
@@ -2130,8 +2130,21 @@ def load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, ru
                     os.sep + 'RSA' + os.sep + model + os.sep + 
                     f"{specie}-sub-{sub_N:02d}" + os.sep + 
                     f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz")
-    if verbose:
-        print(f"Loading {file_path}")
+        # build file path for inverted Mahalanobis similarity map
+        file_path_inverted = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                    os.sep + 'RSA' + os.sep + model + os.sep +
+                    f"{specie}-sub-{sub_N:02d}" + os.sep +
+                    f"r-{radius}_{method}_{stim_2_name}_{stim_1_name}.nii.gz")
+    # check if file exists, if not try with inverted pair name
+    if os.path.exists(file_path):
+        if verbose:
+            print(f"Loading {file_path}")
+    elif os.path.exists(file_path_inverted):
+        if verbose:
+            print(f"Loading {file_path_inverted}")
+        file_path = file_path_inverted
+    else:
+        raise FileNotFoundError(f"Neither {file_path} nor {file_path_inverted} exist.")
     map = nib.load(file_path).get_fdata()
     return map
 
@@ -2602,6 +2615,10 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
                 os.sep + 'GLM' + os.sep + model + os.sep + 
                 f"{specie}-sub-{sub_N:02d}" + os.sep + 
                 f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + "stats" + os.sep + "pe1.nii.gz")
+    beta_map_file = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                os.sep + 'GLM' + os.sep + model + os.sep + 
+                f"{specie}-sub-{sub_N:02d}" + os.sep + 
+                f"ses-{session}_task-{task}_run-{run_N:02d}.feat")
     if os.path.exists(beta_map_file) and not redo_if_exists:
         print(f"Beta map file {beta_map_file} already exists. Skipping...")
         return
@@ -2744,7 +2761,8 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                           specie, model, stim_types, mask, task, radius, 
                           method, replace_file, mah_fold='stim-wise',
                           sigma=None, shrinkage='ledoitwolf', return_rdm=True,
-                          verbose=False, skip_prefile_check=False, categories=None, shuffle_runs=False):
+                          verbose=False, skip_prefile_check=False, categories=None, shuffle_runs=False,
+                          model_dict=None):
     '''
     Calculate pairwise similarity maps using searchlight approach.
     - Checks if input files are available.
@@ -2770,13 +2788,15 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                 When multiple runs are available, calculate distance across runs 
                 (cross-validated across runs).
                 Folding strategies:
-                    - run-wise (deprecated, do not use): each run is a fold
+                    - run-wise (in progress): each run is a fold
                     - stim-wise: 
     Inputs:
         - datafolder: str. Path to data folder
         - dataset: str. Dataset name
         - sub_N: int. Subject number
         - session_and_run_dict: list of dicts. Each dict contains 'session' and 'run' keys.
+            -- eventually it will contain maps where session_and_run_dict[indx]['maps'] will be a dict with keys as stim_types and values as the corresponding beta maps. For now, it is only used to loop over sessions and runs.
+            -- session_and_run_dict[2]['maps'][stim] will give the beta map for session_and_run_dict[2] and stimulus stim.
         - specie: str. Species identifier ('H' or 'D')
         - model: str. Model name for beta maps
         - stim_types: list of str. List of stimulus types
@@ -2790,6 +2810,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
             - 'odd-even': splits data into odd and even trials (for single run)
             - 'run-wise': each run is a fold (deprecated, do not use)
             - 'stim-wise': folds based on stimulus categories (for multiple runs)
+            - 'stim-wise-multiple-runs': folds based on specific stimuli, requires the same stimuli repeated. This implementation works for multiple runs only.
         - sigma: None or array (n_features, n_features), optional. Noise covariance for Mahalanobis. If None, it is estimated from pooled run-residuals with shrinkage.
         - shrinkage: {'ledoitwolf','oas','ridge','identity'}, optional.
         - return_rdm: bool, optional. If True return a (n_conditions x n_conditions) symmetric RDM. If False return the condensed upper-triangular vector.
@@ -2800,12 +2821,38 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
     '''
     # if mah_fold is stim-wise, get categories
     if mah_fold == 'stim-wise':
-        if categories == None: # if categories is not provided, extract from stim_types
+        if categories is None:
+            categories = set()
+            if dataset == 'EmoB':
+                for stim in stim_types:
+                    if '-' in stim:
+                        category = stim.split('-')[0]
+                        categories.add(category)
+            elif dataset == 'EmoC':
+                for stim in stim_types:
+                    # remove the last character
+                    category = stim[:-1]
+                    categories.add(category)
+    elif mah_fold == 'stim-wise-multiple-folds':
+        if dataset == 'EmoC':
             categories = set()
             for stim in stim_types:
-                if '-' in stim:
-                    category = stim.split('-')[0]
-                    categories.add(category)
+                # remove the last character
+                category = stim[:-1]
+                categories.add(category)
+        else: # throw error
+            raise ValueError(f"mah_fold option 'stim-wise-multiple-folds' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
+    elif mah_fold == 'stim-wise-all-runs':
+        if dataset == 'EmoC':
+            run_dict = model_dict[f"run{run_N:02d}"]
+            # for each run_dict.keys() get 'stim_file'
+            categories = [run_dict[stim]['stim_file'] for stim in run_dict.keys()]
+    
+    # throw error
+
+    else:
+        raise ValueError(f"Invalid mah_fold option: {mah_fold}. Must be 'stim-wise' for multiple runs. Or 'stim-wise-multiple-folds' for single run.")
+
     print(f"Calculating pairwise similarity maps for {specie}-sub-{sub_N:02d} using method: {method} ")
     
     if skip_prefile_check:
@@ -2820,7 +2867,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
 
             for indx, entry in enumerate(session_and_run_dict):
                 session = entry['session']
-                run_N = entry['run']
+                run_N = entry['run_N']
                 # correct session to 2 digits
                 session = f"{session:02d}"
                 for i, stim_i in enumerate(stim_types):
@@ -2841,11 +2888,12 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                         else:
                             if verbose:
                                 print(f"Found {output_file} exists.")
-        else:
+        else: # method is mahalanobis
             # method is mahalanobis, check if mah_fold is stim-wise, if so check for output files accordingly
-            if mah_fold == 'stim-wise':
+            if mah_fold == 'stim-wise' or mah_fold == 'stim-wise-all-runs':
                 print("Checking for existing Mahalanobis similarity map files with stim-wise folding...")
                 all_exist = True
+                # go over all pairs of categories
                 for i, cat1 in enumerate(categories):
                     for j, cat2 in enumerate(categories):
                         if i >= j:
@@ -2863,6 +2911,73 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                         else:
                             if verbose:
                                 print(f"Found {output_file} exists.")
+            elif mah_fold == 'stim-wise-multiple-folds':
+                print("Checking for existing Mahalanobis similarity map files with run-wise folding for multiple runs...")
+                all_exist = True
+                for entry in session_and_run_dict:
+                    session = entry['session']
+                    run_N = entry['run_N']
+                    # correct session to 2 digits
+                    session = f"{session:02d}"
+                    # go over all pairs of stim types
+                    for i, cat1 in enumerate(categories):
+                        for j, cat2 in enumerate(categories):
+                            if i >= j:
+                                continue  # avoid duplicates and self-comparison
+                            output_file = os.path.join(
+                                datafolder, dataset, 'results', 'RSA', model,
+                                f"{specie}-sub-{sub_N:02d}",
+                                f"ses-{session}_task-{task}_run-{run_N:02d}",
+                                f"r-{radius}_{method}_{cat1}_{cat2}.nii.gz"
+                            )
+                            # check if file exists
+                            if not os.path.exists(output_file):
+                                if verbose:
+                                    print(f"Not found {output_file}.")
+                                all_exist = False
+                            else:
+                                if verbose:
+                                    print(f"Found {output_file} exists.")
+            elif mah_fold == 'stim-wise-all-runs':
+                # if dataset is not EmoC, throw error as this option is only implemented for EmoC
+                if dataset != 'EmoC':
+                    raise ValueError(f"mah_fold option 'stim-wise-all-runs' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
+                print("Checking for existing Mahalanobis similarity map files with stim-wise folding for all runs...")
+                all_exist = True
+                for entry in session_and_run_dict:
+                    session = entry['session']
+                    run_N = entry['run_N']
+                    # correct session to 2 digits
+                    session = f"{session:02d}"
+                    # stims available depends on the run, get stims available for this run
+                    # for each stim_list, get the video_file
+                    stims_available = []
+                    for stim in model_dict[f'run{run_N:02d}'].keys():
+                        stim_file = model_dict[f'run{run_N:02d}'][stim]['video_file']
+                        stims_available.append(stim_file)
+                    
+                    # go over all pairs of stim types
+                    for i, cat1 in enumerate(stims_available):
+                        for j, cat2 in enumerate(stims_available):
+                            if i >= j:
+                                continue  # avoid duplicates and self-comparison
+                            output_file = os.path.join(
+                                datafolder, dataset, 'results', 'RSA', model,
+                                f"{specie}-sub-{sub_N:02d}",
+                                f"ses-{session}_task-{task}_run-{run_N:02d}",
+                                f"r-{radius}_{method}_{cat1}_{cat2}.nii.gz"
+                            )
+                            # check if file exists
+                            if not os.path.exists(output_file):
+                                if verbose:
+                                    print(f"Not found {output_file}.")
+                                all_exist = False
+                            else:
+                                if verbose:
+                                    print(f"Found {output_file} exists.")
+                    
+                    
+                    
 
     
     ## check if there is any output file missing
@@ -2891,7 +3006,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         # iterate over session_and_run_dict
         for entry in session_and_run_dict:
             session = entry['session']
-            run_N = entry['run']
+            run_N = entry['run_N']
             # correct session to 2 digits
             session = f"{session:02d}"
             pair_check = 0 # keep track of pairs that can be calculated
@@ -2960,7 +3075,8 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius=radius, replace_file=False,
                           mah_fold=mah_fold, sigma=sigma,
-                          shrinkage=shrinkage, return_rdm=return_rdm, verbose=verbose, save_inverted=False)
+                          shrinkage=shrinkage, return_rdm=return_rdm, verbose=verbose, save_inverted=False,
+                          model_dict=model_dict)
     else:
         if len(missing) > 0:
             print(f"Missing input files for {method} for sub-{sub_N:02d}:")
@@ -2980,7 +3096,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
 
         for entry in session_and_run_dict:
             session = entry['session']
-            run_N = entry['run']
+            run_N = entry['run_N']
             # correct session to 2 digits
             session = f"{session:02d}"
             # check if this session/run has missing files
@@ -2997,7 +3113,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
 def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius, replace_file=False,
                           mah_fold='stim-wise', sigma=None,
-                          shrinkage='ledoitwolf', return_rdm=True, verbose=False, save_inverted=False):
+                          shrinkage='ledoitwolf', return_rdm=True, verbose=False, save_inverted=False, model_dict=None):
     '''
     Calculate Mahalanobis distance maps using searchlight approach.
     - Uses cross-validation based on specified folding strategy.
@@ -3046,27 +3162,49 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     # load mask
     mask_img_obj = nib.load(mask)
     mask_img = mask_img_obj.get_fdata().astype(bool)
-    # if mah_fold is 'stim-wise', make sure stim_types can be stripped to determine categories
-    if mah_fold == 'stim-wise':
+    # if mah_fold is 'stim-wise' or 'stim-wise-multiple-folds', make sure stim_types can be stripped to determine categories
+    if mah_fold == 'stim-wise' or mah_fold == 'stim-wise-multiple-folds':
         # check if each stim in stim_types can be stripped to determine category (e.g. face-1 -> face, body-2 -> body)
         categories = set()
         for stim in stim_types:
-            if '-' in stim:
-                category = stim.split('-')[0]
+            if dataset == 'EmoB':
+                if '-' in stim:
+                    category = stim.split('-')[0]        
+                else:
+                    raise ValueError(f"Stimulus type {stim} does not contain a '-' to determine category for stim-wise folding.")
+            elif dataset == 'EmoC':
+                # remove the last number
+                category = stim[:-1]
                 categories.add(category)
             else:
-                raise ValueError(f"Stimulus type {stim} does not contain a '-' to determine category for stim-wise folding.")
+                raise ValueError(f"Dataset {dataset} not recognized for determining categories from stimulus types.")
+        # if dataset == 'EmoC'
+    elif mah_fold == 'stim-wise-all-runs':
+        # do nothing
+        run_dict = model_dict[f"run{run_N:02d}"]
+        # for each run_dict.keys() get 'stim_file'
+        categories = [run_dict[stim]['stim_file'] for stim in run_dict.keys()]
+        # replace stim_types with categories 
+        stim_types = categories 
 
+
+    else: # if not stim-wise folding, categories are just stim_types
+        categories = stim_types
+    # print categories found
+    print(f"Categories for Mahalanobis folding: {categories}")
+    #### --- loading beta maps --- ####
     print("Loading beta maps...")
 
     # Go over every run for the participant and load beta maps to session_and_run_dict
     for indx, entry in enumerate(session_and_run_dict):
         session = entry['session']
-        run_N = entry['run']
+        run_N = entry['run_N']
         # correct session to 2 digits
         session = f"{session:02d}"
         if verbose:
             print(f"Loading beta maps for session {session}, run {run_N} for sub-{sub_N:02d}...")
+        ## CORRECT HERE FOR STIM'stim-wise-multiple-folds'
+        ## Replace stim_types for the name of the file. maybe a function that chooses the correct file based on stim and run ##
         # initialize maps dict
         session_and_run_dict[indx]['maps'] = {}
         for i, stim in enumerate(stim_types):
@@ -3099,8 +3237,9 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             # store in session_and_run_dict
             session_and_run_dict[indx]['maps'][stim] = map_data
     print("All beta maps loaded successfully.")
+    ##### --- end of loading beta maps --- #####
 
-
+    #### ---- initialize similarity maps ####
     print("Preparing for crossnobis (cross-validated Mahalanobis)...")
 
     # prepare for searchlight
@@ -3113,24 +3252,42 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     grid = np.stack(np.meshgrid(*ranges, indexing='ij'), axis=-1).reshape(-1, ndim)
     keep = (grid.astype(float) ** 2).sum(axis=1) <= r * r + 1e-12
     offsets = grid[keep]
+    # initialize similarity_maps
+    similarity_maps = {}
     if mah_fold == 'run-wise':
-        # initialize similarity_maps based on stim_types
-        similarity_maps = {}
+        # initialize similarity_maps based on stim_types (one map for each stim pair )
         for i, stim_i in enumerate(stim_types):
             for j, stim_j in enumerate(stim_types):
                 if i >= j:
                     continue  # avoid duplicates and self-comparison
                 key = (stim_i, stim_j)
                 similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
-    elif mah_fold == 'stim-wise':
-        # initialize similarity_maps based on categories
-        similarity_maps = {}
+    # elif mah_fold == stim-wise or 'stim-wise-multiple-folds'
+    elif mah_fold == 'stim-wise'
         for indx1, cat1 in enumerate(categories):
             for indx2, cat2 in enumerate(categories):
                 if indx1 >= indx2:
                     continue  # avoid duplicates and self-comparison
                 key = (cat1, cat2)
                 similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
+    elif mah_fold == 'stim-wise-multiple-folds': 
+        categories = list()
+        for run_key in model_dict.keys():    
+            run_dict = model_dict[run_key]
+            # for each run_dict.keys() get 'stim_file'
+            categories.append([run_dict[stim]['stim_file'] for stim in run_dict.keys()])
+        # flatten categories list
+        categories = [item for sublist in categories for item in sublist]
+        # build similarity maps
+        for indx1, cat1 in enumerate(categories):
+            for indx2, cat2 in enumerate(categories):
+                if indx1 >= indx2:
+                    continue  # avoid duplicates and self-comparison
+                key = (cat1, cat2)
+                similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
+
+        
+
     # iterate over all voxels in mask
     it = np.argwhere(mask_img)
     for center in it: # iterate over each sphere center
@@ -3150,42 +3307,69 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
         indices = tuple(neigh.T)
         
         # assign labels and partitions based on mah_fold
-        if len(session_and_run_dict) > 1: # multiple runs available, runs are partitions
-            if mah_fold == 'run-wise': # labels are all stimuli types on one run, across runs. Output: single map for each pair of stimuli types, where distance is calculated across runs (cross-validated across runs)
-                # prepare data matrix Y (stim_types x voxels)
-                Y_list, labels, partitions = [], [], []
-                for run_idx, entry in enumerate(session_and_run_dict):
-                    run_N = entry['run']
-                    for stim_idx, stim in enumerate(stim_types):
-                        map_data = entry['maps'][stim]
-                        voxel_values = map_data[indices]
-                        Y_list.append(voxel_values)
-                        labels.append(stim)
-                        partitions.append(run_N)
-                Y = np.vstack(Y_list)
-            elif mah_fold == 'stim-wise': # labels are based on stimuli types
-                # prepare data matrix Y (stim_types x voxels)
-                Y_list, labels, partitions = [], [], []
-                for run_idx, entry in enumerate(session_and_run_dict):
-                    run_N = entry['run']
-                    for stim_idx, stim in enumerate(stim_types):
-                        map_data = entry['maps'][stim]
-                        voxel_values = map_data[indices]
-                        Y_list.append(voxel_values)
-                        # determine category by stripping stim string
+        # if len(session_and_run_dict) > 1: # multiple runs available, runs are partitions
+        if mah_fold == 'run-wise': # labels are all stimuli types on one run, across runs. Output: single map for each pair of stimuli types, where distance is calculated across runs (cross-validated across runs)
+            # prepare data matrix Y (stim_types x voxels)
+            Y_list, labels, partitions = [], [], []
+            for run_idx, entry in enumerate(session_and_run_dict):
+                run_N = entry['run_N']
+                for stim_idx, stim in enumerate(stim_types):
+                    map_data = entry['maps'][stim]
+                    voxel_values = map_data[indices]
+                    Y_list.append(voxel_values)
+                    labels.append(stim)
+                    partitions.append(run_N)
+            Y = np.vstack(Y_list)
+        # elif stim-wise or stim-wise-multiple-folds
+        elif mah_fold == 'stim-wise': 
+            # prepare data matrix Y (stim_types x voxels)
+            Y_list, labels, partitions = [], [], []
+            for run_idx, entry in enumerate(session_and_run_dict):
+                run_N = entry['run_N']
+                for stim_idx, stim in enumerate(stim_types):
+                    map_data = entry['maps'][stim]
+                    voxel_values = map_data[indices]
+                    Y_list.append(voxel_values)
+                    # determine category by stripping stim string
+                    if dataset == 'EmoB':
                         if '-' in stim:
                             category = stim.split('-')[0]
                         else:
-                            raise ValueError(f"Stimulus type {stim} does not contain a '-' to determine category for stim-wise folding.")
-                        labels.append(category)
-                        partitions.append(run_N)  # still use runs as partitions for cross-validation
+                            raise ValueError(f"Stimulus type {stim} does not contain a '-' to determine category for stim-wise folding.")                            
+                    elif dataset == 'EmoC':
+                        # remove the last number
+                        category = stim[:-1]
+                    else:
+                        raise ValueError(f"Dataset {dataset} not recognized for determining categories from stimulus types.")
+                    labels.append(category)
+                    partitions.append(run_N)  # still use runs as partitions for cross-validation
+            Y = np.vstack(Y_list)
+        elif mah_fold == 'stim-wise-multiple-folds': #receives a single run, but folds based on the stimuli repetitions within the same run, assumes a single run 
+            # prepare data matrix Y (stim_types x voxels)
+            Y_list, labels, partitions = [], [], []
+            # print contents of session_and_run_dict
+            # print(f"session_and_run_dict={session_and_run_dict}")
+            for run_idx, entry in enumerate(session_and_run_dict):
+                # get run_N and run_dict for this entry
+                run_N = entry['run_N']
+                run_dict = model_dict[f"run{entry['run_N']:02d}"]
+                # go over all stims in run_dict, get stim_file for each stim, and use stim_file as label (stimulus repetition) 
+                for stim in run_dict.keys():
+                    stim_file = run_dict[stim]['stim_file']
+                    partition = run_dict[stim]['partition'] # get partition for this stimulus repetition
+                    map_data = entry['maps'][stim]
+                    voxel_values = map_data[indices]
+                    Y_list.append(voxel_values)
+                    labels.append(stim_file)
+                    partitions.append(partition)  # use stimulus repetition as partition for cross-validation
+                    # print(f"partition: {partition}, label: {stim_file}")
                 Y = np.vstack(Y_list)
-            
-            else:
-                raise ValueError(f"Unknown mah_fold strategy for multiple runs: {mah_fold}")
+    
         else:
-            # single run available
-            raise NotImplementedError("Single run Mahalanobis calculation not implemented yet.")
+            raise ValueError(f"Unknown mah_fold strategy for multiple runs: {mah_fold}")
+        # else:
+        #     # single run available
+        #     raise NotImplementedError("Single run Mahalanobis calculation not implemented yet.")
         if verbose:
             # do anything
             a = 1
@@ -3199,7 +3383,8 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                         continue  # avoid duplicates and self-comparison
                     key = (stim_i, stim_j)
                     similarity_maps[key][tuple(neigh.T)] = D[i, j]
-        elif mah_fold == 'stim-wise':
+        elif mah_fold == 'stim-wise' or mah_fold == 'stim-wise-multiple-folds':
+            # output for both is a similarity map for each pair of categories, in the case of stim-wise, a single map represents all runs, in the case of stim-wise-multiple-folds, a single map represents a single run, but the distance is calculated based on the stimulus repetitions within that run
             # store distances in similarity_maps category-wise
             for indx1, cat1 in enumerate(categories):
                 for indx2, cat2 in enumerate(categories):
@@ -3213,6 +3398,8 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     
     ## Save similarity maps
     
+    
+    
     # save similarity maps for each pair of stimulus types
     for i, cat1 in enumerate(categories):
         for j, cat2 in enumerate(categories):
@@ -3222,12 +3409,21 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                 print(f"Saving similarity map for {cat1} vs {cat2}...")
             key = (cat1, cat2)
             # build output path
-            output_file = os.path.join(
-                datafolder, dataset, 'results', 'RSA', model,
-                f"{specie}-sub-{sub_N:02d}",
-                f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
-            )
-            # same but with stimuli inverted
+            # if mah_fold is stim-wise, save one map for each pair of categories
+            if mah_fold == 'stim-wise':
+                output_file = os.path.join(
+                    datafolder, dataset, 'results', 'RSA', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
+                )
+            elif mah_fold == 'stim-wise-multiple-folds': # save one map for each pair of categories, for each run
+                output_file = os.path.join(
+                    datafolder, dataset, 'results', 'RSA', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}",
+                    f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
+                )
+            
             
             # create output directory if it doesn't exist
             output_dir = os.path.dirname(output_file)
@@ -3239,12 +3435,11 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             nib.save(sim_map_nifti, output_file)
             print(f"Saved similarity map: {output_file}")
             if save_inverted:
-                output_fileb = os.path.join(
-                    datafolder, dataset, 'results', 'RSA', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"r-{radius}_mahalanobis_{cat2}_{cat1}.nii.gz"
-                )
+                # get same folder but change file name to reflect inverted map
+                output_fileb = output_file.replace(f"mahalanobis_{cat1}_{cat2}", f"mahalanobis_{cat2}_{cat1}")
+
                 nib.save(sim_map_nifti, output_fileb)
+      
 
 def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
                                        run_N, specie, model, stim_types, mask, 
@@ -3455,7 +3650,7 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
                 files_in_database += 1
                 session = entry['session']
                 session = f"{session:02d}"
-                run_N = entry['run']
+                run_N = entry['run_N']
                 # check if model similarity map exists
                 if mask_type is None:
                     model_sim_map_file = os.path.join(
@@ -3635,7 +3830,7 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
                     file_counter += 1 # add a file counter
                     session = entry['session']
                     session = f"{session:02d}"
-                    run_N = entry['run']
+                    run_N = entry['run_N']
                     # determine rnd_individual_N (rand sample from reps) for this subject/session/run
                     rnd_individual_N = np.random.randint(0, reps)
 
@@ -3989,7 +4184,7 @@ def calculate_cluster_size_distribution(
         cluster_sizes_dict[key] = {}  # initialize empty dictionary for this threshold and connectivity
 
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
-    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
+    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
 
     # Load config.yaml
     with open(config_path, 'r') as f:

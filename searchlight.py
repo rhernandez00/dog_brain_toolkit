@@ -64,7 +64,7 @@ Input arguments:
 def parse_arguments():
     parser = argparse.ArgumentParser(description='RSA Pipeline Execution')
     # parse dataset
-    parser.add_argument('--dataset', type=str, default='EmoB',
+    parser.add_argument('--dataset', type=str, default='EmoC',
                         help='Dataset to use')
     # parse task
     parser.add_argument('--task', type=str, default=None,
@@ -119,6 +119,8 @@ def parse_arguments():
                         help='Skip prefile check and overwrite files if they exist')
     parser.add_argument('--coords', type=str, default=None,
                         help='Coordinates for similarity files in voxel space, format: x,y,z')
+    parser.add_argument('--mah_fold', type=str, default='stim-wise',
+                        help='Folding method for Mahalanobis distance, either "stim-wise" or "run-wise"')
     return parser.parse_args()
 
 # main execution
@@ -150,20 +152,21 @@ def main():
     peak_id = args.peak_id
     dataset = args.dataset
     shuffle_runs = args.shuffle_runs
+    mah_fold = args.mah_fold # this is the default, but it can be changed to 'run-wise' if needed
     # if task is not provided use the same as dataset
     if args.task is None:
         task = dataset
     else:
         task = args.task
 
-    # if user provided rsa_model
-    if rsa_model is not None:
-        # check if rsa_model ends with -basic if it does, model is basic
-        if rsa_model.endswith('-basic'):
-            model = 'basic'
-        else:
-            model = 'basic-block'
-
+    # # if user provided rsa_model
+    # if rsa_model is not None:
+    #     # check if rsa_model ends with -basic if it does, model is basic
+    #     if rsa_model.endswith('-basic'):
+    #         model = 'basic'
+    #     else:
+    #         model = 'basic-block'
+    
 
     if os.name == 'nt':  # Windows
         datafolder = os.path.join(
@@ -177,7 +180,7 @@ def main():
         #'/home/raulh87/mnt/a471/userdata/raulh87/github
         git_folder = os.path.join('/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'github')
         
-    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
+    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
 
     # Load config.yaml
     with open(config_path, 'r') as f:
@@ -195,8 +198,8 @@ def main():
     reload(preprocess_functions)
     import rsa_utils
     reload(rsa_utils)
-    import utils_EmoB
-    reload(utils_EmoB)
+    # import utils_EmoB
+    # reload(utils_EmoB)
 
 
     project_dict = {
@@ -215,12 +218,17 @@ def main():
     threshold_fwd = config["threshold_fwd"]
     smooth = config["smooth"]
     img_type = config["img_type"]
-    model = config["model"]
+    # if model_dict is in config, get it, otherwise set it to None
+    if "model_dict" in config:
+        model_dict = config["model_dict"]
+    else:
+        model_dict = None
     
     participants = config["participants"]
     stim_types = config['stim_types']
     #atlas_type = config["atlas_type"]
     
+
     # if rsa_model is not None, get rsa_model_path
     if rsa_model is not None:
         rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
@@ -318,10 +326,11 @@ def main():
                 continue
 
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                # session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 for entry in session_and_run_dict:
                     session = entry['session']
-                    run_N = entry['run']
+                    run_N = entry['run_N']
                     rsa_utils.calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_N, task,
                                 stim_types, design_template, atlas_file,
                                 smooth,
@@ -346,11 +355,24 @@ def main():
                 np.random.shuffle(participants)
                 # print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
-                rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                if mah_fold == 'run-wise-multiple-runs': # for each run, run once calculate_pairwise_similarity_maps2
+                    print("Calculating pairwise similarity maps with run-wise folding for multiple runs...")
+                    for entry in session_and_run_dict:
+                        session = entry['session']
+                        run_N = entry['run_N']
+                        print(f"Processing sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}...")
+                        rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, [entry],
                                     specie, model, stim_types, mask2, task, radius=radius, 
-                                    method=method, replace_file=replace_file, mah_fold='stim-wise', 
-                                    verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories, shuffle_runs=shuffle_runs)
+                                    method=method, replace_file=replace_file, mah_fold=mah_fold, 
+                                    verbose=verbose, skip_prefile_check=skip_prefile_check, 
+                                    categories=categories, shuffle_runs=shuffle_runs, model_dict=model_dict)
+
+                else:
+                    rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
+                                    specie, model, stim_types, mask2, task, radius=radius, 
+                                    method=method, replace_file=replace_file, mah_fold=mah_fold, 
+                                    verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories, shuffle_runs=shuffle_runs, model_dict=model_dict)
                 
                 
                 print(f"Finished sub-{sub_N:02d}...")
@@ -362,7 +384,7 @@ def main():
                 np.random.shuffle(participants)
                 print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 rsa_utils.compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
                                     method=method, rsa_method=rsa_method, replace_file=replace_file, 
@@ -377,7 +399,7 @@ def main():
             # build session_and_run_all_dict    
             session_and_run_all_dict = {}
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             
             rsa_utils.calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, 
@@ -394,7 +416,7 @@ def main():
                 np.random.shuffle(participants)
                 print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 rsa_utils.compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
                                     method=method, rsa_method=rsa_method, replace_file=replace_file, 
@@ -408,7 +430,7 @@ def main():
             # build session_and_run_all_dict    
             session_and_run_all_dict = {}
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             print(f"rsa_model {rsa_model}")
             rsa_utils.calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model, 
@@ -416,8 +438,7 @@ def main():
                                                 rsa_method=rsa_method,
                                                 method=method, verbose=verbose, 
                                                 min_percentage_available=min_percentage_available,
-                                                reps=reps, replace_rnd_files=False, wait_time=300, reps_group=reps_group,
-                                                )
+                                                reps=reps, replace_rnd_files=False, wait_time=300, reps_group=reps_group)
             
             print("### Done computing group rnd mean model similarity maps ###")
             #Map computing
@@ -478,7 +499,7 @@ def main():
             print("### Step 11: Calculating cross-participant similarity ###")
             session_and_run_all_dict = {}
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             rsa_utils.calculate_cross_participant_similarity(datafolder, dataset, session_and_run_all_dict, participants, specie,
                                                             mask, model, task, radius, method=method, rsa_method=rsa_method,
@@ -498,7 +519,7 @@ def main():
             # get session and run list for all participants and save in a dict
             session_and_run_all_dict = {}
             for sub_N in participants:
-                session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             # if peak_id is not provided, iterate over roi_database and calculate for each peak_id
             if peak_id is None:
@@ -530,7 +551,6 @@ def main():
                     par_file = os.path.join(datafolder, dataset, 'preprocessing', f"{specie}_mcflirt",
                                              f"{specie}-sub-{sub_N:02d}_ses-{session:02d}_task-{task}_run-{run_N:02d}.par"
                                         )
-                    #"P:\userdata\raulh87\data\EmoC\preprocessing\D_mcflirt\D-sub-01_ses-01_task-EmoC_run-05.par"
                     mov_txt = os.path.join(datafolder, dataset, 'movement',
                                             f"{specie}-sub-{sub_N:02d}_ses-{session:02d}_task-{task}_run-{run_N:02d}_fwd.txt")
                     if specie == 'D':
