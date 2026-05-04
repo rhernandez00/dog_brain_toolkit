@@ -1122,8 +1122,21 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
     # load distribution mean and std maps
     dist_mean_img = nib.load(distribution_mean_map_path).get_fdata()
     dist_std_img = nib.load(distribution_std_map_path).get_fdata()
+    # apply correction to dist_std_img to avoid division by zero
+    eps = 1e-8
+    valid_std = dist_std_img > eps
+
     # calculate z map
-    z_map = (mean_model_img - dist_mean_img) / dist_std_img
+    z_map = np.full_like(mean_model_img, np.nan, dtype=np.float32)
+    z_map[valid_std] = (
+        mean_model_img[valid_std] - dist_mean_img[valid_std]
+    ) / dist_std_img[valid_std]
+    
+    # # calculate z map
+    # z_map = (mean_model_img - dist_mean_img) / dist_std_img
+    # correct nan
+    z_map = np.nan_to_num(z_map, nan=0.0, posinf=0.0, neginf=0.0)
+
     # threshold z map
     z_map_thresholded = np.where(z_map >= z_threshold, z_map, 0)
     # if forced_minimal_cluster_size is set, use it
@@ -2158,9 +2171,14 @@ def read_model_dict(model_path, erase_existing_npy=False, return_all_comparisons
             - 'categories': list of categories
             - 'pairs': list of tuples with category pairs
     '''
-    
-    # rsa_model_dict is saved with the same name as model_path but with .npy extension
-    rsa_model_dict_path = model_path.replace('.xlsx', '.npy')
+    # check if model_path is an excel or csv file
+    if model_path.endswith('.xlsx'):
+        # rsa_model_dict is saved with the same name as model_path but with .npy extension
+        rsa_model_dict_path = model_path.replace('.xlsx', '.npy')
+    elif model_path.endswith('.csv'):
+        rsa_model_dict_path = model_path.replace('.csv', '.npy')
+    else:
+        raise ValueError("model_path must be an excel (.xlsx) or csv (.csv) file.")
     
 
     if not return_all_comparisons:
@@ -2173,8 +2191,13 @@ def read_model_dict(model_path, erase_existing_npy=False, return_all_comparisons
                 # delete rsa_model_dict_path
                 os.remove(rsa_model_dict_path)
 
-    # read excel file
-    model_table = pd.read_excel(model_path)
+    # if the model_path is xlsx, read with read_excel, if csv, read with read_csv
+    if model_path.endswith('.xlsx'):
+        # read excel file
+        model_table = pd.read_excel(model_path)
+    else:
+        # read csv file
+        model_table = pd.read_csv(model_path)
     # get all columns
     categories = model_table.columns.tolist()
     # drop first element
@@ -2834,6 +2857,8 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                     category = stim[:-1]
                     categories.add(category)
     elif mah_fold == 'stim-wise-multiple-folds':
+        # raise
+        raise(ValueError("mah_fold option 'stim-wise-multiple-folds' is currently not implemented"))
         if dataset == 'EmoC':
             categories = set()
             for stim in stim_types:
@@ -2847,6 +2872,9 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
             run_dict = model_dict[f"run{run_N:02d}"]
             # for each run_dict.keys() get 'stim_file'
             categories = [run_dict[stim]['stim_file'] for stim in run_dict.keys()]
+    # if none, ignore
+    elif mah_fold is None:
+        pass
     
     # throw error
 
@@ -3263,7 +3291,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                 key = (stim_i, stim_j)
                 similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
     # elif mah_fold == stim-wise or 'stim-wise-multiple-folds'
-    elif mah_fold == 'stim-wise'
+    elif mah_fold == 'stim-wise':
         for indx1, cat1 in enumerate(categories):
             for indx2, cat2 in enumerate(categories):
                 if indx1 >= indx2:

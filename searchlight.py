@@ -231,7 +231,7 @@ def main():
 
     # if rsa_model is not None, get rsa_model_path
     if rsa_model is not None:
-        rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
+        rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
         # get categories from rsa_model definition
         rsa_model_dict = rsa_utils.read_model_dict(rsa_model_path)
         categories = rsa_model_dict['categories']
@@ -252,9 +252,13 @@ def main():
         if radius is None:
             radius = 3
         # get label_dict and label_nii_data for dogs
+        # print elements before calling them for label_dict
+        # print(f"atlas_for_labels: {atlas_for_labels}")
+        # print(f"path_to_dog_brain_toolkit: {path_to_dog_brain_toolkit}")
+        # print 
+
         label_dict = pd.read_csv(os.path.join(
-        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"
-    ))  
+        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"))  
 
         label_nii_data = nib.load(os.path.join(
         path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
