@@ -49,6 +49,8 @@ DEFAULT_STYLE = {
     "cbar_min":         0.0,
     "cbar_max":         1.0,
     "show_colorbar":    True,
+    "use_legend":       False,
+    "legend_show_nan":  True,
     "nan_color":        "#cccccc",
     "diag_color":       "#f0f0f0",
     "mixed_color":      "#ff9999",
@@ -57,6 +59,8 @@ DEFAULT_STYLE = {
     "val_font_color":   "#ffffff",
     "label_font_size":  11,
     "label_font_color": "#222222",
+    "show_x_labels":    True,
+    "show_y_labels":    True,
     "x_label_angle":    -45,
     "y_label_angle":    0,
     "bg_color":         "#ffffff",
@@ -258,22 +262,26 @@ def build_cell_heatmap(matrix, labels, style, mixed_mask=None, axis_colors=None)
     cs = max(int(S.get("cell_size",  40)), 6)
     gp = max(int(S.get("cell_gap",    4)), 0)
     r  = max(int(S.get("cell_radius", 6)), 0)
-    colorscale  = S.get("colorscale",       "Viridis")
-    cmin        = float(S.get("cbar_min",    0.0))
-    cmax        = float(S.get("cbar_max",    1.0))
-    show_cbar   = bool(S.get("show_colorbar", True))
-    nan_color   = S.get("nan_color",  "#cccccc")
-    diag_color  = S.get("diag_color", "#f0f0f0")
-    mix_color   = S.get("mixed_color","#ff9999")
-    show_vals   = bool(S.get("show_values",    True))
-    vfs         = int(S.get("val_font_size",   9))
-    vfc         = S.get("val_font_color","#ffffff")
-    lfs         = int(S.get("label_font_size", 11))
-    lfc         = S.get("label_font_color","#222222")
-    x_ang       = float(S.get("x_label_angle", -45))
-    y_ang       = float(S.get("y_label_angle",  0))
-    bg          = S.get("bg_color",   "#ffffff")
-    paper_bg    = S.get("paper_bg",   "#ffffff")
+    colorscale     = S.get("colorscale",       "Viridis")
+    cmin           = float(S.get("cbar_min",    0.0))
+    cmax           = float(S.get("cbar_max",    1.0))
+    show_cbar      = bool(S.get("show_colorbar", True))
+    use_legend     = bool(S.get("use_legend",    False))
+    legend_show_nan= bool(S.get("legend_show_nan", True))
+    nan_color      = S.get("nan_color",  "#cccccc")
+    diag_color     = S.get("diag_color", "#f0f0f0")
+    mix_color      = S.get("mixed_color","#ff9999")
+    show_vals      = bool(S.get("show_values",    True))
+    vfs            = int(S.get("val_font_size",   9))
+    vfc            = S.get("val_font_color","#ffffff")
+    lfs            = int(S.get("label_font_size", 11))
+    lfc            = S.get("label_font_color","#222222")
+    show_x_labels  = bool(S.get("show_x_labels", True))
+    show_y_labels  = bool(S.get("show_y_labels", True))
+    x_ang          = float(S.get("x_label_angle", -45))
+    y_ang          = float(S.get("y_label_angle",  0))
+    bg             = S.get("bg_color",   "#ffffff")
+    paper_bg       = S.get("paper_bg",   "#ffffff")
 
     if cmax <= cmin: cmax = cmin + 1.0
 
@@ -332,25 +340,27 @@ def build_cell_heatmap(matrix, labels, style, mixed_mask=None, axis_colors=None)
     max_chars = max((len(l) for l in labels), default=1)
     x_rad = abs(math.radians(x_ang))
     y_rad = abs(math.radians(y_ang))
-    x_label_depth = max(cs, max_chars * lfs * 0.65 * math.sin(x_rad) + lfs) + gp*2
-    y_label_width = max(cs, max_chars * lfs * 0.65 * math.cos(y_rad) + lfs) + gp*2
+    x_label_depth = (max(cs, max_chars * lfs * 0.65 * math.sin(x_rad) + lfs) + gp*2) if show_x_labels else gp*2
+    y_label_width = (max(cs, max_chars * lfs * 0.65 * math.cos(y_rad) + lfs) + gp*2) if show_y_labels else gp*2
 
-    for j, lab in enumerate(labels):
-        annotations.append(dict(
-            x=j*cs + cs/2, y=n*cs + gp*2,
-            text=lab, showarrow=False,
-            font=dict(size=lfs, color=lfc),
-            textangle=x_ang,
-            xanchor="right" if x_ang != 0 else "center",
-            yanchor="top", xref="x", yref="y"))
-    for i, lab in enumerate(labels):
-        annotations.append(dict(
-            x=-gp*2, y=i*cs + cs/2,
-            text=lab, showarrow=False,
-            font=dict(size=lfs, color=lfc),
-            textangle=y_ang,
-            xanchor="right", yanchor="middle",
-            xref="x", yref="y"))
+    if show_x_labels:
+        for j, lab in enumerate(labels):
+            annotations.append(dict(
+                x=j*cs + cs/2, y=n*cs + gp*2,
+                text=lab, showarrow=False,
+                font=dict(size=lfs, color=lfc),
+                textangle=x_ang,
+                xanchor="right" if x_ang != 0 else "center",
+                yanchor="top", xref="x", yref="y"))
+    if show_y_labels:
+        for i, lab in enumerate(labels):
+            annotations.append(dict(
+                x=-gp*2, y=i*cs + cs/2,
+                text=lab, showarrow=False,
+                font=dict(size=lfs, color=lfc),
+                textangle=y_ang,
+                xanchor="right", yanchor="middle",
+                xref="x", yref="y"))
 
     fig = go.Figure()
 
@@ -364,8 +374,34 @@ def build_cell_heatmap(matrix, labels, style, mixed_mask=None, axis_colors=None)
         showlegend=False,
     ))
 
-    # Colorbar proxy trace
-    if show_cbar:
+    # Colorbar / legend
+    if use_legend:
+        # collect unique non-diagonal values
+        seen_nan = False
+        unique_vals = []
+        for i in range(n):
+            for j in range(n):
+                if i == j: continue
+                v = matrix[i, j]
+                if math.isnan(v):
+                    if not seen_nan:
+                        seen_nan = True
+                elif v not in unique_vals:
+                    unique_vals.append(v)
+        unique_vals.sort()
+        if seen_nan and legend_show_nan:
+            unique_vals.append(float("nan"))
+        for v in unique_vals:
+            if math.isnan(v):
+                color, label = nan_color, "NaN"
+            else:
+                color = _v_to_color(v, colorscale, cmin, cmax, nan_color)
+                label = str(int(v)) if float(v).is_integer() else f"{v:.3g}"
+            fig.add_trace(go.Scatter(
+                x=[None], y=[None], mode="markers",
+                marker=dict(color=color, size=14, symbol="square"),
+                name=label, showlegend=True, hoverinfo="none"))
+    elif show_cbar:
         fig.add_trace(go.Scatter(
             x=[None], y=[None], mode="markers",
             marker=dict(colorscale=colorscale, cmin=cmin, cmax=cmax,
@@ -388,6 +424,10 @@ def build_cell_heatmap(matrix, labels, style, mixed_mask=None, axis_colors=None)
         height=max(350, total + int(x_label_depth) + 60),
         hovermode="closest",
         dragmode=False,
+        showlegend=use_legend,
+        legend=dict(x=1.04, y=0.5, xanchor="left", yanchor="middle",
+                    bgcolor="rgba(255,255,255,0.8)", bordercolor="#ccc", borderwidth=1,
+                    font=dict(size=11)) if use_legend else {},
     )
     return fig
 
@@ -396,7 +436,7 @@ def style_to_summary(style, group_by, sep):
     return {
         "figure_style": {k: style.get(k, DEFAULT_STYLE.get(k)) for k in DEFAULT_STYLE},
         "group_by": group_by or [],
-        "separator": sep or "_",
+        "separator": "_" if sep is None else sep,
     }
 
 def representative_color(stims, mapping, n_groups):
@@ -500,6 +540,20 @@ def _style_panel():
                                   value=["y"] if DS["show_colorbar"] else [],
                                   style={"fontSize": "12px"})
                 ], style={"marginRight": "14px", "marginBottom": "6px"}),
+                html.Div([
+                    _lbl(" "),
+                    dcc.Checklist(id="ctrl-use-legend",
+                                  options=[{"label": " Use legend", "value": "y"}],
+                                  value=["y"] if DS["use_legend"] else [],
+                                  style={"fontSize": "12px"})
+                ], style={"marginRight": "14px", "marginBottom": "6px"}),
+                html.Div([
+                    _lbl(" "),
+                    dcc.Checklist(id="ctrl-legend-show-nan",
+                                  options=[{"label": " Legend: show NaN", "value": "y"}],
+                                  value=["y"] if DS["legend_show_nan"] else [],
+                                  style={"fontSize": "12px"})
+                ], style={"marginRight": "14px", "marginBottom": "6px"}),
                 _ctrl("NaN color",   _color("ctrl-nan-color",  DS["nan_color"])),
                 _ctrl("Diag color",  _color("ctrl-diag-color", DS["diag_color"])),
                 _ctrl("Mixed color", _color("ctrl-mixed-color",DS["mixed_color"])),
@@ -526,6 +580,20 @@ def _style_panel():
             row([
                 _ctrl("Label size (pt)", _num("ctrl-label-font-size",  DS["label_font_size"], 4, 40)),
                 _ctrl("Label color",     _color("ctrl-label-font-color",DS["label_font_color"])),
+                html.Div([
+                    _lbl(" "),
+                    dcc.Checklist(id="ctrl-show-x-labels",
+                                  options=[{"label": " X labels", "value": "y"}],
+                                  value=["y"] if DS["show_x_labels"] else [],
+                                  style={"fontSize": "12px"})
+                ], style={"marginRight": "14px", "marginBottom": "6px"}),
+                html.Div([
+                    _lbl(" "),
+                    dcc.Checklist(id="ctrl-show-y-labels",
+                                  options=[{"label": " Y labels", "value": "y"}],
+                                  value=["y"] if DS["show_y_labels"] else [],
+                                  style={"fontSize": "12px"})
+                ], style={"marginRight": "14px", "marginBottom": "6px"}),
                 _ctrl("X angle (°)",     _num("ctrl-x-angle", DS["x_label_angle"], -90, 90, 5)),
                 _ctrl("Y angle (°)",     _num("ctrl-y-angle", DS["y_label_angle"], -90, 90, 5)),
             ]),
@@ -645,6 +713,9 @@ app.layout = html.Div([
                               style={"width": "80px", "marginRight": "6px"}),
                     html.Button("Set", id="btn-set-cell", n_clicks=0),
                 ], style={"display": "flex"}),
+                html.Div("0 = identical · 0.5 = somewhat different · 1 = completely different · NaN = excluded",
+                         style={"fontSize": "11px", "color": "#888", "marginTop": "4px",
+                                "fontStyle": "italic"}),
             ], style={"marginTop": "6px"}),
         ], style={"flex": "3", "marginRight": "12px"}),
 
@@ -688,6 +759,9 @@ app.layout = html.Div([
                         style={"width": "100%", "marginTop": "6px"}),
             html.Button("Fill all NaN with above value", id="btn-fill-nan", n_clicks=0,
                         style={"width": "100%", "marginTop": "4px"}),
+            html.Button("Set same-group pairs → 0", id="btn-same-to-0", n_clicks=0,
+                        style={"width": "100%", "marginTop": "4px"},
+                        title="Sets all off-diagonal pairs where both stimuli share the same group-by key to 0"),
             html.Hr(),
             html.Button("Reset matrix (NaN, diag=0)", id="btn-reset", n_clicks=0,
                         style={"width": "100%", "marginBottom": "6px"}),
@@ -892,6 +966,8 @@ def upd_rhs_vals(attr, stims): return attr_value_options(stims or [], attr), "*"
     Input("ctrl-cbar-min",         "value"),
     Input("ctrl-cbar-max",         "value"),
     Input("ctrl-show-cbar",        "value"),
+    Input("ctrl-use-legend",       "value"),
+    Input("ctrl-legend-show-nan",  "value"),
     Input("ctrl-nan-color",        "value"),
     Input("ctrl-diag-color",       "value"),
     Input("ctrl-mixed-color",      "value"),
@@ -900,14 +976,16 @@ def upd_rhs_vals(attr, stims): return attr_value_options(stims or [], attr), "*"
     Input("ctrl-val-font-color",   "value"),
     Input("ctrl-label-font-size",  "value"),
     Input("ctrl-label-font-color", "value"),
+    Input("ctrl-show-x-labels",    "value"),
+    Input("ctrl-show-y-labels",    "value"),
     Input("ctrl-x-angle",          "value"),
     Input("ctrl-y-angle",          "value"),
     Input("ctrl-bg-color",         "value"),
     Input("ctrl-paper-bg",         "value"),
     prevent_initial_call=True,
 )
-def update_style(cs, cg, cr, colorscale, cmin, cmax, show_cb,
-                 nc, dc, mc, show_v, vfs, vfc, lfs, lfc, xa, ya, bg, pbg):
+def update_style(cs, cg, cr, colorscale, cmin, cmax, show_cb, use_leg, leg_nan,
+                 nc, dc, mc, show_v, vfs, vfc, lfs, lfc, show_xl, show_yl, xa, ya, bg, pbg):
     DS = DEFAULT_STYLE
     return {
         "cell_size":        cs        if cs        is not None else DS["cell_size"],
@@ -916,7 +994,9 @@ def update_style(cs, cg, cr, colorscale, cmin, cmax, show_cb,
         "colorscale":       colorscale or DS["colorscale"],
         "cbar_min":         cmin      if cmin      is not None else DS["cbar_min"],
         "cbar_max":         cmax      if cmax      is not None else DS["cbar_max"],
-        "show_colorbar":    "y" in (show_cb or []),
+        "show_colorbar":    "y" in (show_cb  or []),
+        "use_legend":       "y" in (use_leg  or []),
+        "legend_show_nan":  "y" in (leg_nan  or []),
         "nan_color":        nc   or DS["nan_color"],
         "diag_color":       dc   or DS["diag_color"],
         "mixed_color":      mc   or DS["mixed_color"],
@@ -925,6 +1005,8 @@ def update_style(cs, cg, cr, colorscale, cmin, cmax, show_cb,
         "val_font_color":   vfc  or DS["val_font_color"],
         "label_font_size":  lfs  if lfs  is not None else DS["label_font_size"],
         "label_font_color": lfc  or DS["label_font_color"],
+        "show_x_labels":    "y" in (show_xl or []),
+        "show_y_labels":    "y" in (show_yl or []),
         "x_label_angle":    xa   if xa   is not None else DS["x_label_angle"],
         "y_label_angle":    ya   if ya   is not None else DS["y_label_angle"],
         "bg_color":         bg   or DS["bg_color"],
@@ -941,6 +1023,8 @@ def update_style(cs, cg, cr, colorscale, cmin, cmax, show_cb,
     Output("ctrl-cbar-min",         "value"),
     Output("ctrl-cbar-max",         "value"),
     Output("ctrl-show-cbar",        "value"),
+    Output("ctrl-use-legend",       "value"),
+    Output("ctrl-legend-show-nan",  "value"),
     Output("ctrl-nan-color",        "value"),
     Output("ctrl-diag-color",       "value"),
     Output("ctrl-mixed-color",      "value"),
@@ -949,6 +1033,8 @@ def update_style(cs, cg, cr, colorscale, cmin, cmax, show_cb,
     Output("ctrl-val-font-color",   "value"),
     Output("ctrl-label-font-size",  "value"),
     Output("ctrl-label-font-color", "value"),
+    Output("ctrl-show-x-labels",    "value"),
+    Output("ctrl-show-y-labels",    "value"),
     Output("ctrl-x-angle",          "value"),
     Output("ctrl-y-angle",          "value"),
     Output("ctrl-bg-color",         "value"),
@@ -973,10 +1059,14 @@ def restore_controls(n_restore, preset_name, saved_style, presets):
         s["cell_size"], s["cell_gap"], s["cell_radius"],
         s["colorscale"], s["cbar_min"], s["cbar_max"],
         ["y"] if s["show_colorbar"] else [],
+        ["y"] if s.get("use_legend", False) else [],
+        ["y"] if s.get("legend_show_nan", True) else [],
         s["nan_color"], s["diag_color"], s["mixed_color"],
         ["y"] if s["show_values"] else [],
         s["val_font_size"], s["val_font_color"],
         s["label_font_size"], s["label_font_color"],
+        ["y"] if s.get("show_x_labels", True) else [],
+        ["y"] if s.get("show_y_labels", True) else [],
         s["x_label_angle"], s["y_label_angle"],
         s["bg_color"], s["paper_bg"],
     )
@@ -1039,7 +1129,7 @@ def render(stims, matrix_data, view_mode, group_by, sep, style, meta):
     combined = bool(meta and meta.get("combined"))
     S        = {**DEFAULT_STYLE, **(style or {})}
     labels, mapping, m, mixed = _current_view(stims, mf, view_mode,
-                                              group_by or [], combined, sep or "_")
+                                              group_by or [], combined, "_" if sep is None else sep)
     axis_col = representative_color(stims, mapping, len(labels))
     fig      = build_cell_heatmap(m, labels, S, mixed_mask=mixed, axis_colors=axis_col)
 
@@ -1092,6 +1182,7 @@ def quick_val(n0, n1, nn):
     Input("btn-set-cell",   "n_clicks"),
     Input("btn-bulk-apply", "n_clicks"),
     Input("btn-fill-nan",   "n_clicks"),
+    Input("btn-same-to-0",  "n_clicks"),
     Input("btn-reset",      "n_clicks"),
     Input("btn-mirror",     "n_clicks"),
     Input("table",          "data"),
@@ -1113,7 +1204,7 @@ def quick_val(n0, n1, nn):
     State("table",          "columns"),
     prevent_initial_call=True,
 )
-def edit_matrix(n_set, n_bulk, n_fill, n_reset, n_mirror, tbl_data,
+def edit_matrix(n_set, n_bulk, n_fill, n_same0, n_reset, n_mirror, tbl_data,
                 matrix_data, stims, meta, view_mode, group_by, sep,
                 cell_row, cell_col, cell_val,
                 lhs_attr, lhs_val, rhs_attr, rhs_val, bulk_val, only_nan_chk,
@@ -1122,7 +1213,7 @@ def edit_matrix(n_set, n_bulk, n_fill, n_reset, n_mirror, tbl_data,
     trigger  = ctx.triggered_id
     mf       = matrix_from_json(matrix_data)
     combined = bool(meta and meta.get("combined"))
-    sep      = sep or "_"
+    sep      = "_" if sep is None else sep
 
     if trigger == "btn-reset":
         return matrix_to_json(fresh_matrix(len(stims)))
@@ -1151,6 +1242,17 @@ def edit_matrix(n_set, n_bulk, n_fill, n_reset, n_mirror, tbl_data,
     if trigger == "btn-fill-nan":
         apply_bulk_rule(mf, stims, "stim", "*", "stim", "*",
                         parse_value(bulk_val), only_nan=True)
+        return matrix_to_json(mf)
+
+    if trigger == "btn-same-to-0":
+        if group_by:
+            for i, si in enumerate(stims):
+                ki = _group_key(si, group_by, sep)
+                for j, sj in enumerate(stims):
+                    if i == j: continue
+                    kj = _group_key(sj, group_by, sep)
+                    if ki == kj:
+                        set_pair(mf, i, j, 0.0)
         return matrix_to_json(mf)
 
     if trigger == "table":
@@ -1191,7 +1293,7 @@ def do_export(n, stims, matrix_data, meta, view_mode, group_by, sep, style, fnam
     mf       = matrix_from_json(matrix_data)
     combined = bool(meta and meta.get("combined"))
     S        = {**DEFAULT_STYLE, **(style or {})}
-    labels, _, m, _ = _current_view(stims, mf, view_mode, group_by or [], combined, sep or "_")
+    labels, _, m, _ = _current_view(stims, mf, view_mode, group_by or [], combined, "_" if sep is None else sep)
     csv_text = dataframe_to_csv_string(to_export_dataframe(m, labels))
     fname = ((fname or "my-model.csv").strip())
     if not fname.lower().endswith(".csv"): fname += ".csv"
