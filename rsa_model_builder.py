@@ -22,6 +22,7 @@ from dash.exceptions import PreventUpdate
 
 DEFAULT_YAML       = r"G:\My Drive\Results\EmoC\config_files\D_basic-block.yaml"
 DEFAULT_EXPORT_DIR = r"G:\My Drive\Results\EmoC\rsa_models"
+MAX_UNDO = 50
 
 HIDDEN_ATTRS   = {"color"}
 ALL_RUNS_KEY   = "__all__"
@@ -218,6 +219,28 @@ def parse_value(text):
 # ---------------------------------------------------------------------------
 # CSV export
 # ---------------------------------------------------------------------------
+
+def scan_model_files(folder):
+    try:
+        return sorted(f for f in os.listdir(folder)
+                      if f.lower().endswith(".csv") and not f.endswith("_style.json"))
+    except Exception:
+        return []
+
+def load_model_into_matrix(csv_path, stim_labels, current_matrix_json):
+    df = pd.read_csv(csv_path, index_col=0)
+    mf = matrix_from_json(current_matrix_json)
+    n_matched = 0
+    for i, ri in enumerate(stim_labels):
+        if ri not in df.index:
+            continue
+        for j, ci in enumerate(stim_labels):
+            if ci not in df.columns:
+                continue
+            v = df.loc[ri, ci]
+            mf[i, j] = np.nan if pd.isna(v) else float(v)
+            n_matched += 1
+    return mf, n_matched
 
 def to_export_dataframe(matrix, labels):
     return pd.DataFrame(matrix, index=labels, columns=labels)
@@ -639,8 +662,12 @@ app.layout = html.Div([
     dcc.Store(id="store-meta"),
     dcc.Store(id="store-groupby",  data=[]),
     dcc.Store(id="store-sep",      data="_"),
-    dcc.Store(id="store-style",    storage_type="local", data=None),   # persists in browser
-    dcc.Store(id="store-presets",  storage_type="local", data={}),     # named presets
+    dcc.Store(id="store-style",    storage_type="local", data=None),
+    dcc.Store(id="store-presets",  storage_type="local", data={}),
+    dcc.Store(id="store-undo-stack", data=[]),
+    dcc.Store(id="store-redo-stack", data=[]),
+    dcc.Store(id="store-kbd",        data=None),
+    dcc.Store(id="store-last-model", storage_type="local", data=None),
     dcc.Download(id="download-csv"),
 
     html.H2("RSA Model Builder", style={"marginBottom": "4px"}),
@@ -667,6 +694,32 @@ app.layout = html.Div([
                                  value="grouped", inline=True)],
                  style={"flex": "1"}),
     ], style={"display": "flex", "alignItems": "flex-end", **CBOX}),
+
+    # ── Model loader panel ───────────────────────────────────────────────────
+    html.Div([
+        html.Div([
+            html.Span("Saved models", style={"fontWeight": "bold", "fontSize": "15px",
+                                             "marginRight": "16px"}),
+            dcc.Dropdown(id="dd-model-file", options=[], placeholder="Select a .csv model…",
+                         clearable=True,
+                         style={"width": "380px", "display": "inline-block",
+                                "verticalAlign": "middle", "fontSize": "13px"}),
+            html.Button("⟳", id="btn-scan-models", n_clicks=0,
+                        style={**_B, "marginLeft": "6px"},
+                        title="Scan folder for CSV models"),
+            html.Button("Load", id="btn-load-model", n_clicks=0,
+                        style={**_B, "marginLeft": "6px"}),
+            html.Button("Reset matrix", id="btn-reset-model", n_clicks=0,
+                        style={**_B, "marginLeft": "20px", "color": "#a33"},
+                        title="Clear matrix to NaN (diagonal = 0)"),
+            html.Span(id="model-load-status",
+                      style={"marginLeft": "12px", "fontSize": "11px", "color": "#555"}),
+            html.Span(" │ ", style={"color": "#ccc", "marginLeft": "12px"}),
+            html.Span("Ctrl+Z undo · Ctrl+Shift+Z redo",
+                      style={"fontSize": "11px", "color": "#aaa", "marginLeft": "6px",
+                             "fontStyle": "italic"}),
+        ], style={"display": "flex", "alignItems": "center", "flexWrap": "wrap", "gap": "4px"}),
+    ], style={**CBOX}),
 
     # ── Group by panel ───────────────────────────────────────────────────────
     html.Div([
@@ -799,6 +852,30 @@ app.layout = html.Div([
 
 
 # ===========================================================================
+# Clientside — keyboard shortcuts
+# ===========================================================================
+
+app.clientside_callback(
+    """
+    function(_ignore) {
+        if (!window._rsa_kbd_bound) {
+            window._rsa_kbd_bound = true;
+            document.addEventListener('keydown', function(e) {
+                var isZ = e.key === 'z' || e.key === 'Z';
+                if (!isZ || !(e.ctrlKey || e.metaKey)) return;
+                e.preventDefault();
+                var action = e.shiftKey ? 'redo' : 'undo';
+                window.dash_clientside.set_props('store-kbd', {data: action + ':' + Date.now()});
+            });
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("store-kbd", "data"),
+    Input("heatmap", "id"),
+)
+
+# ===========================================================================
 # Callbacks
 # ===========================================================================
 
@@ -845,6 +922,92 @@ def build_stims(cfg, run_key, yaml_path):
         return [], [[]], {"combined": False, "yaml_path": yaml_path}
     return (stims, matrix_to_json(fresh_matrix(len(stims))),
             {"combined": run_key == ALL_RUNS_KEY, "yaml_path": yaml_path})
+
+
+# ── Undo / Redo ───────────────────────────────────────────────────────────
+@app.callback(
+    Output("store-matrix",     "data", allow_duplicate=True),
+    Output("store-undo-stack", "data", allow_duplicate=True),
+    Output("store-redo-stack", "data", allow_duplicate=True),
+    Input("store-kbd",         "data"),
+    State("store-matrix",      "data"),
+    State("store-undo-stack",  "data"),
+    State("store-redo-stack",  "data"),
+    prevent_initial_call=True,
+)
+def undo_redo_cb(kbd, matrix_data, undo_stack, redo_stack):
+    if not kbd:
+        raise PreventUpdate
+    action     = kbd.split(":")[0]
+    undo_stack = list(undo_stack or [])
+    redo_stack = list(redo_stack or [])
+    if action == "undo":
+        if not undo_stack: raise PreventUpdate
+        redo_stack.append(matrix_data)
+        return undo_stack.pop(), undo_stack, redo_stack
+    if action == "redo":
+        if not redo_stack: raise PreventUpdate
+        undo_stack.append(matrix_data)
+        return redo_stack.pop(), undo_stack, redo_stack
+    raise PreventUpdate
+
+
+# ── Reset undo stacks when a new run is loaded ────────────────────────────
+@app.callback(
+    Output("store-undo-stack", "data"),
+    Output("store-redo-stack", "data"),
+    Input("store-stims",       "data"),
+    prevent_initial_call=True,
+)
+def reset_undo_on_new_stims(_stims):
+    return [], []
+
+
+# ── Model scan ────────────────────────────────────────────────────────────
+@app.callback(
+    Output("dd-model-file", "options"),
+    Output("dd-model-file", "value"),
+    Input("btn-scan-models",   "n_clicks"),
+    State("store-last-model",  "data"),
+    prevent_initial_call=False,
+)
+def scan_models_cb(n, last_model):
+    files = scan_model_files(DEFAULT_EXPORT_DIR)
+    opts  = [{"label": f, "value": os.path.join(DEFAULT_EXPORT_DIR, f)} for f in files]
+    vals  = [o["value"] for o in opts]
+    default = last_model if last_model in vals else (vals[0] if vals else None)
+    return opts, default
+
+
+# ── Model load ────────────────────────────────────────────────────────────
+@app.callback(
+    Output("store-matrix",     "data", allow_duplicate=True),
+    Output("store-undo-stack", "data", allow_duplicate=True),
+    Output("store-redo-stack", "data", allow_duplicate=True),
+    Output("store-last-model", "data"),
+    Output("model-load-status","children"),
+    Input("btn-load-model",    "n_clicks"),
+    State("dd-model-file",     "value"),
+    State("store-stims",       "data"),
+    State("store-meta",        "data"),
+    State("store-matrix",      "data"),
+    State("store-undo-stack",  "data"),
+    prevent_initial_call=True,
+)
+def load_model_cb(n, fpath, stims, meta, matrix_data, undo_stack):
+    if not fpath or not stims or not matrix_data:
+        return no_update, no_update, no_update, no_update, "No model selected or no stims loaded."
+    combined    = bool(meta and meta.get("combined"))
+    stim_labels = [display_name(s, combined) for s in stims]
+    try:
+        mf, n_matched = load_model_into_matrix(fpath, stim_labels, matrix_data)
+    except Exception as e:
+        return no_update, no_update, no_update, no_update, f"Error: {e}"
+    stack = list(undo_stack or [])
+    stack.append(matrix_data)
+    if len(stack) > MAX_UNDO: stack = stack[-MAX_UNDO:]
+    return (matrix_to_json(mf), stack, [], fpath,
+            f"Loaded {os.path.basename(fpath)} ({n_matched} cells matched).")
 
 
 # ── Group-by ──────────────────────────────────────────────────────────────
@@ -1178,71 +1341,85 @@ def quick_val(n0, n1, nn):
 
 # ── Matrix edits ──────────────────────────────────────────────────────────
 @app.callback(
-    Output("store-matrix",  "data", allow_duplicate=True),
-    Input("btn-set-cell",   "n_clicks"),
-    Input("btn-bulk-apply", "n_clicks"),
-    Input("btn-fill-nan",   "n_clicks"),
-    Input("btn-same-to-0",  "n_clicks"),
-    Input("btn-reset",      "n_clicks"),
-    Input("btn-mirror",     "n_clicks"),
-    Input("table",          "data"),
-    State("store-matrix",   "data"),
-    State("store-stims",    "data"),
-    State("store-meta",     "data"),
-    State("radio-view",     "value"),
-    State("store-groupby",  "data"),
-    State("store-sep",      "data"),
-    State("cell-row",       "value"),
-    State("cell-col",       "value"),
-    State("cell-value",     "value"),
-    State("bulk-lhs-attr",  "value"),
-    State("bulk-lhs-val",   "value"),
-    State("bulk-rhs-attr",  "value"),
-    State("bulk-rhs-val",   "value"),
-    State("bulk-value",     "value"),
-    State("bulk-only-nan",  "value"),
-    State("table",          "columns"),
+    Output("store-matrix",     "data", allow_duplicate=True),
+    Output("store-undo-stack", "data", allow_duplicate=True),
+    Output("store-redo-stack", "data", allow_duplicate=True),
+    Input("btn-set-cell",      "n_clicks"),
+    Input("btn-bulk-apply",    "n_clicks"),
+    Input("btn-fill-nan",      "n_clicks"),
+    Input("btn-same-to-0",     "n_clicks"),
+    Input("btn-reset",         "n_clicks"),
+    Input("btn-reset-model",   "n_clicks"),
+    Input("btn-mirror",        "n_clicks"),
+    Input("table",             "data"),
+    State("store-matrix",      "data"),
+    State("store-stims",       "data"),
+    State("store-meta",        "data"),
+    State("radio-view",        "value"),
+    State("store-groupby",     "data"),
+    State("store-sep",         "data"),
+    State("cell-row",          "value"),
+    State("cell-col",          "value"),
+    State("cell-value",        "value"),
+    State("bulk-lhs-attr",     "value"),
+    State("bulk-lhs-val",      "value"),
+    State("bulk-rhs-attr",     "value"),
+    State("bulk-rhs-val",      "value"),
+    State("bulk-value",        "value"),
+    State("bulk-only-nan",     "value"),
+    State("table",             "columns"),
+    State("store-undo-stack",  "data"),
     prevent_initial_call=True,
 )
-def edit_matrix(n_set, n_bulk, n_fill, n_same0, n_reset, n_mirror, tbl_data,
+def edit_matrix(n_set, n_bulk, n_fill, n_same0, n_reset, n_reset_model,
+                n_mirror, tbl_data,
                 matrix_data, stims, meta, view_mode, group_by, sep,
                 cell_row, cell_col, cell_val,
                 lhs_attr, lhs_val, rhs_attr, rhs_val, bulk_val, only_nan_chk,
-                columns):
-    if not stims or not matrix_data: return no_update
+                columns, undo_stack):
+    if not stims or not matrix_data:
+        return no_update, no_update, no_update
     trigger  = ctx.triggered_id
     mf       = matrix_from_json(matrix_data)
     combined = bool(meta and meta.get("combined"))
     sep      = "_" if sep is None else sep
 
-    if trigger == "btn-reset":
-        return matrix_to_json(fresh_matrix(len(stims)))
+    def _commit(new_mf):
+        stack = list(undo_stack or [])
+        stack.append(matrix_data)
+        if len(stack) > MAX_UNDO: stack = stack[-MAX_UNDO:]
+        return matrix_to_json(new_mf), stack, []
+
+    if trigger in ("btn-reset", "btn-reset-model"):
+        return _commit(fresh_matrix(len(stims)))
 
     if trigger == "btn-mirror":
         iu = np.triu_indices_from(mf, k=1)
         mf[(iu[1], iu[0])] = mf[iu]
         np.fill_diagonal(mf, 0.0)
-        return matrix_to_json(mf)
+        return _commit(mf)
 
     if trigger == "btn-set-cell":
-        if not cell_row or not cell_col: return no_update
+        if not cell_row or not cell_col:
+            return no_update, no_update, no_update
         labels, mapping, _, _ = _current_view(stims, mf, view_mode, group_by or [], combined, sep)
-        if cell_row not in labels or cell_col not in labels: return no_update
+        if cell_row not in labels or cell_col not in labels:
+            return no_update, no_update, no_update
         gi, gj = labels.index(cell_row), labels.index(cell_col)
         val = parse_value(cell_val)
         if view_mode == "full" or not group_by: set_pair(mf, gi, gj, val)
         else: broadcast_grouped_edit(mf, mapping, gi, gj, val)
-        return matrix_to_json(mf)
+        return _commit(mf)
 
     if trigger == "btn-bulk-apply":
         apply_bulk_rule(mf, stims, lhs_attr, lhs_val, rhs_attr, rhs_val,
                         parse_value(bulk_val), only_nan="only_nan" in (only_nan_chk or []))
-        return matrix_to_json(mf)
+        return _commit(mf)
 
     if trigger == "btn-fill-nan":
         apply_bulk_rule(mf, stims, "stim", "*", "stim", "*",
                         parse_value(bulk_val), only_nan=True)
-        return matrix_to_json(mf)
+        return _commit(mf)
 
     if trigger == "btn-same-to-0":
         if group_by:
@@ -1250,25 +1427,26 @@ def edit_matrix(n_set, n_bulk, n_fill, n_same0, n_reset, n_mirror, tbl_data,
                 ki = _group_key(si, group_by, sep)
                 for j, sj in enumerate(stims):
                     if i == j: continue
-                    kj = _group_key(sj, group_by, sep)
-                    if ki == kj:
+                    if _group_key(sj, group_by, sep) == ki:
                         set_pair(mf, i, j, 0.0)
-        return matrix_to_json(mf)
+        return _commit(mf)
 
     if trigger == "table":
         labels, mapping, _, _ = _current_view(stims, mf, view_mode, group_by or [], combined, sep)
-        if not tbl_data or not columns: return no_update
+        if not tbl_data or not columns:
+            return no_update, no_update, no_update
         col_ids = [c["id"] for c in columns if c["id"] != "__row__"]
-        if col_ids != labels: return no_update
+        if col_ids != labels:
+            return no_update, no_update, no_update
         for i, row in enumerate(tbl_data):
             for j, c in enumerate(col_ids):
                 v = parse_value(row.get(c, ""))
                 if i == j: continue
                 if view_mode == "full" or not group_by: set_pair(mf, i, j, v)
                 else: broadcast_grouped_edit(mf, mapping, i, j, v)
-        return matrix_to_json(mf)
+        return _commit(mf)
 
-    return no_update
+    return no_update, no_update, no_update
 
 
 # ── Export ────────────────────────────────────────────────────────────────
