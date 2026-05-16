@@ -1524,7 +1524,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                     specie, model, stim_types, mask, task, radius, rsa_model,
                     method='pearson', rsa_method='kendall', replace_file=False, verbose=False, wait_time=300,
                     rnd=False, reps=1000, create_subject_mean=False, replace_rnd_files=False, mah_fold='stim-wise',
-                    mask_type=None, categories=None, model_dict=None):
+                    mask_type=None, categories=None, model_dict=None, skip_prefile_check=False):
     '''
     Compare pairwise similarity maps with a model.
     '''
@@ -1550,6 +1550,9 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     
     file_list = [] # to keep track of the files available
     all_exist = True # this is a flag to indicate if all output files exist
+    
+
+   
     # if method is not mahalabinobis
     if method != 'mahalanobis':
         # Check for existing output files
@@ -1674,63 +1677,67 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     
     ### To this point, at least one output file is missing, proceed to check input files ###
     
-    ## check if input pairwise similarity maps necessary are available for each run
-    print("Checking for input pairwise similarity maps...")
-    # initialize pairs_available_array a boolean array to indicate if all pairwise similarity maps are available for each run
-    # initialize it to False
-    all_available = True
-    if method != 'mahalanobis': # for mahalanobis, there is only one file per subject, no need to check pairwise similarity maps
-        pairs_available_array = np.zeros(len(session_and_run_dict), dtype=bool)
-        for index, entry in enumerate(session_and_run_dict):
-            session = entry['session']
-            run_N = entry['run_N']
-            # correct session to 2 digits
-            session = f"{session:02d}"
-            # check if all beta maps exist
-            pairs_available = True
-            for i, stim_i in enumerate(stim_types):
-                for j, stim_j in enumerate(stim_types):
+    # if skip_prefile_check is True, skip checking for existing files and directly run the computation, otherwise check for existing files first
+    if not skip_prefile_check:
+        ## check if input pairwise similarity maps necessary are available for each run
+        print("Checking for input pairwise similarity maps...")
+        # initialize pairs_available_array a boolean array to indicate if all pairwise similarity maps are available for each run
+        # initialize it to False
+        all_available = True
+        if method != 'mahalanobis': # for mahalanobis, there is only one file per subject, no need to check pairwise similarity maps
+            pairs_available_array = np.zeros(len(session_and_run_dict), dtype=bool)
+            for index, entry in enumerate(session_and_run_dict):
+                session = entry['session']
+                run_N = entry['run_N']
+                # correct session to 2 digits
+                session = f"{session:02d}"
+                # check if all beta maps exist
+                pairs_available = True
+                for i, stim_i in enumerate(stim_types):
+                    for j, stim_j in enumerate(stim_types):
+                        if i >= j:
+                            continue  # only upper triangle
+                        # build filename for pairwise similarity map
+                        filename  = os.path.join(
+                            datafolder, dataset, 'results', 'RSA', model,
+                            f"{specie}-sub-{sub_N:02d}",
+                            f"ses-{session}_task-{task}_run-{run_N:02d}",
+                            f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                        )
+                        # check if file exists
+                        if not os.path.exists(filename):
+                            if verbose:
+                                print(f"Missing pairwise similarity map: {filename}")
+                            pairs_available = False
+                            break
+                if not pairs_available:
+                    pairs_available_array[index] = False
+                    all_available = False
+            # if any of the runs are missing pairwise similarity maps, skip computation
+            if not all_available:
+                print("Some input pairwise similarity maps are missing. Skipping computation.")
+                return
+        elif method == 'mahalanobis':
+            for i, cat1 in enumerate(categories):
+                for j, cat2 in enumerate(categories):
                     if i >= j:
-                        continue  # only upper triangle
+                        continue  # avoid duplicates and self-comparison
                     # build filename for pairwise similarity map
-                    filename  = os.path.join(
+                    filename = os.path.join(
                         datafolder, dataset, 'results', 'RSA', model,
                         f"{specie}-sub-{sub_N:02d}",
-                        f"ses-{session}_task-{task}_run-{run_N:02d}",
-                        f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                        f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
                     )
                     # check if file exists
                     if not os.path.exists(filename):
                         if verbose:
                             print(f"Missing pairwise similarity map: {filename}")
-                        pairs_available = False
+                        all_available = False
                         break
-            if not pairs_available:
-                pairs_available_array[index] = False
-                all_available = False
-        # if any of the runs are missing pairwise similarity maps, skip computation
-        if not all_available:
-            print("Some input pairwise similarity maps are missing. Skipping computation.")
-            return
-    elif method == 'mahalanobis':
-        for i, cat1 in enumerate(categories):
-            for j, cat2 in enumerate(categories):
-                if i >= j:
-                    continue  # avoid duplicates and self-comparison
-                # build filename for pairwise similarity map
-                filename = os.path.join(
-                    datafolder, dataset, 'results', 'RSA', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
-                )
-                # check if file exists
-                if not os.path.exists(filename):
-                    if verbose:
-                        print(f"Missing pairwise similarity map: {filename}")
-                    all_available = False
-                    break
 
-    print("All input files are available.")
+        print("All input files are available.")
+    else:
+        print("Skipping pre-file check as skip_prefile_check is True.")
     
     ### All input files are available, check if there are temporary files to indicate other instance processing it ###
     # initialize file_list to store output files for subject mean
@@ -1738,30 +1745,30 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
     tmp_file = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep + 
                         model + os.sep + rsa_model + os.sep +  f"{specie}-sub-{sub_N:02d}_processing.tmp")
     if rnd: # if running permutations, check for existing temporary files
-        # temporal file to indicate that this participant is being processed
-        
-        temp_folder = os.path.dirname(tmp_file)
-        if not os.path.exists(temp_folder):
-            os.makedirs(temp_folder, exist_ok=True)
-        # check if tmp_file exists, if it does, check against wait_time
-        if os.path.exists(tmp_file):
-            # is the file older than wait_time?
-            if time() - os.path.getmtime(tmp_file) < wait_time:
-                print(f"Skipping. Existing recent processing temporary file {tmp_file} exists and is less than {wait_time/60} minutes old.")
-                return
-            else:
-                print(f"File is old, removing {tmp_file} and repeating calculation. Temporary file is older than {wait_time/60} minutes.")
-                
-                # try to remove tmp_file
-                try:
-                    os.remove(tmp_file)
-                except Exception as e:
-                    print(f"Error removing temporary file {tmp_file}: {e}")
-        # create tmp_file
-        with open(tmp_file, 'w') as f:
-            f.write('Processing...\n')
-        if verbose:
-            print(f"Created processing temporary file {tmp_file}.")
+        # temporal file to indicate that this participant is being processed, ignore if skip_prefile_check is True
+        if not skip_prefile_check:
+            temp_folder = os.path.dirname(tmp_file)
+            if not os.path.exists(temp_folder):
+                os.makedirs(temp_folder, exist_ok=True)
+            # check if tmp_file exists, if it does, check against wait_time
+            if os.path.exists(tmp_file):
+                # is the file older than wait_time?
+                if time() - os.path.getmtime(tmp_file) < wait_time:
+                    print(f"Skipping. Existing recent processing temporary file {tmp_file} exists and is less than {wait_time/60} minutes old.")
+                    return
+                else:
+                    print(f"File is old, removing {tmp_file} and repeating calculation. Temporary file is older than {wait_time/60} minutes.")
+                    
+                    # try to remove tmp_file
+                    try:
+                        os.remove(tmp_file)
+                    except Exception as e:
+                        print(f"Error removing temporary file {tmp_file}: {e}")
+            # create tmp_file
+            with open(tmp_file, 'w') as f:
+                f.write('Processing...\n')
+            if verbose:
+                print(f"Created processing temporary file {tmp_file}.")
 
     ### Now, all input files are available, and no recent temporary file exists,
 
