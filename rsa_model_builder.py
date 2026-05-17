@@ -462,6 +462,21 @@ def style_to_summary(style, group_by, sep):
         "separator": "_" if sep is None else sep,
     }
 
+def style_sidecar_path(csv_path):
+    root, ext = os.path.splitext(csv_path or "")
+    return f"{root}_style.json" if ext.lower() == ".csv" else f"{csv_path}_style.json"
+
+def load_style_sidecar(csv_path):
+    json_path = style_sidecar_path(csv_path)
+    if not json_path or not os.path.exists(json_path):
+        return {}
+    try:
+        with open(json_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
 def representative_color(stims, mapping, n_groups):
     out = ["#cccccc"] * n_groups
     for i, g in enumerate(mapping):
@@ -668,6 +683,7 @@ app.layout = html.Div([
     dcc.Store(id="store-redo-stack", data=[]),
     dcc.Store(id="store-kbd",        data=None),
     dcc.Store(id="store-last-model", storage_type="local", data=None),
+    dcc.Store(id="store-app-mode",   data="edit"),
     dcc.Download(id="download-csv"),
 
     html.H2("RSA Model Builder", style={"marginBottom": "4px"}),
@@ -723,6 +739,17 @@ app.layout = html.Div([
 
     # ── Group by panel ───────────────────────────────────────────────────────
     html.Div([
+        html.Span("Mode", style={"fontWeight": "bold", "fontSize": "15px",
+                                 "marginRight": "16px"}),
+        dcc.RadioItems(id="radio-app-mode",
+                       options=[{"label": "View", "value": "view"},
+                                {"label": "Edit", "value": "edit"}],
+                       value="edit", inline=True,
+                       labelStyle={"marginRight": "18px", "fontWeight": "600"}),
+    ], style={**CBOX, "display": "flex", "alignItems": "center",
+              "border": "2px solid #6b8dbd", "background": "#f4f8ff"}),
+
+    html.Div([
         html.Div([
             html.Span("Group by", style={"fontWeight": "bold", "fontSize": "15px",
                                           "marginRight": "20px"}),
@@ -742,7 +769,7 @@ app.layout = html.Div([
                         style={**_B, "marginLeft": "6px", "height": "32px",
                                "padding": "2px 12px"}),
         ], style={"display": "flex", "alignItems": "center", "marginTop": "8px"}),
-    ], style={**CBOX}),
+    ], id="section-groupby-panel", style={**CBOX}),
 
     # ── Figure style panel ───────────────────────────────────────────────────
     _style_panel(),
@@ -769,11 +796,12 @@ app.layout = html.Div([
                 html.Div("0 = identical · 0.5 = somewhat different · 1 = completely different · NaN = excluded",
                          style={"fontSize": "11px", "color": "#888", "marginTop": "4px",
                                 "fontStyle": "italic"}),
-            ], style={"marginTop": "6px"}),
+            ], id="section-cell-edit", style={"marginTop": "6px"}),
         ], style={"flex": "3", "marginRight": "12px"}),
 
         html.Div([
-            html.H4("Bulk rules", style={"marginTop": 0}),
+            html.Div([
+                html.H4("Bulk rules", style={"marginTop": 0}),
             html.Div([
                 html.Div([html.Label("Row attr"),
                           dcc.Dropdown(id="bulk-lhs-attr", options=[], value=None, clearable=False)],
@@ -820,6 +848,7 @@ app.layout = html.Div([
                         style={"width": "100%", "marginBottom": "6px"}),
             html.Button("Mirror upper → lower", id="btn-mirror", n_clicks=0,
                         style={"width": "100%", "marginBottom": "6px"}),
+            ], id="section-bulk-rules"),
             html.Hr(),
             html.H4("Export"),
             html.Label("Filename"),
@@ -880,6 +909,20 @@ app.clientside_callback(
 # ===========================================================================
 
 # ── YAML / run ────────────────────────────────────────────────────────────
+@app.callback(
+    Output("section-bulk-rules",    "style"),
+    Output("section-cell-edit",     "style"),
+    Output("section-groupby-panel", "style"),
+    Output("table",                 "editable"),
+    Input("radio-app-mode",         "value"),
+)
+def toggle_app_mode(mode):
+    if mode == "view":
+        hidden = {"display": "none"}
+        return hidden, hidden, hidden, False
+    return {"display": "block"}, {"marginTop": "6px", "display": "block"}, {**CBOX, "display": "block"}, True
+
+
 @app.callback(
     Output("store-cfg",    "data"),
     Output("dd-run",       "options"),
@@ -986,6 +1029,12 @@ def scan_models_cb(n, last_model):
     Output("store-redo-stack", "data", allow_duplicate=True),
     Output("store-last-model", "data"),
     Output("model-load-status","children"),
+    Output("store-app-mode",   "data"),
+    Output("radio-app-mode",   "value"),
+    Output("store-groupby",    "data", allow_duplicate=True),
+    Output("store-sep",        "data", allow_duplicate=True),
+    Output("radio-view",       "value"),
+    Output("store-style",      "data", allow_duplicate=True),
     Input("btn-load-model",    "n_clicks"),
     State("dd-model-file",     "value"),
     State("store-stims",       "data"),
@@ -996,18 +1045,28 @@ def scan_models_cb(n, last_model):
 )
 def load_model_cb(n, fpath, stims, meta, matrix_data, undo_stack):
     if not fpath or not stims or not matrix_data:
-        return no_update, no_update, no_update, no_update, "No model selected or no stims loaded."
+        return (no_update, no_update, no_update, no_update,
+                "No model selected or no stims loaded.",
+                no_update, no_update, no_update, no_update, no_update, no_update)
     combined    = bool(meta and meta.get("combined"))
     stim_labels = [display_name(s, combined) for s in stims]
     try:
         mf, n_matched = load_model_into_matrix(fpath, stim_labels, matrix_data)
     except Exception as e:
-        return no_update, no_update, no_update, no_update, f"Error: {e}"
+        return (no_update, no_update, no_update, no_update, f"Error: {e}",
+                no_update, no_update, no_update, no_update, no_update, no_update)
     stack = list(undo_stack or [])
     stack.append(matrix_data)
     if len(stack) > MAX_UNDO: stack = stack[-MAX_UNDO:]
+    saved_style = load_style_sidecar(fpath)
     return (matrix_to_json(mf), stack, [], fpath,
-            f"Loaded {os.path.basename(fpath)} ({n_matched} cells matched).")
+            f"Loaded {os.path.basename(fpath)} ({n_matched} cells matched).",
+            "view",
+            "view",
+            saved_style.get("group_by", no_update),
+            saved_style.get("separator", no_update),
+            saved_style.get("view_mode", no_update),
+            saved_style.get("figure_style", no_update))
 
 
 # ── Group-by ──────────────────────────────────────────────────────────────
@@ -1480,10 +1539,11 @@ def do_export(n, stims, matrix_data, meta, view_mode, group_by, sep, style, fnam
         try:
             os.makedirs(folder, exist_ok=True)
             csv_path  = os.path.join(folder, fname)
-            json_path = csv_path.replace(".csv", "_style.json")
+            json_path = style_sidecar_path(csv_path)
             with open(csv_path, "w", encoding="utf-8", newline="") as f:
                 f.write(csv_text)
             opts = style_to_summary(S, group_by, sep)
+            opts["view_mode"]   = view_mode
             opts["exported_at"] = str(pd.Timestamp.now())
             opts["labels"]      = labels
             with open(json_path, "w", encoding="utf-8") as f:
