@@ -1689,25 +1689,24 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
             for index, entry in enumerate(session_and_run_dict):
                 session = entry['session']
                 run_N = entry['run_N']
-                # correct session to 2 digits
                 session = f"{session:02d}"
-                # check if all beta maps exist
+                run_folder = os.path.join(
+                    datafolder, dataset, 'results', 'RSA', model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{run_N:02d}"
+                )
+                existing_files = set(os.listdir(run_folder)) if os.path.isdir(run_folder) else set()
                 pairs_available = True
                 for i, stim_i in enumerate(stim_types):
+                    if not pairs_available:
+                        break
                     for j, stim_j in enumerate(stim_types):
                         if i >= j:
                             continue  # only upper triangle
-                        # build filename for pairwise similarity map
-                        filename  = os.path.join(
-                            datafolder, dataset, 'results', 'RSA', model,
-                            f"{specie}-sub-{sub_N:02d}",
-                            f"ses-{session}_task-{task}_run-{run_N:02d}",
-                            f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
-                        )
-                        # check if file exists
-                        if not os.path.exists(filename):
+                        fname = f"r-{radius}_{method}_{stim_i}_{stim_j}.nii.gz"
+                        if fname not in existing_files:
                             if verbose:
-                                print(f"Missing pairwise similarity map: {filename}")
+                                print(f"Missing pairwise similarity map: {os.path.join(run_folder, fname)}")
                             pairs_available = False
                             break
                 if not pairs_available:
@@ -1718,20 +1717,21 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                 print("Some input pairwise similarity maps are missing. Skipping computation.")
                 return
         elif method == 'mahalanobis':
+            mah_folder = os.path.join(
+                datafolder, dataset, 'results', 'RSA', model,
+                f"{specie}-sub-{sub_N:02d}"
+            )
+            existing_files = set(os.listdir(mah_folder)) if os.path.isdir(mah_folder) else set()
             for i, cat1 in enumerate(categories):
+                if not all_available:
+                    break
                 for j, cat2 in enumerate(categories):
                     if i >= j:
                         continue  # avoid duplicates and self-comparison
-                    # build filename for pairwise similarity map
-                    filename = os.path.join(
-                        datafolder, dataset, 'results', 'RSA', model,
-                        f"{specie}-sub-{sub_N:02d}",
-                        f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
-                    )
-                    # check if file exists
-                    if not os.path.exists(filename):
+                    fname = f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
+                    if fname not in existing_files:
                         if verbose:
-                            print(f"Missing pairwise similarity map: {filename}")
+                            print(f"Missing pairwise similarity map: {os.path.join(mah_folder, fname)}")
                         all_available = False
                         break
 
@@ -3815,6 +3815,56 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
     # randomly shuffle rnd_N_list
     random.shuffle(rnd_N_list)
 
+    # Pre-scan available permutation files once per run so the main loop can
+    # sample from known-good indices without calling os.path.exists each iteration.
+    available_rnd_indices = {}  # key: (sub_N, session_str, run_N) or (sub_N, None, None)
+    file_counter_total = 0
+    rnd_file_prefix = f"r-{radius}_{method}_{rsa_method}_"
+    for sub_N in participants:
+        if method != 'mahalanobis':
+            for entry in session_and_run_all_dict[sub_N]:
+                file_counter_total += 1
+                session_str = f"{entry['session']:02d}"
+                run_N = entry['run_N']
+                run_rnd_folder = os.path.join(
+                    datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session_str}_task-{task}_run-{run_N:02d}"
+                )
+                if os.path.isdir(run_rnd_folder):
+                    indices = []
+                    for fname in os.listdir(run_rnd_folder):
+                        if fname.startswith(rnd_file_prefix) and fname.endswith('.nii.gz'):
+                            try:
+                                idx = int(fname[len(rnd_file_prefix):-7])
+                                if 0 <= idx < reps:
+                                    indices.append(idx)
+                            except ValueError:
+                                pass
+                    available_rnd_indices[(sub_N, session_str, run_N)] = indices
+                else:
+                    available_rnd_indices[(sub_N, session_str, run_N)] = []
+        else:
+            file_counter_total += 1
+            sub_rnd_folder = os.path.join(
+                datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
+                f"{specie}-sub-{sub_N:02d}"
+            )
+            if os.path.isdir(sub_rnd_folder):
+                indices = []
+                for fname in os.listdir(sub_rnd_folder):
+                    if fname.startswith(rnd_file_prefix) and fname.endswith('.nii.gz'):
+                        try:
+                            idx = int(fname[len(rnd_file_prefix):-7])
+                            if 0 <= idx < reps:
+                                indices.append(idx)
+                        except ValueError:
+                            pass
+                available_rnd_indices[(sub_N, None, None)] = indices
+            else:
+                available_rnd_indices[(sub_N, None, None)] = []
+    print(f"Pre-scanned permutation files across {file_counter_total} runs.")
+
     # check if output file already exists
     for indx, rnd_N in enumerate(rnd_N_list):
         # output file path
@@ -3854,50 +3904,39 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
                 f.write(f"Temporary file for rnd {rnd_N:05d}\n")
 
         
-        # build list of available model similarity maps
-        files_list = [] # list of files to process
-        file_counter = 0 # keep track of the possible files
+        # build list of available model similarity maps using pre-scanned index cache
+        files_list = []
         for sub_N in participants:
-            # if method is not 'mahalanobis', get each run and session
             if method != 'mahalanobis':
-                session_and_run_dict = session_and_run_all_dict[sub_N]
-                for entry in session_and_run_dict:
-                    file_counter += 1 # add a file counter
-                    session = entry['session']
-                    session = f"{session:02d}"
+                for entry in session_and_run_all_dict[sub_N]:
+                    session_str = f"{entry['session']:02d}"
                     run_N = entry['run_N']
-                    # determine rnd_individual_N (rand sample from reps) for this subject/session/run
-                    rnd_individual_N = np.random.randint(0, reps)
-
-                    # build model similarity map file path
-                    model_sim_map_file = os.path.join(
-                        datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
-                        f"{specie}-sub-{sub_N:02d}", 
-                        f"ses-{session}_task-{task}_run-{run_N:02d}",
-                        f"r-{radius}_{method}_{rsa_method}_{rnd_individual_N:04d}.nii.gz"
-                    )
-                    # make sure file exists
-                    if not os.path.exists(model_sim_map_file):
+                    indices = available_rnd_indices.get((sub_N, session_str, run_N), [])
+                    if not indices:
                         if verbose:
-                            print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} Not found skipping {model_sim_map_file}.")
+                            print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} no permutation files for ses-{session_str} run-{run_N:02d}, skipping.")
                         continue
-                    # file exists, add to list
-                    files_list.append(model_sim_map_file)
+                    rnd_individual_N = random.choice(indices)
+                    files_list.append(os.path.join(
+                        datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session_str}_task-{task}_run-{run_N:02d}",
+                        f"r-{radius}_{method}_{rsa_method}_{rnd_individual_N:04d}.nii.gz"
+                    ))
             else:
-                file_counter += 1 # add a file counter
-                rnd_individual_N = np.random.randint(0, reps)
-                model_sim_map_file = os.path.join(
-                    datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
-                    f"{specie}-sub-{sub_N:02d}", 
-                    f"r-{radius}_{method}_{rsa_method}_{rnd_individual_N:04d}.nii.gz"
-                )
-                if not os.path.exists(model_sim_map_file):
+                indices = available_rnd_indices.get((sub_N, None, None), [])
+                if not indices:
                     if verbose:
-                        print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} Not found skipping {model_sim_map_file}.")
+                        print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} no permutation files for sub-{sub_N:02d}, skipping.")
                     continue
-                files_list.append(model_sim_map_file)
+                rnd_individual_N = random.choice(indices)
+                files_list.append(os.path.join(
+                    datafolder, dataset, 'results', 'RSA_rnd', model, rsa_model,
+                    f"{specie}-sub-{sub_N:02d}",
+                    f"r-{radius}_{method}_{rsa_method}_{rnd_individual_N:04d}.nii.gz"
+                ))
         # check if enough files are available
-        available_percentage = len(files_list) / file_counter
+        available_percentage = len(files_list) / file_counter_total
         if available_percentage < min_percentage_available:
             print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
             # remove temp file

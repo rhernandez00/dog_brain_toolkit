@@ -425,7 +425,7 @@ def main():
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
                                     method=method, rsa_method=rsa_method, replace_file=replace_file, 
                                     verbose=verbose, wait_time=wait_time, rnd=True, reps=reps,
-                                    create_subject_mean=False, replace_rnd_files=False)
+                                    create_subject_mean=False, replace_rnd_files=False, skip_prefile_check=skip_prefile_check)
                 
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"### Done computing rnd similarity between pairwise maps and model ###")
