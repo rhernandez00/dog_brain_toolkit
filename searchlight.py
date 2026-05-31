@@ -10,6 +10,17 @@ import yaml
 import sys
 from importlib import reload
 import argparse
+from datetime import datetime, timezone
+
+
+def _write_marker(job_marker_dir, step):
+    """Write a completion marker for a pipeline step (used by the scheduler)."""
+    if not job_marker_dir:
+        return
+    os.makedirs(job_marker_dir, exist_ok=True)
+    marker_path = os.path.join(job_marker_dir, f"{step}.done")
+    with open(marker_path, 'w') as f:
+        f.write(datetime.now(timezone.utc).isoformat())
 
 '''
 Steps possible:
@@ -121,6 +132,8 @@ def parse_arguments():
                         help='Coordinates for similarity files in voxel space, format: x,y,z')
     parser.add_argument('--mah_fold', type=str, default='stim-wise',
                         help='Folding method for Mahalanobis distance, either "stim-wise" or "run-wise"')
+    parser.add_argument('--job_marker_dir', type=str, default=None,
+                        help='Directory where step completion markers are written (used by the scheduler)')
     return parser.parse_args()
 
 # main execution
@@ -153,6 +166,7 @@ def main():
     dataset = args.dataset
     shuffle_runs = args.shuffle_runs
     mah_fold = args.mah_fold # this is the default, but it can be changed to 'run-wise' if needed
+    job_marker_dir = args.job_marker_dir
     # if task is not provided use the same as dataset
     if args.task is None:
         task = dataset
@@ -344,6 +358,7 @@ def main():
                                 overwrite_movement=False)
                     print(f"Finished sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}...")
             print("#### Done computing beta maps ####")
+            _write_marker(job_marker_dir, 0)
         if step == 1: # compute pairwise similarity maps between beta maps by participant
             print("### Step 1: Computing pairwise similarity maps ###")
 
@@ -381,6 +396,7 @@ def main():
                 
                 print(f"Finished sub-{sub_N:02d}...")
             print("#### Done computing pairwise similarity maps ####")
+            _write_marker(job_marker_dir, 1)
 
         if step == 2: # Compute similarity between pairwise similarity maps and a model by participant
             print("### Step 2: Computing similarity between pairwise similarity maps and a model ###")
@@ -397,6 +413,7 @@ def main():
                 
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"#### Done computing similarity between pairwise maps and model ####")
+            _write_marker(job_marker_dir, 2)
         if step == 3: # Calculate group model similarity map
             print("### Step 3: Computing group model similarity map ###")
             print(f"Using RSA model: {rsa_model}, RSA method: {rsa_method}")
@@ -406,13 +423,15 @@ def main():
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             
-            rsa_utils.calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, 
+            result = rsa_utils.calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model,
                                                 task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
-                                                method=method, replace_file=True, verbose=verbose, 
+                                                method=method, replace_file=True, verbose=verbose,
                                                 min_percentage_available=min_percentage_available, mask_type=mask_type
                                                 )
             print("### Done computing group model similarity map ###")
+            if result:
+                _write_marker(job_marker_dir, 3)
         if step == 4: # Calculate rnd by repeating step 2 with permuted model
             print("### Step 4: Calculating permutations for model similarity maps ###")
             # if shuffle_participants is true, shuffle participants order
@@ -429,6 +448,7 @@ def main():
                 
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"### Done computing rnd similarity between pairwise maps and model ###")
+            _write_marker(job_marker_dir, 4)
         if step == 5: # Calculate rnd mean model similarity maps by repeating step 3 with permuted models
             print("### Step 5: Calculating permutations of group model similarity maps ###")
             # build session_and_run_all_dict    
@@ -437,36 +457,40 @@ def main():
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             print(f"rsa_model {rsa_model}")
-            rsa_utils.calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model, 
+            result = rsa_utils.calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model,
                                                 task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
-                                                method=method, verbose=verbose, 
+                                                method=method, verbose=verbose,
                                                 min_percentage_available=min_percentage_available,
                                                 reps=reps, replace_rnd_files=False, wait_time=300, reps_group=reps_group)
-            
             print("### Done computing group rnd mean model similarity maps ###")
+            if result:
+                _write_marker(job_marker_dir, 5)
             #Map computing
         if step == 6: # Calculate per voxel distribution. Load all group model similarity maps. Calculate per voxel mean and std across maps. Save as nifti.
             print("### Step 6: Calculating voxelwise distribution maps from permutations ###")
             verbose = False
-            rsa_utils.calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
+            result = rsa_utils.calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
                                         method=method, rsa_method=rsa_method,
                                         rsa_model=rsa_model, reps_group=reps_group,
                                         verbose=verbose)
             print("### Done computing per voxel rnd distribution ###")
+            if result:
+                _write_marker(job_marker_dir, 6)
         if step == 7: # Calculate z map for each mean rnd model similarity map
             print("### Step 7: Calculating z maps for permutations ###")
-            rsa_utils.calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
+            result_rnd = rsa_utils.calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
                                         method=method, rsa_method=rsa_method,
                                         rsa_model=rsa_model,
                                         verbose=verbose, replace_file=True,
                                         reps_group=reps_group)
             ## Z -score mean from real data with mean and std from rnd distribution
-            # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion-valence-basic\mean\D-r-3_mahalanobis_kendall_mean.nii.gz"
-            rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, 
+            result_real = rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie,
                                                 model, radius,
                                         method, rsa_method,
                                         rsa_model, verbose=verbose, mask_type=mask_type)
+            if result_rnd and result_real:
+                _write_marker(job_marker_dir, 7)
         if step == 75:
             print("### Step 75 (75 actually): Calculating z map for real data ###")
             rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
@@ -476,29 +500,33 @@ def main():
         if step == 8: # Threshold z maps, calculate cluster size distribution 
             print("### Step 8: Calculating cluster size distribution ###")
             # this function calculates the cluster size distribution
-            rsa_utils.calculate_cluster_size_distribution(
+            result = rsa_utils.calculate_cluster_size_distribution(
             datafolder, dataset, model, rsa_model, radius, specie,
             method, rsa_method, z_threshold=z_threshold, verbose=verbose
             )
-            
             print("### Done computing cluster size distribution ###")
+            if result:
+                _write_marker(job_marker_dir, 8)
         if step == 9: # Threshold z maps, apply cluster correction, save significant maps
             print("### Step 9: Applying cluster correction to z maps ###")
             forced_minimal_cluster_size = None
             # this function applies cluster correction to the real z map
-            rsa_utils.apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius=radius,
-                                method=method, rsa_method=rsa_method, z_threshold=z_threshold, 
+            result = rsa_utils.apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius=radius,
+                                method=method, rsa_method=rsa_method, z_threshold=z_threshold,
                                 cluster_threshold=cluster_threshold, forced_minimal_cluster_size=forced_minimal_cluster_size,
                                 verbose=verbose, mask_type=mask_type)
-            
             print("### Done applying cluster correction to z maps ###")
+            if result:
+                _write_marker(job_marker_dir, 9)
         if step == 10: # Summarize results, create formatted report and save xlsx
             print("### Step 10: Summarizing results and saving to Excel ###")
-            rsa_utils.create_tables(datafolder, dataset, specie, model, rsa_model, radius, 
-                  method, rsa_method, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
-                  label_dict=label_dict, label_nii_data=label_nii_data, 
-                  apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask, 
+            result = rsa_utils.create_tables(datafolder, dataset, specie, model, rsa_model, radius,
+                  method, rsa_method, z_threshold=z_threshold, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
+                  label_dict=label_dict, label_nii_data=label_nii_data,
+                  apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask,
                   mask_type=mask_type)
+            if result:
+                _write_marker(job_marker_dir, 10)
         if step == 11: # Calculate cross-participant similarity, use one participant as model and calculate similarity with other participants, repeat for all participants
             print("### Step 11: Calculating cross-participant similarity ###")
             session_and_run_all_dict = {}

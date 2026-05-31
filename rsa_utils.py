@@ -1153,13 +1153,14 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
     if mask_type is None:
         corrected_z_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                                f"{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz")
+                                f"{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz")
     else:
         corrected_z_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                                f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz")
+                                f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz")
     nib.save(nib.Nifti1Image(z_map_thresholded, affine=img_affine), corrected_z_map_path)
     print(f"Saved corrected z map to {corrected_z_map_path}")
+    return True
 
 import numpy as np
 from scipy import ndimage
@@ -3792,7 +3793,8 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     print(f"Saving log: {log_json_output}")
     with open(log_json_output, 'w') as f:
         yaml.dump(log_json, f)
-    
+    return True
+
 def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model, 
                                             task, radius, rsa_model,
                                             rsa_method='pearson',
@@ -3958,6 +3960,7 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             except Exception as e:
                 print(f"Error {e} removing temporary file {mean_model_map_path_tmp}.")
             continue
+    return True
 
 def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
                                     method='pearson', rsa_method='pearson',
@@ -4027,6 +4030,7 @@ def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, tas
     log_path = distribution_mean_map_path.replace('.nii.gz', '_log.txt')
     with open(log_path, 'w') as f:
         f.write('\n'.join(log))
+    return True
 
 def calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
                               method, rsa_method, rsa_model, verbose=False, mask_type=None):
@@ -4087,6 +4091,7 @@ def calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
     nib.save(z_img, group_z_map_path)
     if verbose:
         print(f"Saved z map to {group_z_map_path}")
+    return True
 
 
 def calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
@@ -4163,6 +4168,7 @@ def calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
     with open(log_path, 'w') as f:
         f.write('\n'.join(log))
     print(f"Saved log to {log_path}")
+    return True
 
 
 import itertools
@@ -4342,6 +4348,7 @@ def calculate_cluster_size_distribution(
     with open(log_path, 'w') as f:
         f.write('\n'.join(log))
     print(f"Saved log to {log_path}")
+    return True
 
 import numpy as np
 import matplotlib.pyplot as plt
@@ -4885,47 +4892,47 @@ def clusters_to_excel(results, out_path, apply_coords_transform=False, atlas_fil
     df.to_excel(out_path)
     return df
 
-def create_tables(datafolder, dataset, specie, model, rsa_model, radius, 
-                  method, rsa_method, min_dist_mm=8.0, max_peaks_per_cluster=3, 
-                  label_dict=None, label_nii_data=None, apply_coords_transform=True, 
+def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
+                  method, rsa_method, z_threshold=3.1, min_dist_mm=8.0, max_peaks_per_cluster=3,
+                  label_dict=None, label_nii_data=None, apply_coords_transform=True,
                   atlas_file=None, mask=None, mask_type=None):
     res_folder = r"G:\My Drive\Results" + os.sep + dataset + os.sep + "current-results"
     if mask_type is None:
         res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                    f"{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz"
+                    f"{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz"
                     )
         # create copy of res_image using the name of the rsa_model
         # G:\My Drive\Results\EmoB\current-results
-        
+
         res_image_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{specie}_{rsa_model}_z_corrected.nii.gz"
+                    f"{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz"
                     )
-        
+
         out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                    f"{specie}-r-{radius}_{method}_{rsa_method}.xlsx")
-        
+                    f"{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.xlsx")
+
         out_path_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{specie}_{rsa_model}.xlsx")
+                    f"{specie}_{rsa_model}_zt{z_threshold}.xlsx")
     else:
         res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                    f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz"
+                    f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz"
                     )
         # create copy of res_image using the name of the rsa_model
-        res_image_copy = (res_folder + os.sep + 'RSA' + os.sep + specie + os.sep + 
+        res_image_copy = (res_folder + os.sep + 'RSA' + os.sep + specie + os.sep +
                           mask_type + os.sep +
-                    f"{specie}_{rsa_model}_z_corrected.nii.gz"
+                    f"{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz"
                     )
-        
+
         out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                    f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}.xlsx")
-        
-        out_path_copy = (res_folder + os.sep + 'RSA' + os.sep + specie + os.sep + 
+                    f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.xlsx")
+
+        out_path_copy = (res_folder + os.sep + 'RSA' + os.sep + specie + os.sep +
                          mask_type + os.sep +
-                    f"{specie}_{rsa_model}.xlsx")
+                    f"{specie}_{rsa_model}_zt{z_threshold}.xlsx")
     # res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,
@@ -4943,3 +4950,4 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
     shutil.copyfile(out_path, out_path_copy)
     print(f"Copied result image to: {res_image_copy}")
     print(f"Copied Excel table to: {out_path_copy}")
+    return True
