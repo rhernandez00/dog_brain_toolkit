@@ -10,9 +10,14 @@ Each model is a 40x40 dissimilarity matrix over the 40 conditions:
     NaN  -> pair EXCLUDED from the RSA correlation
 The diagonal is always 0.
 
-Two files are written per model into {datafolder}/EmoC/rsa_models/:
-    {name}.csv   — human-readable, opens in rsa_model_builder.py
-    {name}.xlsx  — the format searchlight.py actually loads ({rsa_model}.xlsx)
+One file is written per model into {datafolder}/EmoC/rsa_models/:
+    {name}.csv   — the format searchlight.py / read_model_dict loads, and the
+                   format rsa_model_builder.py reads & writes.
+
+By default the output goes to the pipeline's data disk (scheduler/paths.py:
+``P:\\userdata\\raulh87\\data`` on Windows, the network mount on Linux) so the models are
+immediately runnable by searchlight.py / the scheduler. Use --out_dir to target a
+different location (e.g. the Google-Drive results mirror used by the builder UI).
 
 Run:
     & "C:\\ProgramData\\anaconda3\\python.exe" build_rsa_models.py
@@ -35,7 +40,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from viz import datasource
+from scheduler.paths import get_paths
 
 # ---------------------------------------------------------------------------
 # Conditions
@@ -183,16 +188,14 @@ def matrix_stats(m):
 
 def write_model(out_dir, name, m, dry_run=False):
     df = pd.DataFrame(m, index=NAMES, columns=NAMES)
-    csv_path  = os.path.join(out_dir, f"{name}.csv")
-    xlsx_path = os.path.join(out_dir, f"{name}.xlsx")
+    csv_path = os.path.join(out_dir, f"{name}.csv")
     if not dry_run:
         df.to_csv(csv_path, na_rep="NaN")
-        df.to_excel(xlsx_path)
         # Remove any stale .npy cache so read_model_dict re-reads the new matrix.
         npy = os.path.join(out_dir, f"{name}.npy")
         if os.path.exists(npy):
             os.remove(npy)
-    return csv_path, xlsx_path
+    return csv_path
 
 # ---------------------------------------------------------------------------
 # Main
@@ -212,7 +215,7 @@ def main():
     if args.out_dir:
         out_dir = args.out_dir
     else:
-        root = datasource.resolve_datafolder(args.dataset, must_have_results=False)
+        root = get_paths()[0]   # pipeline data disk (P:\ on Windows / network mount on Linux)
         out_dir = os.path.join(root, args.dataset, "rsa_models")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -260,7 +263,7 @@ def main():
         man_path = os.path.join(out_dir, "_MODEL_BATTERY_MANIFEST.csv")
         man_df.to_csv(man_path, index=False)
         print(f"\nManifest written: {man_path}")
-        print(f"Wrote {len(manifest)} .csv + {len(manifest)} .xlsx files to {out_dir}")
+        print(f"Wrote {len(manifest)} .csv files to {out_dir}")
 
 
 if __name__ == "__main__":
