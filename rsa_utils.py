@@ -4825,10 +4825,11 @@ def extract_clusters_and_peaks(
         })
     return results
 
-def clusters_to_excel(results, out_path, apply_coords_transform=False, atlas_file=None, mask=None):
+def clusters_to_table(results, out_path, apply_coords_transform=False, atlas_file=None, mask=None):
     """
     Build a hierarchical (cluster -> subpeak) table from `results`
-    and save it as an Excel file.
+    and save it as a CSV file (no Excel/openpyxl dependency, which is missing on
+    the Linux remote and used to break step 10).
     """
     if apply_coords_transform:
         # get the original image to apply coordinate transform
@@ -4889,7 +4890,7 @@ def clusters_to_excel(results, out_path, apply_coords_transform=False, atlas_fil
     # Make it hierarchical: first cluster, then subpeak
     df = df.set_index(['cluster_id', 'subpeak_id']).sort_index()
 
-    df.to_excel(out_path)
+    df.to_csv(out_path)
     return df
 
 def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
@@ -4911,10 +4912,10 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
 
         out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                    f"{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.xlsx")
+                    f"{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.csv")
 
         out_path_copy = (res_folder + os.sep + 'RSA' + os.sep +
-                    f"{specie}_{rsa_model}_zt{z_threshold}.xlsx")
+                    f"{specie}_{rsa_model}_zt{z_threshold}.csv")
     else:
         res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
@@ -4928,11 +4929,11 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
 
         out_path =  (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                    f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.xlsx")
+                    f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.csv")
 
         out_path_copy = (res_folder + os.sep + 'RSA' + os.sep + specie + os.sep +
                          mask_type + os.sep +
-                    f"{specie}_{rsa_model}_zt{z_threshold}.xlsx")
+                    f"{specie}_{rsa_model}_zt{z_threshold}.csv")
     # res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,
