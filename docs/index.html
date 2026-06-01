@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EmoC Dashboard</title>
+<style>
+  html,body{margin:0;height:100%;background:#0f0f23;color:#e0e0ff;
+            font-family:'Segoe UI',Arial,sans-serif;display:flex;align-items:center;justify-content:center;}
+  .card{max-width:520px;text-align:center;padding:28px;}
+  h1{margin:0 0 6px;letter-spacing:1px;}
+  p{color:#9aa6c8;margin:6px 0 22px;}
+  a.btn{display:block;margin:12px auto;padding:16px 20px;border-radius:12px;text-decoration:none;
+        font-size:18px;font-weight:bold;max-width:360px;}
+  .live{background:#4a90d9;color:#fff;}
+  .live.off{background:#2a3450;color:#7a86a8;pointer-events:none;}
+  .fail{background:#7a4fa0;color:#fff;}
+  .sub{font-size:12px;font-weight:normal;display:block;opacity:.85;margin-top:4px;}
+  .muted{font-size:11px;color:#667;margin-top:18px;}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🧠 EmoC Dashboard</h1>
+  <p>Dog &amp; human neuroimaging — RSA results</p>
+  <a id="live" class="btn live off" href="#">Live demo (laptop)
+     <span class="sub" id="livesub">checking…</span></a>
+  <a class="btn fail" href="viewer.html">Failsafe results
+     <span class="sub">always available · 2D/3D, no scheduling</span></a>
+  <div class="muted" id="stamp"></div>
+</div>
+<script>
+fetch("live.json?_="+Date.now()).then(r=>r.json()).then(j=>{
+  const a=document.getElementById("live"), sub=document.getElementById("livesub");
+  if(j && j.live_url){ a.href=j.live_url; a.classList.remove("off"); sub.textContent=j.live_url; }
+  else { sub.textContent="offline right now — use Failsafe"; }
+}).catch(()=>{document.getElementById("livesub").textContent="offline right now — use Failsafe";});
+</script>
+</body>
+</html>

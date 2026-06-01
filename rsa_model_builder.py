@@ -6,6 +6,7 @@ Requires: dash, plotly>=5.0, pandas, numpy, pyyaml
 """
 
 import os
+import sys
 import math
 import json
 from typing import Sequence
@@ -19,9 +20,13 @@ from dash import Dash, html, dcc, dash_table, no_update, ctx
 from dash.dependencies import Input, Output, State, ALL
 from dash.exceptions import PreventUpdate
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from viz import datasource, dash_kwargs
 
-DEFAULT_YAML       = r"G:\My Drive\Results\EmoC\config_files\D_basic-block.yaml"
-DEFAULT_EXPORT_DIR = r"G:\My Drive\Results\EmoC\rsa_models"
+# Resolve the dataset root (Google Drive -> network -> $DBT_RESULTS_ROOT).
+_DATAFOLDER        = datasource.resolve_datafolder("EmoC", must_have_results=False)
+DEFAULT_YAML       = os.path.join(_DATAFOLDER, "EmoC", "config_files", "D_basic-block.yaml")
+DEFAULT_EXPORT_DIR = os.path.join(_DATAFOLDER, "EmoC", "rsa_models")
 MAX_UNDO = 50
 
 HIDDEN_ATTRS   = {"color"}
@@ -502,7 +507,7 @@ def _current_view(stims, mf, view_mode, group_by, combined, sep="_"):
 # Dash app
 # ---------------------------------------------------------------------------
 
-app = Dash(__name__, suppress_callback_exceptions=True)
+app = Dash(__name__, suppress_callback_exceptions=True, **dash_kwargs("BUILDER_URL_BASE"))
 app.title = "RSA Model Builder"
 
 def attr_value_options(stims, attr):

@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>EmoC Results (Failsafe)</title>
+<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+<style>
+  body { margin:0; background:#0f0f23; color:#e0e0ff; font-family:'Segoe UI',Arial,sans-serif; }
+  header { padding:8px 14px; background:#16213e; border-bottom:1px solid #2a2a44;
+           display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
+  .brand { font-weight:bold; letter-spacing:1px; }
+  .badge { background:#7a4fa0; color:#fff; font-size:11px; padding:2px 8px; border-radius:10px; }
+  label { font-size:11px; color:#aaa; margin-right:4px; }
+  select, input { background:#16213e; color:#fff; border:1px solid #333; border-radius:4px; padding:3px 6px; }
+  .panel { background:#1a1a2e; border-radius:8px; margin:8px 14px; padding:8px 12px; }
+  .species { display:flex; gap:8px; flex-wrap:wrap; }
+  .canvaswrap { flex:1 1 420px; min-height:380px; position:relative; }
+  canvas { width:100%; height:380px; background:#000; border-radius:6px; }
+  .chip { color:#000; border-radius:6px; padding:4px 8px; margin:2px; font-family:Consolas,monospace;
+          font-size:11px; font-weight:bold; display:inline-block; }
+  table { border-collapse:collapse; font-size:11px; width:100%; }
+  th,td { border:1px solid #222; padding:3px 6px; text-align:center; }
+  th { background:#16213e; }
+  .muted { color:#888; font-size:11px; }
+  h4 { margin:4px 0; color:#e0e0ff; }
+</style>
+</head>
+<body>
+<header>
+  <span class="brand">🧠 EmoC Results</span><span class="badge">Failsafe (read-only)</span>
+  <span><label>Modality</label><select id="modality"></select></span>
+  <span><label>ROI</label><select id="roi"></select></span>
+  <span><label>Model</label><select id="model"></select></span>
+  <span><label>z-threshold</label><input id="zt" type="range" min="0" max="8" step="0.1" value="3.1">
+        <span id="ztval">3.1</span></span>
+  <span><label>3D</label><input id="render3d" type="checkbox"></span>
+  <span><label>Dog</label><input id="showD" type="checkbox" checked>
+        <label>Human</label><input id="showH" type="checkbox" checked></span>
+  <span class="muted" id="genstamp"></span>
+</header>
+
+<div class="panel" id="matrixpanel">
+  <div id="chips"></div>
+  <div id="matrix" style="height:320px;"></div>
+</div>
+
+<div class="panel">
+  <div class="species">
+    <div class="canvaswrap" id="wrapD"><h4>Dog</h4><canvas id="glD"></canvas>
+      <div class="muted" id="statusD"></div></div>
+    <div class="canvaswrap" id="wrapH"><h4>Human</h4><canvas id="glH"></canvas>
+      <div class="muted" id="statusH"></div></div>
+  </div>
+</div>
+
+<div class="panel">
+  <div style="display:flex;gap:10px;align-items:center;">
+    <h4>Cluster tables</h4>
+    <span><label>Table @ z</label><select id="tablezt"></select></span>
+  </div>
+  <div class="species">
+    <div style="flex:1 1 320px"><b>Dog</b><div id="tableD"></div></div>
+    <div style="flex:1 1 320px"><b>Human</b><div id="tableH"></div></div>
+  </div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,63 @@
+{
+  "dataset": "EmoC",
+  "generated": "2026-06-01T06:33:54.818057+00:00",
+  "thresholds": [
+    2.3,
+    3.1,
+    3.9
+  ],
+  "atlases": {
+    "D": "data/atlas/D_low.nii.gz",
+    "H": "data/atlas/H_low.nii.gz"
+  },
+  "label_def": {
+    "P": {
+      "name": "Positive anticipation",
+      "color": "#f18b1f"
+    },
+    "H": {
+      "name": "Happiness",
+      "color": "#ffcf00"
+    },
+    "A": {
+      "name": "Anger",
+      "color": "#e72222"
+    },
+    "F": {
+      "name": "Fear",
+      "color": "#763596"
+    },
+    "N": {
+      "name": "Neutral",
+      "color": "#7a7a7a"
+    }
+  },
+  "results": [
+    {
+      "modality": "RSA",
+      "roi": "b_GreyMatter2mmB",
+      "model": "happiness-anticipation-different",
+      "species": {
+        "D": {
+          "overlay_kind": "unthresholded",
+          "corrected": {
+            "2.3": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-different_zt2.3_corrected.nii.gz",
+              "table": "data/tables/RSA__D__b_GreyMatter2mmB__happiness-anticipation-different__zt2.3.json"
+            },
+            "3.1": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-different_zt3.1_corrected.nii.gz",
+              "table": "data/tables/RSA__D__b_GreyMatter2mmB__happiness-anticipation-different__zt3.1.json"
+            },
+            "3.9": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-different_zt3.9_corrected.nii.gz",
+              "table": "data/tables/RSA__D__b_GreyMatter2mmB__happiness-anticipation-different__zt3.9.json"
+            }
+          },
+          "overlay": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-different_z.nii.gz"
+        }
+      },
+      "matrix": "data/matrices/happiness-anticipation-different.json"
+    }
+  ]
+}
