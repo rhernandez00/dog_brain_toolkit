@@ -16,12 +16,15 @@ Source (per model):
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z.nii.gz   (unthresholded)
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}.xlsx
-Destination (mask_type present):
+Destination (mask_type present); thresholded artifacts record zt{z_threshold}:
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_z.nii.gz
-    {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_z_corrected.nii.gz
-    {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}.xlsx
+    {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz
+    {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_zt{z_threshold}.xlsx
 Destination (no mask_type):
     {drive_root}/{dataset}/current-results/RSA/{specie}_{rsa_model}_z.nii.gz   (etc.)
+
+The unthresholded z-map stays "_z" (no zt): it is threshold-independent and
+feeds the dashboard viewer's threshold slider.
 
 "Update" semantics: a file is copied only when it is missing at the destination
 or the source is newer (mtime). Use --force to copy regardless, --dry-run to
@@ -55,12 +58,14 @@ _Z_RE = re.compile(
 )
 
 
-def drive_dest_name(specie, rsa_model, kind):
+def drive_dest_name(specie, rsa_model, kind, z_threshold=3.1):
     """Return the destination *filename* for a copied RSA artifact.
 
     This mirrors rsa_utils.create_tables: the long technical source name is
     replaced by a short name built from the species and the RSA model (folder)
-    name.
+    name. Thresholded artifacts carry ``zt{z_threshold}`` so the clustering
+    threshold is recorded in the filename; the unthresholded z-map does not
+    (it is threshold-independent and feeds the viewer's threshold slider).
 
     kind: 'z' (unthresholded z-map), 'z_corrected' (cluster-corrected z-map),
           or 'xlsx' (table).
@@ -68,9 +73,9 @@ def drive_dest_name(specie, rsa_model, kind):
     if kind == 'z':
         return f"{specie}_{rsa_model}_z.nii.gz"
     if kind == 'z_corrected':
-        return f"{specie}_{rsa_model}_z_corrected.nii.gz"
+        return f"{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz"
     if kind == 'xlsx':
-        return f"{specie}_{rsa_model}.xlsx"
+        return f"{specie}_{rsa_model}_zt{z_threshold}.xlsx"
     raise ValueError(f"unknown artifact kind: {kind!r}")
 
 
@@ -109,7 +114,7 @@ def iter_model_results(rsa_root):
                 break  # one unthresholded z-map per model folder
 
 
-def sync(datafolder, dataset, model, drive_root, models=None,
+def sync(datafolder, dataset, model, drive_root, models=None, z_threshold=3.1,
          include_corrected=True, include_xlsx=True, force=False, dry_run=False):
     rsa_root = os.path.join(datafolder, dataset, "results", "RSA", model)
     print(f"Scanning: {rsa_root}")
@@ -126,11 +131,13 @@ def sync(datafolder, dataset, model, drive_root, models=None,
 
         # (source filename, destination filename, kind, enabled)
         artifacts = [
-            (f"{stem}_z.nii.gz", drive_dest_name(specie, rsa_model, 'z'), 'z', True),
+            (f"{stem}_z.nii.gz",
+             drive_dest_name(specie, rsa_model, 'z', z_threshold), 'z', True),
             (f"{stem}_z_corrected.nii.gz",
-             drive_dest_name(specie, rsa_model, 'z_corrected'), 'z_corrected',
-             include_corrected),
-            (f"{stem}.xlsx", drive_dest_name(specie, rsa_model, 'xlsx'), 'xlsx',
+             drive_dest_name(specie, rsa_model, 'z_corrected', z_threshold),
+             'z_corrected', include_corrected),
+            (f"{stem}.xlsx",
+             drive_dest_name(specie, rsa_model, 'xlsx', z_threshold), 'xlsx',
              include_xlsx),
         ]
 
@@ -181,6 +188,9 @@ def main(argv=None):
                    help=r"Google Drive results root (default G:\My Drive\Results)")
     p.add_argument("--models", nargs="*", default=None,
                    help="Only sync these RSA model folders (default: all)")
+    p.add_argument("--z_threshold", type=float, default=3.1,
+                   help="Clustering z-threshold recorded in thresholded "
+                        "filenames as zt{z_threshold} (default 3.1)")
     p.add_argument("--no-corrected", action="store_true",
                    help="Skip the cluster-corrected z-map")
     p.add_argument("--no-xlsx", action="store_true", help="Skip the Excel table")
@@ -196,7 +206,8 @@ def main(argv=None):
         p.error("--drive_root is required on this platform")
 
     sync(args.datafolder, args.dataset, args.model, args.drive_root,
-         models=args.models, include_corrected=not args.no_corrected,
+         models=args.models, z_threshold=args.z_threshold,
+         include_corrected=not args.no_corrected,
          include_xlsx=not args.no_xlsx, force=args.force, dry_run=args.dry_run)
     return 0
 
