@@ -1,6 +1,6 @@
 {
   "dataset": "EmoC",
-  "generated": "2026-06-01T06:33:54.818057+00:00",
+  "generated": "2026-06-01T07:39:53.621819+00:00",
   "thresholds": [
     2.3,
     3.1,
@@ -58,6 +58,74 @@
         }
       },
       "matrix": "data/matrices/happiness-anticipation-different.json"
+    },
+    {
+      "modality": "RSA",
+      "roi": "b_GreyMatter2mmB",
+      "model": "happiness-anticipation-per-specie",
+      "species": {
+        "D": {
+          "overlay_kind": "unthresholded",
+          "corrected": {
+            "2.3": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-per-specie_zt2.3_corrected.nii.gz"
+            },
+            "3.1": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-per-specie_zt3.1_corrected.nii.gz"
+            },
+            "3.9": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-per-specie_zt3.9_corrected.nii.gz"
+            }
+          },
+          "overlay": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-per-specie_z.nii.gz"
+        }
+      },
+      "matrix": "data/matrices/happiness-anticipation-per-specie.json"
+    },
+    {
+      "modality": "RSA",
+      "roi": "b_GreyMatter2mmB",
+      "model": "happiness-anticipation-same-different",
+      "species": {
+        "D": {
+          "overlay_kind": "unthresholded",
+          "corrected": {
+            "2.3": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-same-different_zt2.3_corrected.nii.gz"
+            },
+            "3.1": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-same-different_zt3.1_corrected.nii.gz"
+            },
+            "3.9": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-same-different_zt3.9_corrected.nii.gz"
+            }
+          },
+          "overlay": "data/results/RSA/D/b_GreyMatter2mmB/D_happiness-anticipation-same-different_z.nii.gz"
+        }
+      },
+      "matrix": "data/matrices/happiness-anticipation-same-different.json"
+    },
+    {
+      "modality": "RSA",
+      "roi": "b_GreyMatter2mmB",
+      "model": "test-model",
+      "species": {
+        "D": {
+          "overlay_kind": "unthresholded",
+          "corrected": {
+            "2.3": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_test-model_zt2.3_corrected.nii.gz"
+            },
+            "3.1": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_test-model_zt3.1_corrected.nii.gz"
+            },
+            "3.9": {
+              "corrected": "data/results/RSA/D/b_GreyMatter2mmB/D_test-model_zt3.9_corrected.nii.gz"
+            }
+          },
+          "overlay": "data/results/RSA/D/b_GreyMatter2mmB/D_test-model_z.nii.gz"
+        }
+      }
     }
   ]
 }

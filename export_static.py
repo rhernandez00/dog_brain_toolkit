@@ -191,38 +191,73 @@ _LANDING_HTML = """<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EmoC Dashboard</title>
+<title>Networks of the social brain — comparative neuroimaging</title>
 <style>
-  html,body{margin:0;height:100%;background:#0f0f23;color:#e0e0ff;
-            font-family:'Segoe UI',Arial,sans-serif;display:flex;align-items:center;justify-content:center;}
-  .card{max-width:520px;text-align:center;padding:28px;}
-  h1{margin:0 0 6px;letter-spacing:1px;}
-  p{color:#9aa6c8;margin:6px 0 22px;}
-  a.btn{display:block;margin:12px auto;padding:16px 20px;border-radius:12px;text-decoration:none;
-        font-size:18px;font-weight:bold;max-width:360px;}
-  .live{background:#4a90d9;color:#fff;}
-  .live.off{background:#2a3450;color:#7a86a8;pointer-events:none;}
-  .fail{background:#7a4fa0;color:#fff;}
-  .sub{font-size:12px;font-weight:normal;display:block;opacity:.85;margin-top:4px;}
-  .muted{font-size:11px;color:#667;margin-top:18px;}
+  :root{--bg:#10131c;--panel:#181c28;--ink:#e8ebf2;--muted:#9aa3b8;--line:#2a3142;--accent:#3b6fb0;}
+  *{box-sizing:border-box;}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+            font-family:Georgia,'Times New Roman',serif;line-height:1.5;}
+  .wrap{max-width:760px;margin:0 auto;padding:40px 24px 56px;}
+  h1{font-size:26px;line-height:1.3;margin:0 0 10px;font-weight:600;}
+  .authors{color:var(--muted);font-style:italic;font-size:15px;margin:0 0 4px;}
+  .venue{color:var(--muted);font-size:13px;margin:0 0 22px;}
+  hr{border:none;border-top:1px solid var(--line);margin:22px 0;}
+  .abstract{font-size:15px;text-align:justify;}
+  .abstract p{margin:0 0 12px;}
+  .actions{display:flex;gap:14px;flex-wrap:wrap;margin:26px 0 6px;}
+  a.btn{flex:1 1 240px;text-align:center;padding:16px 18px;border-radius:8px;text-decoration:none;
+        font-family:Arial,Helvetica,sans-serif;font-weight:bold;font-size:16px;border:1px solid var(--line);}
+  .live{background:var(--accent);color:#fff;}
+  .live.off{background:#222838;color:#6b7488;border-color:#222838;pointer-events:none;}
+  .fail{background:#2a3142;color:var(--ink);}
+  a.btn:hover{filter:brightness(1.12);}
+  .sub{display:block;font-weight:normal;font-size:12px;opacity:.85;margin-top:4px;}
+  .foot{color:var(--muted);font-size:12px;font-family:Arial,Helvetica,sans-serif;margin-top:22px;}
 </style>
 </head>
 <body>
-<div class="card">
-  <h1>🧠 EmoC Dashboard</h1>
-  <p>Dog &amp; human neuroimaging — RSA results</p>
-  <a id="live" class="btn live off" href="#">Live demo (laptop)
-     <span class="sub" id="livesub">checking…</span></a>
-  <a class="btn fail" href="viewer.html">Failsafe results
-     <span class="sub">always available · 2D/3D, no scheduling</span></a>
-  <div class="muted" id="stamp"></div>
+<div class="wrap">
+  <h1>Networks of the social brain. Connecting dog to human social brain function using comparative neuroimaging</h1>
+  <p class="authors">Raúl Hernández-Pérez, Laura V. Cuaya, Julia Meier, Ludwig Huber, Claus Lamm</p>
+  <p class="venue">Comparative neuroimaging of affective processing in dogs and humans</p>
+  <hr>
+  <div class="abstract">
+    <p>The human superior temporal sulcus (STS) is critical for perceiving emotions and navigating
+       complex social interactions. While higher-level association cortices such as the STS are absent
+       in carnivores, indirect neuroimaging evidence suggests the caudal sylvian gyrus (cSG) as a hub
+       for the processing of affective information in dogs. Our aim is to compare the role of the human
+       STS and dog cSG in affective processing while controlling for the effect of species and valence.
+       We hypothesize that the human STS and dog cSG are functionally analogous in affective processing.</p>
+    <p>We plan a fully comparative fMRI study in which humans (n = 40) and awake pet dogs (n = 24) will
+       observe the same videos (13 s) of humans or dogs expressing happiness, excitement, fear, and
+       anger. Additionally, we will acquire eye-tracking data simultaneously. We will acquire six runs
+       per participant, each lasting 305 s. Data acquisition is ongoing.</p>
+    <p>The planned dataset will allow us to examine brain networks related to affective processing and
+       the interaction between emotions, valence, and species. In addition, the eye-tracking data will
+       be correlated with the BOLD response at the individual and the group level. We will focus our
+       analyses on the human STS and the dog cSG to determine the degree of similarity in their brain
+       responses, connectivity patterns, and representational geometries.</p>
+    <p>By demonstrating how visual representations of emotions expressed in others are processed in both
+       species, we expect these findings to provide compelling evidence for understanding the evolution
+       of social brain networks.</p>
+  </div>
+  <div class="actions">
+    <a id="live" class="btn live off" href="#">Live interactive dashboard
+       <span class="sub" id="livesub">checking availability…</span></a>
+    <a class="btn fail" href="viewer.html">Results viewer
+       <span class="sub">always available · 2D / 3D maps and tables</span></a>
+  </div>
+  <p class="foot" id="stamp"></p>
 </div>
 <script>
 fetch("live.json?_="+Date.now()).then(r=>r.json()).then(j=>{
   const a=document.getElementById("live"), sub=document.getElementById("livesub");
   if(j && j.live_url){ a.href=j.live_url; a.classList.remove("off"); sub.textContent=j.live_url; }
-  else { sub.textContent="offline right now — use Failsafe"; }
-}).catch(()=>{document.getElementById("livesub").textContent="offline right now — use Failsafe";});
+  else { sub.textContent="currently offline — use the results viewer"; }
+}).catch(()=>{document.getElementById("livesub").textContent="currently offline — use the results viewer";});
+fetch("manifest.json").then(r=>r.json()).then(m=>{
+  document.getElementById("stamp").textContent="Results generated " + (m.generated||"").slice(0,10) + " · dataset " + (m.dataset||"");
+}).catch(()=>{});
 </script>
 </body>
 </html>
