@@ -159,7 +159,7 @@ def get_similarity_in_sphere(datafolder, dataset, specie, mask, sub_N, session, 
         raise ValueError("voxel_coords must be provided as a tuple of (X, Y, Z) voxel coordinates.")
     ref_img = nib.load(mask).get_fdata()
     # ref_affine = nib.load(mask).affine
-    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
+    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
     # load meta similarity map for participant, session, run, and model
     meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, 
@@ -261,7 +261,7 @@ def calculate_cross_participant_similarity(datafolder, dataset, session_and_run_
     # load reference image for meta similarity map based on mask
     ref_img = nib.load(mask).get_fdata()
     ref_affine = nib.load(mask).affine
-    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
+    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
 
 
@@ -1921,7 +1921,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
             session, run_N = 0, 0
 
     print(f"for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}...")
-    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
+    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
  
     # Load config.yaml
@@ -4263,7 +4263,7 @@ def calculate_cluster_size_distribution(
         print(f"No cluster sizes found for {key}")
         cluster_sizes_dict[key] = {}  # initialize empty dictionary for this threshold and connectivity
 
-    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".xlsx"
+    rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
 
     # Load config.yaml
@@ -4950,4 +4950,16 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
     shutil.copyfile(out_path, out_path_copy)
     print(f"Copied result image to: {res_image_copy}")
     print(f"Copied Excel table to: {out_path_copy}")
+
+    # Also mirror the UNTHRESHOLDED z-map (the corrected map's name minus
+    # '_corrected') so the dashboard viewer's threshold slider can explore the
+    # data freely; clusters/tables remain threshold-specific (this corrected
+    # copy + xlsx). See viz/viewer_app.py.
+    res_image_unthr = res_image.replace('_corrected', '')
+    res_unthr_copy = res_image_copy.replace('_corrected', '')
+    if os.path.exists(res_image_unthr):
+        shutil.copyfile(res_image_unthr, res_unthr_copy)
+        print(f"Copied unthresholded z-map to: {res_unthr_copy}")
+    else:
+        print(f"Unthresholded z-map not found, skipped: {res_image_unthr}")
     return True
