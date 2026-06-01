@@ -38,6 +38,17 @@ THRESHOLD_PRESETS = [2.3, 3.1, 3.9]
 SPECIES = ["D", "H"]
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
+# Region labelling sources — must match searchlight.py step 10 / rsa_utils.create_tables.
+# Dog: Czeibert labels (2mm) + dictionary. Human: AAL3 (per-dataset ROI) + AAL dictionary.
+LABEL_ATLAS = {
+    "D": os.path.join(REPO_ROOT, "Atlas", "Dog", "Nitzsche", "Czeibert_labels2mm.nii.gz"),
+    "H": None,  # resolved per-dataset below ({datafolder}/{dataset}/ROI/AAL3.nii.gz)
+}
+LABEL_DICT_CSV = {
+    "D": os.path.join(REPO_ROOT, "Atlas", "Dog", "Czeibert_dictionary.csv"),
+    "H": os.path.join(REPO_ROOT, "Atlas", "Hum", "AAL_dictionary.csv"),
+}
+
 
 def _safe(name):
     return "".join(c if (c.isalnum() or c in "-_.") else "_" for c in str(name))
@@ -108,11 +119,15 @@ def export(dataset, modalities, out_dir):
                 results.append(entry)
                 print(f"  result: {modality}/{roi}/{model}  species={list(entry['species'])}")
 
+    label_atlas, label_dict = _export_labels(out_dir, datafolder, dataset)
+
     manifest = {
         "dataset": dataset,
         "generated": datetime.now(timezone.utc).isoformat(),
         "thresholds": THRESHOLD_PRESETS,
         "atlases": atlases,
+        "label_atlas": label_atlas,   # per-species region label NIfTI (for click-to-name)
+        "label_dict": label_dict,     # per-species {number: region name} JSON
         "label_def": stimuli.LABEL_DEF,
         "results": results,
     }
@@ -122,6 +137,35 @@ def export(dataset, modalities, out_dir):
     _write_site(out_dir)
     print(f"\nDone. {len(results)} result(s). Open {os.path.join(out_dir, 'index.html')}")
     print("Deploy: commit docs/ and enable GitHub Pages (Settings -> Pages -> /docs).")
+
+
+def _export_labels(out_dir, datafolder, dataset):
+    """Copy each species' region-label atlas + dictionary so the failsafe site
+    can name the region under a tapped voxel (mirrors create_tables labelling)."""
+    label_atlas, label_dict = {}, {}
+    sources = dict(LABEL_ATLAS)
+    sources["H"] = os.path.join(datafolder, dataset, "ROI", "AAL3.nii.gz")
+    for sp in SPECIES:
+        src = sources.get(sp)
+        if src and os.path.exists(src):
+            rel = f"data/atlas/{sp}_labels.nii.gz"
+            shutil.copyfile(src, os.path.join(out_dir, rel))
+            label_atlas[sp] = rel
+            print(f"  labels {sp}: {os.path.basename(src)}")
+        dcsv = LABEL_DICT_CSV.get(sp)
+        if dcsv and os.path.exists(dcsv):
+            df = pd.read_csv(dcsv)
+            mapping = {}
+            for _, row in df.iterrows():
+                num = row.get("Number")
+                if pd.isna(num):
+                    continue
+                mapping[str(int(num))] = str(row.get("Region", "Unknown"))
+            rel = f"data/atlas/{sp}_labels.json"
+            with open(os.path.join(out_dir, rel), "w", encoding="utf-8") as f:
+                json.dump(mapping, f, ensure_ascii=False)
+            label_dict[sp] = rel
+    return label_atlas, label_dict
 
 
 def _rois_union(datafolder, dataset, modality):
@@ -267,68 +311,97 @@ _VIEWER_HTML = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>EmoC Results (Failsafe)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>EmoC Results</title>
 <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
-  body { margin:0; background:#0f0f23; color:#e0e0ff; font-family:'Segoe UI',Arial,sans-serif; }
-  header { padding:8px 14px; background:#16213e; border-bottom:1px solid #2a2a44;
-           display:flex; gap:12px; align-items:center; flex-wrap:wrap; }
-  .brand { font-weight:bold; letter-spacing:1px; }
-  .badge { background:#7a4fa0; color:#fff; font-size:11px; padding:2px 8px; border-radius:10px; }
-  label { font-size:11px; color:#aaa; margin-right:4px; }
-  select, input { background:#16213e; color:#fff; border:1px solid #333; border-radius:4px; padding:3px 6px; }
-  .panel { background:#1a1a2e; border-radius:8px; margin:8px 14px; padding:8px 12px; }
-  .species { display:flex; gap:8px; flex-wrap:wrap; }
-  .canvaswrap { flex:1 1 420px; min-height:380px; position:relative; }
-  canvas { width:100%; height:380px; background:#000; border-radius:6px; }
-  .chip { color:#000; border-radius:6px; padding:4px 8px; margin:2px; font-family:Consolas,monospace;
-          font-size:11px; font-weight:bold; display:inline-block; }
-  table { border-collapse:collapse; font-size:11px; width:100%; }
-  th,td { border:1px solid #222; padding:3px 6px; text-align:center; }
-  th { background:#16213e; }
-  .muted { color:#888; font-size:11px; }
-  h4 { margin:4px 0; color:#e0e0ff; }
+  :root{--bg:#10131c;--panel:#181c28;--ink:#e8ebf2;--muted:#9aa3b8;--line:#2a3142;--accent:#3b6fb0;}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,Helvetica,sans-serif;}
+  header{display:flex;align-items:center;gap:10px;padding:10px 14px;background:#161b27;
+         border-bottom:1px solid var(--line);}
+  header a{color:var(--muted);text-decoration:none;font-size:20px;}
+  .title{font-weight:bold;font-size:15px;}
+  .badge{margin-left:auto;background:#3a2f55;color:#cbb8ee;font-size:11px;padding:2px 8px;border-radius:10px;}
+  .controls{padding:10px 14px;display:flex;flex-direction:column;gap:10px;}
+  .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .grow{flex:1 1 auto;}
+  label{font-size:12px;color:var(--muted);}
+  select,input[type=range]{font-size:16px;background:#0f1422;color:var(--ink);
+        border:1px solid var(--line);border-radius:8px;padding:8px;width:100%;}
+  .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
+  .seg button{flex:1;padding:10px 6px;background:#0f1422;color:var(--muted);border:none;
+              font-size:13px;cursor:pointer;}
+  .seg button.on{background:var(--accent);color:#fff;font-weight:bold;}
+  .tabs{display:flex;gap:8px;}
+  .tabs button{flex:1;padding:12px;border-radius:8px;border:1px solid var(--line);background:#0f1422;
+               color:var(--ink);font-size:15px;font-weight:bold;cursor:pointer;}
+  .tabs button.on{background:var(--accent);color:#fff;}
+  .tabs button:disabled{opacity:.35;}
+  .navbtn{min-width:54px;padding:12px;border-radius:8px;border:1px solid var(--line);
+          background:#0f1422;color:var(--ink);font-size:18px;cursor:pointer;}
+  #glwrap{position:relative;margin:0 14px;}
+  canvas{width:100%;height:56vh;min-height:320px;background:#000;border-radius:10px;display:block;}
+  #readout{margin:8px 14px;padding:10px 12px;background:var(--panel);border-radius:8px;font-size:14px;
+           min-height:20px;}
+  #readout .region{font-size:16px;font-weight:bold;color:#cfe3ff;}
+  details{margin:10px 14px;background:var(--panel);border-radius:8px;padding:6px 12px;}
+  summary{cursor:pointer;font-weight:bold;padding:6px 0;}
+  .chip{color:#000;border-radius:6px;padding:3px 7px;margin:2px;font-family:Consolas,monospace;
+        font-size:11px;font-weight:bold;display:inline-block;}
+  table{border-collapse:collapse;font-size:12px;width:100%;overflow-x:auto;display:block;}
+  th,td{border:1px solid var(--line);padding:4px 6px;text-align:center;white-space:nowrap;}
+  th{background:#0f1422;}
+  .muted{color:var(--muted);font-size:12px;}
+  .hide{display:none!important;}
 </style>
 </head>
 <body>
 <header>
-  <span class="brand">🧠 EmoC Results</span><span class="badge">Failsafe (read-only)</span>
-  <span><label>Modality</label><select id="modality"></select></span>
-  <span><label>ROI</label><select id="roi"></select></span>
-  <span><label>Model</label><select id="model"></select></span>
-  <span><label>z-threshold</label><input id="zt" type="range" min="0" max="8" step="0.1" value="3.1">
-        <span id="ztval">3.1</span></span>
-  <span><label>3D</label><input id="render3d" type="checkbox"></span>
-  <span><label>Dog</label><input id="showD" type="checkbox" checked>
-        <label>Human</label><input id="showH" type="checkbox" checked></span>
-  <span class="muted" id="genstamp"></span>
+  <a href="index.html" title="Back">&#8592;</a>
+  <span class="title">EmoC results</span>
+  <span class="badge">offline viewer</span>
 </header>
 
-<div class="panel" id="matrixpanel">
+<div class="controls">
+  <div class="tabs" id="sptabs">
+    <button id="tabD" data-sp="D">Dog</button>
+    <button id="tabH" data-sp="H">Human</button>
+  </div>
+  <div class="row">
+    <div class="grow"><label>Model</label><select id="model"></select></div>
+  </div>
+  <div class="seg" id="viewseg">
+    <button data-view="render" class="on">3D</button>
+    <button data-view="axial">Axial</button>
+    <button data-view="coronal">Coronal</button>
+    <button data-view="sagittal">Sagittal</button>
+  </div>
+  <div class="row" id="slicenav">
+    <button class="navbtn" id="prev">&#9664;</button>
+    <span class="grow muted" id="sliceinfo" style="text-align:center;"></span>
+    <button class="navbtn" id="next">&#9654;</button>
+  </div>
+  <div class="row">
+    <label>z-threshold</label><span class="muted" id="ztval">3.1</span>
+    <input class="grow" id="zt" type="range" min="0" max="8" step="0.1" value="3.1">
+  </div>
+</div>
+
+<div id="glwrap"><canvas id="gl"></canvas></div>
+<div id="readout"><span class="muted">Switch to a slice view and tap the brain to identify a region.</span></div>
+
+<details id="matrixpanel">
+  <summary>RSA model matrix</summary>
   <div id="chips"></div>
-  <div id="matrix" style="height:320px;"></div>
-</div>
+  <div id="matrix" style="height:300px;"></div>
+</details>
 
-<div class="panel">
-  <div class="species">
-    <div class="canvaswrap" id="wrapD"><h4>Dog</h4><canvas id="glD"></canvas>
-      <div class="muted" id="statusD"></div></div>
-    <div class="canvaswrap" id="wrapH"><h4>Human</h4><canvas id="glH"></canvas>
-      <div class="muted" id="statusH"></div></div>
-  </div>
-</div>
-
-<div class="panel">
-  <div style="display:flex;gap:10px;align-items:center;">
-    <h4>Cluster tables</h4>
-    <span><label>Table @ z</label><select id="tablezt"></select></span>
-  </div>
-  <div class="species">
-    <div style="flex:1 1 320px"><b>Dog</b><div id="tableD"></div></div>
-    <div style="flex:1 1 320px"><b>Human</b><div id="tableH"></div></div>
-  </div>
-</div>
+<details>
+  <summary>Cluster table</summary>
+  <div class="row"><label>Table @ z</label><select id="tablezt" style="width:auto;"></select></div>
+  <div id="table"></div>
+</details>
 
 <script type="module" src="app.js"></script>
 </body>
@@ -337,122 +410,140 @@ _VIEWER_HTML = """<!doctype html>
 
 _APP_JS = """import {Niivue} from "https://unpkg.com/@niivue/niivue@0.44.0/dist/index.js";
 
-let manifest = null;
-const nv = {D: null, H: null};
-const SP = ["D", "H"];
+let manifest=null, nv=null;
+const dictCache={};                       // species -> {number: region}
+const state={specie:"D", view:"render", idx:0};   // idx = result index
+let labelVolIdx=-1;                       // index of the label volume (or -1)
 
-function el(id){ return document.getElementById(id); }
+const el=id=>document.getElementById(id);
+const results=()=>manifest.results;
 
 async function boot(){
-  manifest = await (await fetch("manifest.json")).json();
-  el("genstamp").textContent = "generated " + (manifest.generated||"").slice(0,19);
-  for (const t of manifest.thresholds){
-    const o=document.createElement("option"); o.value=t; o.textContent=t; el("tablezt").appendChild(o);
-  }
-  el("tablezt").value = 3.1;
-  for (const s of SP){
-    nv[s] = new Niivue({backColor:[0,0,0,1], show3Dcrosshair:true});
-    nv[s].attachToCanvas(el("gl"+s));
-  }
-  populateModality();
-  ["modality","roi","model","tablezt"].forEach(id=>el(id).addEventListener("change", onSelectChange));
+  manifest=await (await fetch("manifest.json")).json();
+  nv=new Niivue({backColor:[0,0,0,1], show3Dcrosshair:true, crosshairColor:[0,1,1,1], dragAndDropEnabled:false});
+  nv.attachToCanvas(el("gl"));
+  nv.onLocationChange=onLoc;
+
+  // thresholds
+  for(const t of manifest.thresholds){ const o=document.createElement("option"); o.value=t; o.textContent="z = "+t; el("tablezt").appendChild(o); }
+  el("tablezt").value=3.1;
+
+  // model list (value = result index; prefix modality/roi only if ambiguous)
+  const multiMod=new Set(results().map(r=>r.modality)).size>1;
+  const multiRoi=new Set(results().map(r=>r.roi)).size>1;
+  el("model").innerHTML="";
+  results().forEach((r,i)=>{
+    const o=document.createElement("option"); o.value=i;
+    o.textContent=r.model+((multiMod||multiRoi)?` (${r.modality}/${r.roi})`:"");
+    el("model").appendChild(o);
+  });
+
+  // events
+  el("model").addEventListener("change", e=>{ state.idx=+e.target.value; pickSpecies(); load(); });
+  el("sptabs").addEventListener("click", e=>{ const sp=e.target.dataset.sp; if(sp){ state.specie=sp; load(); }});
+  el("viewseg").addEventListener("click", e=>{ const v=e.target.dataset.view; if(v){ state.view=v; applyView(); }});
+  el("prev").addEventListener("click", ()=>step(-1));
+  el("next").addEventListener("click", ()=>step(1));
   el("zt").addEventListener("input", ()=>{ el("ztval").textContent=el("zt").value; applyThreshold(); });
-  el("render3d").addEventListener("change", applyViewMode);
-  el("showD").addEventListener("change", ()=>toggleSpecies("D"));
-  el("showH").addEventListener("change", ()=>toggleSpecies("H"));
+  el("tablezt").addEventListener("change", renderTable);
+
+  pickSpecies();
+  await load();
 }
 
-function uniq(a){ return [...new Set(a)]; }
-function results(){ return manifest.results; }
+function entry(){ return results()[state.idx]; }
 
-function populateModality(){
-  const mods = uniq(results().map(r=>r.modality));
-  fill("modality", mods); populateRoi();
-}
-function populateRoi(){
-  const m=el("modality").value;
-  fill("roi", uniq(results().filter(r=>r.modality===m).map(r=>r.roi))); populateModel();
-}
-function populateModel(){
-  const m=el("modality").value, roi=el("roi").value;
-  fill("model", uniq(results().filter(r=>r.modality===m && r.roi===roi).map(r=>r.model)));
-  loadCurrent();
-}
-function fill(id, vals){
-  const s=el(id); s.innerHTML="";
-  vals.forEach(v=>{ const o=document.createElement("option"); o.value=v; o.textContent=v; s.appendChild(o); });
-}
-function onSelectChange(e){
-  if(e.target.id==="modality") populateRoi();
-  else if(e.target.id==="roi") populateModel();
-  else if(e.target.id==="model") loadCurrent();
-  else if(e.target.id==="tablezt") renderTables();
+function pickSpecies(){
+  const e=entry();
+  for(const sp of ["D","H"]){
+    const has=!!(e && e.species[sp]);
+    el("tab"+sp).disabled=!has;
+  }
+  if(!entry().species[state.specie]){ state.specie = entry().species.D ? "D" : (entry().species.H ? "H" : state.specie); }
+  for(const sp of ["D","H"]) el("tab"+sp).classList.toggle("on", sp===state.specie);
 }
 
-function currentEntry(){
-  const m=el("modality").value, roi=el("roi").value, model=el("model").value;
-  return results().find(r=>r.modality===m && r.roi===roi && r.model===model);
+async function loadDict(sp){
+  if(dictCache[sp]!==undefined) return dictCache[sp];
+  const rel=(manifest.label_dict||{})[sp];
+  dictCache[sp]= rel ? await (await fetch(rel)).json() : null;
+  return dictCache[sp];
 }
 
-async function loadCurrent(){
-  const entry = currentEntry();
-  if(!entry) return;
-  renderMatrix(entry);
-  for(const s of SP){ await loadSpecies(s, entry); }
-  applyThreshold(); applyViewMode(); renderTables();
-}
-
-async function loadSpecies(s, entry){
-  const info = entry.species[s];
-  const status = el("status"+s);
-  if(!info || !manifest.atlases[s]){ status.textContent="no result"; await nv[s].loadVolumes([]); return; }
-  const zt = parseFloat(el("zt").value);
-  await nv[s].loadVolumes([
-    {url: manifest.atlases[s], colormap:"gray"},
-    {url: info.overlay, colormap:"warm", cal_min: zt, cal_max: 6, opacity: 0.8}
-  ]);
-  status.textContent = info.overlay_kind + " z-map";
-}
-
-function applyThreshold(){
+async function load(){
+  const e=entry(); if(!e) return;
+  for(const sp of ["D","H"]) el("tab"+sp).classList.toggle("on", sp===state.specie);
+  renderMatrix(e); renderTable();
+  const info=e.species[state.specie];
+  const bg=manifest.atlases[state.specie];
+  if(!info || !bg){ await nv.loadVolumes([]); el("readout").innerHTML='<span class="muted">No result for this species.</span>'; return; }
   const zt=parseFloat(el("zt").value);
-  for(const s of SP){ const v=nv[s]; if(v && v.volumes.length>1){ v.volumes[1].cal_min=zt; v.updateGLVolume(); } }
+  const vols=[{url:bg, colormap:"gray"},
+              {url:info.overlay, colormap:"warm", cal_min:zt, cal_max:6, opacity:0.85}];
+  const labAtlas=(manifest.label_atlas||{})[state.specie];
+  labelVolIdx = labAtlas ? 2 : -1;
+  if(labAtlas) vols.push({url:labAtlas, colormap:"gray", opacity:0});  // hidden; sampled for region names
+  await nv.loadVolumes(vols);
+  await loadDict(state.specie);
+  applyView(); applyThreshold();
 }
-function applyViewMode(){
-  const t = el("render3d").checked;
-  for(const s of SP){ const v=nv[s]; if(v){ v.setSliceType(t?v.sliceTypeRender:v.sliceTypeMultiplanar); } }
-}
-function toggleSpecies(s){ el("wrap"+s).style.display = el("show"+s).checked ? "" : "none"; }
 
-function renderMatrix(entry){
-  const panel=el("matrixpanel");
-  if(!entry.matrix){ panel.style.display="none"; return; }
-  panel.style.display="";
-  fetch(entry.matrix).then(r=>r.json()).then(mx=>{
+function applyThreshold(){ if(nv && nv.volumes.length>1){ nv.volumes[1].cal_min=parseFloat(el("zt").value); nv.updateGLVolume(); } }
+
+function applyView(){
+  if(!nv) return;
+  const m={render:nv.sliceTypeRender, axial:nv.sliceTypeAxial, coronal:nv.sliceTypeCoronal, sagittal:nv.sliceTypeSagittal};
+  nv.setSliceType(m[state.view]);
+  [...el("viewseg").children].forEach(b=>b.classList.toggle("on", b.dataset.view===state.view));
+  el("slicenav").classList.toggle("hide", state.view==="render");
+  el("sliceinfo").textContent = state.view==="render" ? "" : "step through "+state.view+" slices";
+}
+
+function step(d){
+  if(!nv || state.view==="render") return;
+  const ax={sagittal:[d,0,0], coronal:[0,d,0], axial:[0,0,d]}[state.view];
+  nv.moveCrosshairInVox(ax[0], ax[1], ax[2]);
+}
+
+function onLoc(data){
+  if(!data || !data.values) return;
+  const ov = data.values[1] ? data.values[1].value : null;
+  let region="—";
+  if(labelVolIdx>=0 && data.values[labelVolIdx]){
+    const num=Math.round(data.values[labelVolIdx].value);
+    const dict=dictCache[state.specie];
+    region = (dict && dict[num]) ? dict[num] : (num===0?"outside atlas":"label "+num);
+  }
+  const mm=data.mm? `(${data.mm.map(v=>v.toFixed(0)).join(", ")}) mm` : "";
+  const ztxt = (ov!=null && isFinite(ov)) ? ` &middot; z = ${ov.toFixed(2)}` : "";
+  el("readout").innerHTML = `<span class="region">${region}</span> ${ztxt}<br><span class="muted">${mm}</span>`;
+}
+
+function renderMatrix(e){
+  const p=el("matrixpanel");
+  if(!e.matrix){ p.classList.add("hide"); return; }
+  p.classList.remove("hide");
+  fetch(e.matrix).then(r=>r.json()).then(mx=>{
     Plotly.newPlot("matrix", [{z:mx.z, x:mx.columns, y:mx.index, type:"heatmap", colorscale:"Viridis"}],
-      {margin:{l:60,r:10,t:10,b:60}, paper_bgcolor:"#1a1a2e", plot_bgcolor:"#1a1a2e",
-       font:{color:"#fff"}, yaxis:{autorange:"reversed"}}, {displayModeBar:false});
+      {margin:{l:50,r:6,t:6,b:50}, paper_bgcolor:"#181c28", plot_bgcolor:"#181c28",
+       font:{color:"#e8ebf2",size:10}, yaxis:{autorange:"reversed"}},
+      {displayModeBar:false, responsive:true});
     const chips=el("chips"); chips.innerHTML="";
-    mx.index.forEach(c=>{
-      const lab=c.slice(-1), col=(manifest.label_def[lab]||{}).color||"#888";
-      const span=document.createElement("span"); span.className="chip";
-      span.style.background=col; span.textContent=c; chips.appendChild(span);
-    });
+    mx.index.forEach(c=>{ const col=(manifest.label_def[c.slice(-1)]||{}).color||"#888";
+      const s=document.createElement("span"); s.className="chip"; s.style.background=col; s.textContent=c; chips.appendChild(s); });
   });
 }
 
-function renderTables(){
-  const entry=currentEntry(); const zt=el("tablezt").value;
-  for(const s of SP){
-    const div=el("table"+s); const info=entry && entry.species[s];
-    const slot = info && info.corrected && info.corrected[zt];
-    if(!slot || !slot.table){ div.innerHTML='<div class="muted">no table at z='+zt+' — schedule a job for this threshold.</div>'; continue; }
-    fetch(slot.table).then(r=>r.json()).then(t=>{
-      let h="<table><thead><tr>"+t.columns.map(c=>"<th>"+c+"</th>").join("")+"</tr></thead><tbody>";
-      h+=t.data.map(row=>"<tr>"+t.columns.map(c=>"<td>"+(row[c]??"")+"</td>").join("")+"</tr>").join("");
-      div.innerHTML=h+"</tbody></table>";
-    });
-  }
+function renderTable(){
+  const e=entry(), zt=el("tablezt").value, div=el("table");
+  const info=e && e.species[state.specie];
+  const slot=info && info.corrected && info.corrected[zt];
+  if(!slot || !slot.table){ div.innerHTML='<div class="muted">No table at z='+zt+' for this species &mdash; schedule a job for this threshold.</div>'; return; }
+  fetch(slot.table).then(r=>r.json()).then(t=>{
+    let h="<table><thead><tr>"+t.columns.map(c=>"<th>"+c+"</th>").join("")+"</tr></thead><tbody>";
+    h+=t.data.map(row=>"<tr>"+t.columns.map(c=>"<td>"+(row[c]??"")+"</td>").join("")+"</tr>").join("");
+    div.innerHTML=h+"</tbody></table>";
+  });
 }
 
 boot();
