@@ -4940,27 +4940,34 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                                          label_nii_data=label_nii_data)
     
     
-    clusters_to_excel(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
+    clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
     print(f"Files written in: {out_path}")
-    # create copy of res_image and out_path
-    # make sure the directory for out_path exists
-    os.makedirs(os.path.dirname(out_path_copy), exist_ok=True)
-    
-    # Copy the result image and Excel table to new filenames
-    shutil.copyfile(res_image, res_image_copy)
-    shutil.copyfile(out_path, out_path_copy)
-    print(f"Copied result image to: {res_image_copy}")
-    print(f"Copied Excel table to: {out_path_copy}")
 
-    # Also mirror the UNTHRESHOLDED z-map (the corrected map's name minus
-    # '_corrected') so the dashboard viewer's threshold slider can explore the
-    # data freely; clusters/tables remain threshold-specific (this corrected
-    # copy + xlsx). See viz/viewer_app.py.
-    res_image_unthr = res_image.replace('_corrected', '')
-    res_unthr_copy = res_image_copy.replace('_corrected', '')
-    if os.path.exists(res_image_unthr):
-        shutil.copyfile(res_image_unthr, res_unthr_copy)
-        print(f"Copied unthresholded z-map to: {res_unthr_copy}")
-    else:
-        print(f"Unthresholded z-map not found, skipped: {res_image_unthr}")
+    # Mirror the result image + table to the Google-Drive results tree. This is a
+    # convenience for the Windows dashboard and must never fail the step: the Drive
+    # root (res_folder) is a hardcoded G:\ path that does not exist on the Linux
+    # remote, so guard the whole block and continue on any error.
+    try:
+        os.makedirs(os.path.dirname(out_path_copy), exist_ok=True)
+        # Copy the result image and table to the short Drive filenames.
+        shutil.copyfile(res_image, res_image_copy)
+        shutil.copyfile(out_path, out_path_copy)
+        print(f"Copied result image to: {res_image_copy}")
+        print(f"Copied table to: {out_path_copy}")
+
+        # Also mirror the UNTHRESHOLDED z-map (the corrected map's name minus
+        # '_corrected') so the dashboard viewer's threshold slider can explore the
+        # data freely; clusters/tables remain threshold-specific (this corrected
+        # copy + csv). See viz/viewer_app.py.
+        res_image_unthr = res_image.replace('_corrected', '')
+        res_unthr_copy = res_image_copy.replace('_corrected', '')
+        if os.path.exists(res_image_unthr):
+            shutil.copyfile(res_image_unthr, res_unthr_copy)
+            print(f"Copied unthresholded z-map to: {res_unthr_copy}")
+        else:
+            print(f"Unthresholded z-map not found, skipped: {res_image_unthr}")
+    except Exception as e:
+        print(f"WARNING: skipped Google-Drive mirror copy "
+              f"({e.__class__.__name__}: {e}). Primary outputs are in: "
+              f"{os.path.dirname(out_path)}")
     return True

@@ -7,19 +7,19 @@ short ``{specie}_{rsa_model}`` convention used by ``rsa_utils.create_tables``.
 
 The headline artifact is the **unthresholded** z-map (``*_z.nii.gz``, i.e. the
 corrected map's name minus ``_corrected``) so the dashboard viewer's threshold
-slider can explore the data freely. The corrected z-map and the Excel table are
-also mirrored when present.
+slider can explore the data freely. The corrected z-map and the CSV cluster table
+are also mirrored when present.
 
 Naming convention (must stay in sync with rsa_utils.create_tables)
 ------------------------------------------------------------------
 Source (per model):
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z.nii.gz   (unthresholded)
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz
-    {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}.xlsx
+    {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.csv
 Destination (mask_type present); thresholded artifacts record zt{z_threshold}:
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_z.nii.gz
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz
-    {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_zt{z_threshold}.xlsx
+    {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_zt{z_threshold}.csv
 Destination (no mask_type):
     {drive_root}/{dataset}/current-results/RSA/{specie}_{rsa_model}_z.nii.gz   (etc.)
 
@@ -68,14 +68,14 @@ def drive_dest_name(specie, rsa_model, kind, z_threshold=3.1):
     (it is threshold-independent and feeds the viewer's threshold slider).
 
     kind: 'z' (unthresholded z-map), 'z_corrected' (cluster-corrected z-map),
-          or 'xlsx' (table).
+          or 'table' (CSV cluster table).
     """
     if kind == 'z':
         return f"{specie}_{rsa_model}_z.nii.gz"
     if kind == 'z_corrected':
         return f"{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz"
-    if kind == 'xlsx':
-        return f"{specie}_{rsa_model}_zt{z_threshold}.xlsx"
+    if kind == 'table':
+        return f"{specie}_{rsa_model}_zt{z_threshold}.csv"
     raise ValueError(f"unknown artifact kind: {kind!r}")
 
 
@@ -115,7 +115,7 @@ def iter_model_results(rsa_root):
 
 
 def sync(datafolder, dataset, model, drive_root, models=None, z_threshold=3.1,
-         include_corrected=True, include_xlsx=True, force=False, dry_run=False):
+         include_corrected=True, include_table=True, force=False, dry_run=False):
     rsa_root = os.path.join(datafolder, dataset, "results", "RSA", model)
     print(f"Scanning: {rsa_root}")
     print(f"Drive   : {os.path.join(drive_root, dataset, 'current-results', 'RSA')}\n")
@@ -136,9 +136,9 @@ def sync(datafolder, dataset, model, drive_root, models=None, z_threshold=3.1,
             (f"{stem}_z_corrected.nii.gz",
              drive_dest_name(specie, rsa_model, 'z_corrected', z_threshold),
              'z_corrected', include_corrected),
-            (f"{stem}.xlsx",
-             drive_dest_name(specie, rsa_model, 'xlsx', z_threshold), 'xlsx',
-             include_xlsx),
+            (f"{stem}_zt{z_threshold}.csv",
+             drive_dest_name(specie, rsa_model, 'table', z_threshold), 'table',
+             include_table),
         ]
 
         dest_dir = drive_dest_dir(drive_root, dataset, specie, mask_type)
@@ -193,7 +193,8 @@ def main(argv=None):
                         "filenames as zt{z_threshold} (default 3.1)")
     p.add_argument("--no-corrected", action="store_true",
                    help="Skip the cluster-corrected z-map")
-    p.add_argument("--no-xlsx", action="store_true", help="Skip the Excel table")
+    p.add_argument("--no-table", "--no-xlsx", dest="no_table", action="store_true",
+                   help="Skip the CSV cluster table")
     p.add_argument("--force", action="store_true",
                    help="Copy even if destination is up to date")
     p.add_argument("--dry-run", action="store_true",
@@ -208,7 +209,7 @@ def main(argv=None):
     sync(args.datafolder, args.dataset, args.model, args.drive_root,
          models=args.models, z_threshold=args.z_threshold,
          include_corrected=not args.no_corrected,
-         include_xlsx=not args.no_xlsx, force=args.force, dry_run=args.dry_run)
+         include_table=not args.no_table, force=args.force, dry_run=args.dry_run)
     return 0
 
 
