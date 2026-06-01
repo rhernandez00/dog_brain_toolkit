@@ -62,22 +62,22 @@ _INDEX_HTML = f"""<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EmoC Dashboard</title>
 <style>
-  html, body {{ margin:0; height:100%; background:#0f0f23; color:#e0e0ff;
+  html, body {{ margin:0; height:100%; background:#ffffff; color:#222222;
                 font-family:'Segoe UI', Arial, sans-serif; }}
   header {{ display:flex; align-items:center; gap:4px; padding:6px 14px;
-            background:#16213e; border-bottom:1px solid #2a2a44; }}
-  .brand {{ font-weight:bold; letter-spacing:1px; margin-right:18px; color:#e0e0ff; }}
-  a.tab {{ color:#b8c4e0; text-decoration:none; padding:8px 16px; border-radius:6px 6px 0 0;
+            background:#f3f5f9; border-bottom:1px solid #d5dbe5; }}
+  .brand {{ font-weight:bold; letter-spacing:1px; margin-right:18px; color:#222222; }}
+  a.tab {{ color:#445; text-decoration:none; padding:8px 16px; border-radius:6px 6px 0 0;
            font-size:14px; }}
-  a.tab:hover {{ background:#1f2b50; color:#fff; }}
-  a.tab.active {{ background:#0f0f23; color:#fff; border:1px solid #2a2a44; border-bottom:none;
+  a.tab:hover {{ background:#e7ecf5; color:#222; }}
+  a.tab.active {{ background:#ffffff; color:#4472C4; border:1px solid #d5dbe5; border-bottom:none;
                   font-weight:bold; }}
-  iframe {{ border:none; width:100%; height:calc(100vh - 46px); display:block; background:#0f0f23; }}
+  iframe {{ border:none; width:100%; height:calc(100vh - 46px); display:block; background:#ffffff; }}
 </style>
 </head>
 <body>
 <header>
-  <span class="brand">🧠 EmoC Dashboard</span>
+  <span class="brand">EmoC Dashboard</span>
   {_NAV}
 </header>
 <iframe id="frame" title="tab"></iframe>

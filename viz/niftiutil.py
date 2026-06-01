@@ -25,13 +25,12 @@ ATLAS_PATHS = {
     },
 }
 
-OVERLAY_COLORSCALE = "Hot"
-ATLAS_COLORSCALE = "Gray"
-PANEL_BG = "#1a1a2e"
-
-# Above this many voxels we switch 3D from go.Volume to a Scatter3d point
-# cloud of supra-threshold voxels (keeps the conference demo responsive).
-VOLUME_VOXEL_CAP = 300_000
+# Warm sequential scale for stat overlays, readable on a white background.
+OVERLAY_COLORSCALE = "YlOrRd"
+ATLAS_COLORSCALE = "Greys"
+PANEL_BG = "#ffffff"
+INK = "#222222"
+SURFACE_COLOR = "#b9c4da"
 
 
 # --- IO / geometry --------------------------------------------------------
@@ -81,11 +80,11 @@ def load_atlas(specie):
 def empty_fig(title="", height=360):
     fig = go.Figure()
     fig.update_layout(
-        title=dict(text=title, font=dict(size=13)),
+        title=dict(text=title, font=dict(size=13, color=INK)),
         margin=dict(l=5, r=5, t=30, b=5),
         xaxis=dict(visible=False), yaxis=dict(visible=False),
-        plot_bgcolor="black", paper_bgcolor=PANEL_BG, font_color="white", height=height,
-        annotations=[dict(text="No data", showarrow=False, font=dict(size=15, color="#555"),
+        plot_bgcolor=PANEL_BG, paper_bgcolor=PANEL_BG, font_color=INK, height=height,
+        annotations=[dict(text="No data", showarrow=False, font=dict(size=15, color="#aaa"),
                           xref="paper", yref="paper", x=0.5, y=0.5)],
     )
     return fig
@@ -151,7 +150,7 @@ def _brain_surface_trace(atlas_lowres, iso=0.12, max_dim=64):
     return go.Isosurface(
         x=X.flatten(), y=Y.flatten(), z=Z.flatten(), value=a.flatten(),
         isomin=iso, isomax=iso, surface_count=1, showscale=False,
-        colorscale=[[0, "#9aa6c8"], [1, "#9aa6c8"]], opacity=0.12,
+        colorscale=[[0, SURFACE_COLOR], [1, SURFACE_COLOR]], opacity=0.18,
         caps=dict(x_show=False, y_show=False, z_show=False), hoverinfo="skip")
 
 
@@ -159,16 +158,27 @@ def make_volume_fig(overlay_lowres, z_threshold, vmin, vmax, title="", height=42
                     atlas_lowres=None):
     """3D rendering of the supra-threshold z-map over a faint brain surface.
 
-    Uses Plotly ``go.Volume`` when the grid is small enough; otherwise falls
-    back to a Scatter3d point cloud of supra-threshold voxels. When
-    ``atlas_lowres`` is supplied a translucent brain isosurface is drawn for
-    anatomical context.
+    The overlay is drawn as a Scatter3d point cloud of supra-threshold voxels:
+    statistical maps are sparse (tens of voxels), for which ``go.Volume`` renders
+    essentially nothing, so markers are used instead so the result is actually
+    visible. ``atlas_lowres`` (on the overlay grid) adds a translucent brain
+    surface for anatomical context.
     """
     if overlay_lowres is None:
         return empty_fig(title, height)
     data = overlay_lowres
     supra = np.abs(data) >= float(z_threshold)
     n_supra = int(supra.sum())
+
+    def _layout(fig, suffix):
+        fig.update_layout(
+            title=dict(text=f"{title} {suffix}", font=dict(size=12, color=INK)),
+            margin=dict(l=0, r=0, t=26, b=0), height=height,
+            paper_bgcolor=PANEL_BG, font_color=INK,
+            scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
+                       zaxis=dict(visible=False), bgcolor=PANEL_BG, aspectmode="data"))
+        return fig
+
     fig = go.Figure()
     surf = _brain_surface_trace(atlas_lowres)
     if surf is not None:
@@ -176,40 +186,14 @@ def make_volume_fig(overlay_lowres, z_threshold, vmin, vmax, title="", height=42
     if n_supra == 0:
         if surf is None:
             return empty_fig(title, height)
-        fig.update_layout(
-            title=dict(text=f"{title} (0 supra-threshold vox)", font=dict(size=12)),
-            margin=dict(l=0, r=0, t=26, b=0), height=height,
-            paper_bgcolor=PANEL_BG, font_color="white",
-            scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
-                       zaxis=dict(visible=False), bgcolor="black", aspectmode="data"))
-        return fig
+        return _layout(fig, "(0 supra-threshold voxels)")
 
-    if data.size <= VOLUME_VOXEL_CAP:
-        X, Y, Z = np.mgrid[0:data.shape[0], 0:data.shape[1], 0:data.shape[2]]
-        vals = np.where(supra, data, np.nan)
-        fig.add_trace(go.Volume(
-            x=X.flatten(), y=Y.flatten(), z=Z.flatten(), value=vals.flatten(),
-            isomin=float(vmin) if vmin is not None else None,
-            isomax=float(vmax) if vmax is not None else None,
-            opacity=0.15, surface_count=15, colorscale=OVERLAY_COLORSCALE,
-            caps=dict(x_show=False, y_show=False, z_show=False),
-            colorbar=dict(title="z", len=0.6, thickness=10)))
-        mode = "go.Volume"
-    else:
-        xs, ys, zs = np.where(supra)
-        cvals = data[xs, ys, zs]
-        fig.add_trace(go.Scatter3d(
-            x=xs, y=ys, z=zs, mode="markers",
-            marker=dict(size=2.5, color=cvals, colorscale=OVERLAY_COLORSCALE,
-                        cmin=vmin, cmax=vmax, opacity=0.6,
-                        colorbar=dict(title="z", len=0.6, thickness=10)),
-            hoverinfo="skip"))
-        mode = "point cloud"
-    fig.update_layout(
-        title=dict(text=f"{title} ({mode}, {n_supra} vox)", font=dict(size=12)),
-        margin=dict(l=0, r=0, t=26, b=0), height=height,
-        paper_bgcolor=PANEL_BG, font_color="white",
-        scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False),
-                   zaxis=dict(visible=False), bgcolor="black",
-                   aspectmode="data"))
-    return fig
+    xs, ys, zs = np.where(supra)
+    cvals = data[xs, ys, zs]
+    fig.add_trace(go.Scatter3d(
+        x=xs, y=ys, z=zs, mode="markers",
+        marker=dict(size=4, color=cvals, colorscale=OVERLAY_COLORSCALE,
+                    cmin=vmin, cmax=vmax, opacity=0.95,
+                    colorbar=dict(title="z", len=0.6, thickness=12)),
+        hovertemplate="z=%{marker.color:.2f}<extra></extra>"))
+    return _layout(fig, f"({n_supra} voxels)")

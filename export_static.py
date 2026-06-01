@@ -237,7 +237,7 @@ _LANDING_HTML = """<!doctype html>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Networks of the social brain — comparative neuroimaging</title>
 <style>
-  :root{--bg:#10131c;--panel:#181c28;--ink:#e8ebf2;--muted:#9aa3b8;--line:#2a3142;--accent:#3b6fb0;}
+  :root{--bg:#ffffff;--panel:#f3f5f9;--ink:#222222;--muted:#667085;--line:#d5dbe5;--accent:#4472C4;}
   *{box-sizing:border-box;}
   html,body{margin:0;background:var(--bg);color:var(--ink);
             font-family:Georgia,'Times New Roman',serif;line-height:1.5;}
@@ -251,11 +251,11 @@ _LANDING_HTML = """<!doctype html>
   .actions{display:flex;gap:14px;flex-wrap:wrap;margin:26px 0 6px;}
   a.btn{flex:1 1 240px;text-align:center;padding:16px 18px;border-radius:8px;text-decoration:none;
         font-family:Arial,Helvetica,sans-serif;font-weight:bold;font-size:16px;border:1px solid var(--line);}
-  .live{background:var(--accent);color:#fff;}
-  .live.off{background:#222838;color:#6b7488;border-color:#222838;pointer-events:none;}
-  .fail{background:#2a3142;color:var(--ink);}
-  a.btn:hover{filter:brightness(1.12);}
-  .sub{display:block;font-weight:normal;font-size:12px;opacity:.85;margin-top:4px;}
+  .live{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .live.off{background:#eef1f6;color:#9aa3b8;pointer-events:none;}
+  .fail{background:#ED7D31;color:#fff;border-color:#ED7D31;}
+  a.btn:hover{filter:brightness(1.06);}
+  .sub{display:block;font-weight:normal;font-size:12px;opacity:.9;margin-top:4px;}
   .foot{color:var(--muted);font-size:12px;font-family:Arial,Helvetica,sans-serif;margin-top:22px;}
 </style>
 </head>
@@ -313,45 +313,50 @@ _VIEWER_HTML = """<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>EmoC Results</title>
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
 <style>
-  :root{--bg:#10131c;--panel:#181c28;--ink:#e8ebf2;--muted:#9aa3b8;--line:#2a3142;--accent:#3b6fb0;}
+  :root{--bg:#ffffff;--panel:#f3f5f9;--ink:#222222;--muted:#667085;--line:#d5dbe5;--accent:#4472C4;}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   body{margin:0;background:var(--bg);color:var(--ink);font-family:Arial,Helvetica,sans-serif;}
-  header{display:flex;align-items:center;gap:10px;padding:10px 14px;background:#161b27;
+  header{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--panel);
          border-bottom:1px solid var(--line);}
-  header a{color:var(--muted);text-decoration:none;font-size:20px;}
+  header a{color:var(--accent);text-decoration:none;font-size:22px;}
   .title{font-weight:bold;font-size:15px;}
-  .badge{margin-left:auto;background:#3a2f55;color:#cbb8ee;font-size:11px;padding:2px 8px;border-radius:10px;}
+  .badge{margin-left:auto;background:#fdeede;color:#b5651d;font-size:11px;padding:2px 8px;border-radius:10px;}
   .controls{padding:10px 14px;display:flex;flex-direction:column;gap:10px;}
   .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
   .grow{flex:1 1 auto;}
   label{font-size:12px;color:var(--muted);}
-  select,input[type=range]{font-size:16px;background:#0f1422;color:var(--ink);
+  select,input[type=range]{font-size:16px;background:#fff;color:var(--ink);
         border:1px solid var(--line);border-radius:8px;padding:8px;width:100%;}
   .seg{display:flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;}
-  .seg button{flex:1;padding:10px 6px;background:#0f1422;color:var(--muted);border:none;
+  .seg button{flex:1;padding:10px 6px;background:#fff;color:var(--muted);border:none;
               font-size:13px;cursor:pointer;}
   .seg button.on{background:var(--accent);color:#fff;font-weight:bold;}
   .tabs{display:flex;gap:8px;}
-  .tabs button{flex:1;padding:12px;border-radius:8px;border:1px solid var(--line);background:#0f1422;
+  .tabs button{flex:1;padding:12px;border-radius:8px;border:1px solid var(--line);background:#fff;
                color:var(--ink);font-size:15px;font-weight:bold;cursor:pointer;}
-  .tabs button.on{background:var(--accent);color:#fff;}
-  .tabs button:disabled{opacity:.35;}
+  .tabs button.on{background:var(--accent);color:#fff;border-color:var(--accent);}
+  .tabs button:disabled{opacity:.4;}
   .navbtn{min-width:54px;padding:12px;border-radius:8px;border:1px solid var(--line);
-          background:#0f1422;color:var(--ink);font-size:18px;cursor:pointer;}
+          background:#fff;color:var(--ink);font-size:18px;cursor:pointer;}
   #glwrap{position:relative;margin:0 14px;}
-  canvas{width:100%;height:56vh;min-height:320px;background:#000;border-radius:10px;display:block;}
+  canvas{width:100%;height:56vh;min-height:320px;background:#fff;border:1px solid var(--line);
+         border-radius:10px;display:block;}
   #readout{margin:8px 14px;padding:10px 12px;background:var(--panel);border-radius:8px;font-size:14px;
            min-height:20px;}
-  #readout .region{font-size:16px;font-weight:bold;color:#cfe3ff;}
-  details{margin:10px 14px;background:var(--panel);border-radius:8px;padding:6px 12px;}
+  #readout .region{font-size:16px;font-weight:bold;color:var(--accent);}
+  details{margin:10px 14px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:6px 12px;}
   summary{cursor:pointer;font-weight:bold;padding:6px 0;}
-  .chip{color:#000;border-radius:6px;padding:3px 7px;margin:2px;font-family:Consolas,monospace;
-        font-size:11px;font-weight:bold;display:inline-block;}
+  .mxlegend{display:flex;flex-wrap:wrap;gap:2px 14px;margin:6px 0 10px;}
+  .mxlegend span.lg{display:inline-flex;align-items:center;font-size:12px;white-space:nowrap;}
+  .mxlegend i{width:12px;height:12px;border-radius:3px;margin-right:5px;display:inline-block;}
+  .mxgrid{display:grid;gap:4px;justify-content:start;overflow-x:auto;}
+  .mxgrid .lab{font-size:10px;color:var(--ink);font-family:Consolas,monospace;text-align:right;
+               align-self:center;padding-right:4px;}
+  .mxgrid .cell{width:26px;height:26px;border-radius:7px;border:1px solid var(--line);}
   table{border-collapse:collapse;font-size:12px;width:100%;overflow-x:auto;display:block;}
   th,td{border:1px solid var(--line);padding:4px 6px;text-align:center;white-space:nowrap;}
-  th{background:#0f1422;}
+  th{background:#eef1f6;}
   .muted{color:var(--muted);font-size:12px;}
   .hide{display:none!important;}
 </style>
@@ -393,8 +398,8 @@ _VIEWER_HTML = """<!doctype html>
 
 <details id="matrixpanel">
   <summary>RSA model matrix</summary>
-  <div id="chips"></div>
-  <div id="matrix" style="height:300px;"></div>
+  <div id="mxlegend" class="mxlegend"></div>
+  <div id="matrix" class="mxgrid"></div>
 </details>
 
 <details>
@@ -420,7 +425,10 @@ const results=()=>manifest.results;
 
 async function boot(){
   manifest=await (await fetch("manifest.json")).json();
-  nv=new Niivue({backColor:[0,0,0,1], show3Dcrosshair:true, crosshairColor:[0,1,1,1], dragAndDropEnabled:false});
+  // White background; no crosshair / origin lines (crosshairWidth 0 hides the
+  // bright lines that mark the origin in slice views).
+  nv=new Niivue({backColor:[1,1,1,1], show3Dcrosshair:false, crosshairWidth:0,
+                 crosshairColor:[0,0,0,0], dragAndDropEnabled:false});
   nv.attachToCanvas(el("gl"));
   nv.onLocationChange=onLoc;
 
@@ -519,18 +527,37 @@ function onLoc(data){
   el("readout").innerHTML = `<span class="region">${region}</span> ${ztxt}<br><span class="muted">${mm}</span>`;
 }
 
+function cellColor(v, vmax){
+  const t = vmax ? Math.min(Math.abs(v)/vmax, 1) : 0;   // white -> Office blue
+  const r=Math.round(255+t*(68-255)), g=Math.round(255+t*(114-255)), b=Math.round(255+t*(196-255));
+  return `rgb(${r},${g},${b})`;
+}
+
 function renderMatrix(e){
   const p=el("matrixpanel");
   if(!e.matrix){ p.classList.add("hide"); return; }
   p.classList.remove("hide");
   fetch(e.matrix).then(r=>r.json()).then(mx=>{
-    Plotly.newPlot("matrix", [{z:mx.z, x:mx.columns, y:mx.index, type:"heatmap", colorscale:"Viridis"}],
-      {margin:{l:50,r:6,t:6,b:50}, paper_bgcolor:"#181c28", plot_bgcolor:"#181c28",
-       font:{color:"#e8ebf2",size:10}, yaxis:{autorange:"reversed"}},
-      {displayModeBar:false, responsive:true});
-    const chips=el("chips"); chips.innerHTML="";
-    mx.index.forEach(c=>{ const col=(manifest.label_def[c.slice(-1)]||{}).color||"#888";
-      const s=document.createElement("span"); s.className="chip"; s.style.background=col; s.textContent=c; chips.appendChild(s); });
+    // category-name legend on top
+    const leg=el("mxlegend"); leg.innerHTML="";
+    for(const [lab,d] of Object.entries(manifest.label_def||{})){
+      const s=document.createElement("span"); s.className="lg";
+      s.innerHTML=`<i style="background:${d.color}"></i>${d.name}`; leg.appendChild(s);
+    }
+    // rounded-square grid with row labels (matrix is symmetric, so columns omitted)
+    let vmax=0; mx.z.forEach(row=>row.forEach(v=>{ if(v!=null) vmax=Math.max(vmax,Math.abs(v)); }));
+    const n=mx.index.length, grid=el("matrix");
+    grid.style.gridTemplateColumns=`52px repeat(${n}, 26px)`;
+    grid.innerHTML="";
+    mx.index.forEach((name,i)=>{
+      const lab=document.createElement("div"); lab.className="lab"; lab.textContent=name; grid.appendChild(lab);
+      mx.z[i].forEach((v,j)=>{
+        const c=document.createElement("div"); c.className="cell";
+        c.style.background=(v==null)?"#fff":cellColor(v,vmax);
+        c.title=`${name} × ${mx.columns[j]} = ${v==null?"":(+v).toFixed(2)}`;
+        grid.appendChild(c);
+      });
+    });
   });
 }
 

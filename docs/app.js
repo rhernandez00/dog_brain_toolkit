@@ -10,7 +10,10 @@ const results=()=>manifest.results;
 
 async function boot(){
   manifest=await (await fetch("manifest.json")).json();
-  nv=new Niivue({backColor:[0,0,0,1], show3Dcrosshair:true, crosshairColor:[0,1,1,1], dragAndDropEnabled:false});
+  // White background; no crosshair / origin lines (crosshairWidth 0 hides the
+  // bright lines that mark the origin in slice views).
+  nv=new Niivue({backColor:[1,1,1,1], show3Dcrosshair:false, crosshairWidth:0,
+                 crosshairColor:[0,0,0,0], dragAndDropEnabled:false});
   nv.attachToCanvas(el("gl"));
   nv.onLocationChange=onLoc;
 
@@ -109,18 +112,37 @@ function onLoc(data){
   el("readout").innerHTML = `<span class="region">${region}</span> ${ztxt}<br><span class="muted">${mm}</span>`;
 }
 
+function cellColor(v, vmax){
+  const t = vmax ? Math.min(Math.abs(v)/vmax, 1) : 0;   // white -> Office blue
+  const r=Math.round(255+t*(68-255)), g=Math.round(255+t*(114-255)), b=Math.round(255+t*(196-255));
+  return `rgb(${r},${g},${b})`;
+}
+
 function renderMatrix(e){
   const p=el("matrixpanel");
   if(!e.matrix){ p.classList.add("hide"); return; }
   p.classList.remove("hide");
   fetch(e.matrix).then(r=>r.json()).then(mx=>{
-    Plotly.newPlot("matrix", [{z:mx.z, x:mx.columns, y:mx.index, type:"heatmap", colorscale:"Viridis"}],
-      {margin:{l:50,r:6,t:6,b:50}, paper_bgcolor:"#181c28", plot_bgcolor:"#181c28",
-       font:{color:"#e8ebf2",size:10}, yaxis:{autorange:"reversed"}},
-      {displayModeBar:false, responsive:true});
-    const chips=el("chips"); chips.innerHTML="";
-    mx.index.forEach(c=>{ const col=(manifest.label_def[c.slice(-1)]||{}).color||"#888";
-      const s=document.createElement("span"); s.className="chip"; s.style.background=col; s.textContent=c; chips.appendChild(s); });
+    // category-name legend on top
+    const leg=el("mxlegend"); leg.innerHTML="";
+    for(const [lab,d] of Object.entries(manifest.label_def||{})){
+      const s=document.createElement("span"); s.className="lg";
+      s.innerHTML=`<i style="background:${d.color}"></i>${d.name}`; leg.appendChild(s);
+    }
+    // rounded-square grid with row labels (matrix is symmetric, so columns omitted)
+    let vmax=0; mx.z.forEach(row=>row.forEach(v=>{ if(v!=null) vmax=Math.max(vmax,Math.abs(v)); }));
+    const n=mx.index.length, grid=el("matrix");
+    grid.style.gridTemplateColumns=`52px repeat(${n}, 26px)`;
+    grid.innerHTML="";
+    mx.index.forEach((name,i)=>{
+      const lab=document.createElement("div"); lab.className="lab"; lab.textContent=name; grid.appendChild(lab);
+      mx.z[i].forEach((v,j)=>{
+        const c=document.createElement("div"); c.className="cell";
+        c.style.background=(v==null)?"#fff":cellColor(v,vmax);
+        c.title=`${name} × ${mx.columns[j]} = ${v==null?"":(+v).toFixed(2)}`;
+        grid.appendChild(c);
+      });
+    });
   });
 }
 

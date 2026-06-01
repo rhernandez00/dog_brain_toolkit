@@ -32,9 +32,11 @@ STATE_COLOR = {
     "failed":    "#e23c3c",
 }
 
-DARK_BG, PANEL_BG, ACCENT = "#0f0f23", "#1a1a2e", "#4a90d9"
-INPUT_STYLE = {"backgroundColor": "#16213e", "color": "white",
-               "border": "1px solid #333", "borderRadius": "4px", "padding": "4px 8px"}
+BG, PANEL_BG, ACCENT = "#ffffff", "#f3f5f9", "#4472C4"
+INK, MUTED, LINE = "#222222", "#667085", "#d5dbe5"
+DARK_BG = BG  # legacy name, now the light page background
+INPUT_STYLE = {"backgroundColor": "#ffffff", "color": INK,
+               "border": f"1px solid {LINE}", "borderRadius": "6px", "padding": "5px 8px"}
 
 
 # --- Queue access (defensive: the share may not be mounted) ---------------
@@ -154,18 +156,18 @@ TABLE_COLS = [
 
 
 def _field(label, control):
-    return html.Div([html.Label(label, style={"fontSize": "11px", "color": "#aaa", "display": "block"}),
+    return html.Div([html.Label(label, style={"fontSize": "11px", "color": MUTED, "display": "block"}),
                      control])
 
 
-app.layout = html.Div(style={"backgroundColor": DARK_BG, "color": "white", "minHeight": "100vh",
+app.layout = html.Div(style={"backgroundColor": BG, "color": INK, "minHeight": "100vh",
                              "padding": "12px 16px", "fontFamily": "'Segoe UI', Arial, sans-serif"}, children=[
-    html.H2("RSA Scheduler", style={"textAlign": "center", "margin": "4px 0 10px", "color": "#e0e0ff"}),
+    html.H2("RSA Scheduler", style={"textAlign": "center", "margin": "4px 0 10px", "color": INK}),
 
     # ---- Schedule new analysis ----
     html.Div(style={"backgroundColor": PANEL_BG, "borderRadius": "8px", "padding": "10px 14px",
-                    "marginBottom": "10px"}, children=[
-        html.H4("Schedule new analysis", style={"margin": "0 0 8px", "color": "#e0e0ff"}),
+                    "border": f"1px solid {LINE}", "marginBottom": "10px"}, children=[
+        html.H4("Schedule new analysis", style={"margin": "0 0 8px", "color": INK}),
         html.Div(style={"display": "flex", "flexWrap": "wrap", "gap": "10px", "alignItems": "flex-end"}, children=[
             _field("Dataset", dcc.Input(id="sch-dataset", value="EmoC", type="text",
                                         style={**INPUT_STYLE, "width": "90px"})),
@@ -191,19 +193,19 @@ app.layout = html.Div(style={"backgroundColor": DARK_BG, "color": "white", "minH
                                "color": "white", "border": "none", "borderRadius": "6px",
                                "cursor": "pointer", "fontWeight": "bold"}),
         ]),
-        html.Div(id="sch-msg", style={"fontSize": "12px", "color": "#9fd", "marginTop": "8px",
+        html.Div(id="sch-msg", style={"fontSize": "12px", "color": "#2f7d4f", "marginTop": "8px",
                                       "fontFamily": "Consolas, monospace", "whiteSpace": "pre-wrap"}),
     ]),
 
     # ---- Job table ----
     html.Div(style={"backgroundColor": PANEL_BG, "borderRadius": "8px", "padding": "10px 14px",
-                    "marginBottom": "10px"}, children=[
+                    "border": f"1px solid {LINE}", "marginBottom": "10px"}, children=[
         html.Div(style={"display": "flex", "alignItems": "center", "gap": "12px", "marginBottom": "6px"}, children=[
-            html.H4("Jobs", style={"margin": 0, "color": "#e0e0ff"}),
+            html.H4("Jobs", style={"margin": 0, "color": INK}),
             html.Button("Refresh", id="sch-refresh", n_clicks=0,
-                        style={"padding": "4px 14px", "backgroundColor": "#16213e", "color": "white",
-                               "border": "1px solid #333", "borderRadius": "4px", "cursor": "pointer"}),
-            html.Span(id="sch-source", style={"fontSize": "11px", "color": "#888"}),
+                        style={"padding": "4px 14px", "backgroundColor": "#eef1f6", "color": INK,
+                               "border": f"1px solid {LINE}", "borderRadius": "6px", "cursor": "pointer"}),
+            html.Span(id="sch-source", style={"fontSize": "11px", "color": MUTED}),
             html.Div(style={"marginLeft": "auto", "display": "flex", "gap": "8px"}, children=[
                 html.Button("Retry selected", id="sch-retry", n_clicks=0,
                             style={"padding": "4px 14px", "backgroundColor": "#2faf5a", "color": "white",
@@ -217,8 +219,8 @@ app.layout = html.Div(style={"backgroundColor": DARK_BG, "color": "white", "minH
             id="sch-table", columns=TABLE_COLS, data=[],
             row_selectable="single", page_size=20,
             style_table={"overflowX": "auto"},
-            style_header={"backgroundColor": "#16213e", "color": "white", "fontWeight": "bold"},
-            style_cell={"backgroundColor": DARK_BG, "color": "white", "border": "1px solid #222",
+            style_header={"backgroundColor": "#eef1f6", "color": INK, "fontWeight": "bold"},
+            style_cell={"backgroundColor": "#ffffff", "color": INK, "border": f"1px solid {LINE}",
                         "fontSize": "12px", "padding": "4px 8px", "textAlign": "left",
                         "maxWidth": "260px", "overflow": "hidden", "textOverflow": "ellipsis"},
             style_data_conditional=[
@@ -229,11 +231,13 @@ app.layout = html.Div(style={"backgroundColor": DARK_BG, "color": "white", "minH
     ]),
 
     # ---- Log / detail viewer ----
-    html.Div(style={"backgroundColor": PANEL_BG, "borderRadius": "8px", "padding": "10px 14px"}, children=[
-        html.H4("Job detail & log", style={"margin": "0 0 6px", "color": "#e0e0ff"}),
-        html.Div(id="sch-detail", style={"fontSize": "12px", "color": "#bbb",
+    html.Div(style={"backgroundColor": PANEL_BG, "borderRadius": "8px", "padding": "10px 14px",
+                    "border": f"1px solid {LINE}"}, children=[
+        html.H4("Job detail & log", style={"margin": "0 0 6px", "color": INK}),
+        html.Div(id="sch-detail", style={"fontSize": "12px", "color": INK,
                                          "fontFamily": "Consolas, monospace", "marginBottom": "6px"}),
-        html.Pre(id="sch-log", style={"backgroundColor": "#0a0a18", "color": "#cfe", "padding": "10px",
+        html.Pre(id="sch-log", style={"backgroundColor": "#f3f5f9", "color": INK, "padding": "10px",
+                                      "border": f"1px solid {LINE}",
                                       "borderRadius": "6px", "maxHeight": "360px", "overflowY": "auto",
                                       "fontSize": "11px", "whiteSpace": "pre-wrap"}),
     ]),
