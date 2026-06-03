@@ -124,8 +124,13 @@ Jobs queue lives on the shared network disk at `{datafolder}/job_queue/` with su
 
 ### Job ID format
 ```
-{dataset}__{model}__{rsa_model}__{specie}__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}
+{dataset}__{model}__{rsa_model}__{specie}__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}__m{method}
 ```
+The trailing `__m{method}` (e.g. `__mcorrelation`, `__mmahalanobis`) keeps runs of the
+same model under different pairwise-similarity methods from colliding in the queue.
+`--method` defaults to `mahalanobis` and is threaded through `schedule_rsa.py` →
+`scheduler/dag.py` → `run_jobs.py` (passed to `searchlight.py --method`). Pass `--method`
+to `job_status.py` too, or it will look up the wrong (default) IDs.
 
 ### Workflow
 ```powershell

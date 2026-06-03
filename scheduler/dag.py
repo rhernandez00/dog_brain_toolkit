@@ -28,15 +28,17 @@ _STEP_DEPS = {
 }
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group):
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group,
+                method="mahalanobis"):
     return (
         f"{dataset}__{model}__{rsa_model}__{specie}"
-        f"__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}"
+        f"__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}__m{method}"
     )
 
 
 def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
-                    z_threshold=3.1, reps=100, reps_group=1000):
+                    z_threshold=3.1, reps=100, reps_group=1000,
+                    method="mahalanobis"):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.
@@ -83,10 +85,10 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
     for step in topo_order:
         dep_steps = adj[step]
         dep_ids = [
-            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group)
+            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, method)
             for d in dep_steps
         ]
-        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group)
+        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, method)
         jobs.append({
             "job_id": job_id,
             "dataset": dataset,
@@ -97,6 +99,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "label": STEP_LABELS.get(step, f"Step {step}"),
             "status": "pending" if not dep_ids else "waiting",
             "deps": dep_ids,
+            "method": method,
             "z_threshold": z_threshold,
             "reps": reps,
             "reps_group": reps_group,

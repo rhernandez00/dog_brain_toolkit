@@ -32,6 +32,9 @@ def main():
                         help="Species to schedule: H, D, or both (default: both)")
     parser.add_argument("--target_step", type=int, default=10,
                         help="Final pipeline step to schedule (default: 10)")
+    parser.add_argument("--method", default="mahalanobis",
+                        help="Pairwise similarity method passed to searchlight.py "
+                             "(e.g. mahalanobis, correlation; default: mahalanobis)")
     parser.add_argument("--z_threshold", type=float, default=3.1,
                         help="Z-score threshold for cluster definition (default: 3.1)")
     parser.add_argument("--reps", type=int, default=100,
@@ -57,6 +60,7 @@ def main():
             z_threshold=args.z_threshold,
             reps=args.reps,
             reps_group=args.reps_group,
+            method=args.method,
         )
         for job in jobs:
             created = create_job(queue_dir, job)

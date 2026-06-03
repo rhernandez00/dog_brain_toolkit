@@ -32,6 +32,7 @@ def build_command(job, git_folder, python_exe, marker_dir):
         "--model",          job["model"],
         "--rsa_model",      job["rsa_model"],
         "--specie",         job["specie"],
+        "--method",         job.get("method", "mahalanobis"),
         "--steps_to_run",   str(job["step"]),
         "--z_threshold",    str(job["z_threshold"]),
         "--reps",           str(job["reps"]),

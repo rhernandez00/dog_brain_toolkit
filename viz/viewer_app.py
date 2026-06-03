@@ -23,7 +23,7 @@ from dash import Dash, html, dcc, dash_table, no_update
 from dash.dependencies import Input, Output, State
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from viz import datasource, stimuli, niftiutil, dash_kwargs
+from viz import datasource, niftiutil, dash_kwargs
 
 # --- light PowerPoint-style palette ---------------------------------------
 BG, PANEL, INK, MUTED, LINE, ACCENT = "#ffffff", "#f3f5f9", "#222222", "#667085", "#d5dbe5", "#4472C4"
@@ -47,8 +47,10 @@ def _load_species(datafolder, dataset, modality, roi, model, specie):
         atlas, hi_aff, lo_aff, lo_shape = niftiutil.load_atlas(specie)
     except Exception as e:
         return f"{specie}: atlas load failed ({e})"
+    lbl_data, lbl_aff, lbl_dict = niftiutil.load_label_atlas(specie, datafolder, dataset)
     c.update(atlas=atlas, hi_aff=hi_aff, lo_aff=lo_aff, lo_shape=lo_shape,
-             overlay_lo=None, atlas_vol=None, vmin=0.0, vmax=1.0)
+             overlay_lo=None, overlay_aff=None, atlas_vol=None, vmin=0.0, vmax=1.0,
+             label_data=lbl_data, label_aff=lbl_aff, label_dict=lbl_dict)
     if not (model and roi):
         return f"{specie}: atlas only"
     path, kind = datasource.overlay_path(datafolder, dataset, modality, specie, roi, model)
@@ -57,7 +59,7 @@ def _load_species(datafolder, dataset, modality, roi, model, specie):
     ov_lo, ov_aff, _ = niftiutil.load_nifti(path)
     atlas_vol = niftiutil.resample_lowres_to_highres(atlas, hi_aff, ov_lo.shape, ov_aff)
     nz = ov_lo[np.abs(ov_lo) > 1e-6]
-    c.update(overlay_lo=ov_lo, atlas_vol=atlas_vol,
+    c.update(overlay_lo=ov_lo, overlay_aff=ov_aff, atlas_vol=atlas_vol,
              vmin=float(np.min(nz)) if nz.size else 0.0,
              vmax=float(np.max(nz)) if nz.size else 1.0)
     note = "" if kind == "unthresholded" else "  [corrected map — slider limited]"
@@ -105,30 +107,38 @@ def _matrix_grid(datafolder, dataset, model):
     if not os.path.exists(path):
         return html.Div("No RSA model matrix for this model.", style={"color": MUTED, "fontSize": "12px"})
     df = pd.read_csv(path, index_col=0)
-    conds = [str(c) for c in df.index]
+    rows = [str(r) for r in df.index]
+    cols = [str(c) for c in df.columns]
     vals = df.values.astype(float)
     vmax = float(np.nanmax(np.abs(vals))) or 1.0
-    n = len(conds)
+    n = len(cols)
 
-    # category-name legend on top
+    # Dissimilarity color scale — matches the actual cell shading (white -> blue).
+    gradient = f"linear-gradient(to right, {_cell_color(0.0, vmax)}, {_cell_color(vmax, vmax)})"
     legend = html.Div([
-        html.Span([
-            html.Span(style={"display": "inline-block", "width": "12px", "height": "12px",
-                             "borderRadius": "3px", "background": stimuli.label_color(lab),
-                             "marginRight": "5px", "verticalAlign": "middle"}),
-            html.Span(d["name"], style={"fontSize": "12px", "color": INK}),
-        ], style={"marginRight": "16px", "whiteSpace": "nowrap"})
-        for lab, d in stimuli.LABEL_DEF.items()
-    ], style={"display": "flex", "flexWrap": "wrap", "gap": "4px 0", "marginBottom": "10px"})
+        html.Span("Dissimilarity", style={"fontSize": "12px", "color": INK, "marginRight": "8px"}),
+        html.Span("0", style={"fontSize": "11px", "color": MUTED, "marginRight": "4px"}),
+        html.Div(style={"width": "160px", "height": "12px", "borderRadius": "3px",
+                        "background": gradient, "border": f"1px solid {LINE}"}),
+        html.Span(f"{vmax:.2f}", style={"fontSize": "11px", "color": MUTED, "marginLeft": "4px"}),
+    ], style={"display": "flex", "alignItems": "center", "marginBottom": "10px"})
 
-    cells = []
+    col_label_style = {"fontSize": "10px", "color": INK, "fontFamily": "Consolas, monospace",
+                       "writingMode": "vertical-rl", "transform": "rotate(180deg)",
+                       "whiteSpace": "nowrap", "alignSelf": "end", "justifySelf": "center",
+                       "padding": "2px 0"}
+
+    # header row: empty corner cell, then a vertical label per column
+    cells = [html.Div("")]
+    for c in cols:
+        cells.append(html.Div(c, style=col_label_style))
     for i, row in enumerate(vals):
-        cells.append(html.Div(conds[i], style={"fontSize": "10px", "color": INK, "textAlign": "right",
-                                                "alignSelf": "center", "paddingRight": "4px",
-                                                "fontFamily": "Consolas, monospace"}))
+        cells.append(html.Div(rows[i], style={"fontSize": "10px", "color": INK, "textAlign": "right",
+                                               "alignSelf": "center", "paddingRight": "4px",
+                                               "fontFamily": "Consolas, monospace"}))
         for j, v in enumerate(row):
             cells.append(html.Div(
-                title=f"{conds[i]} × {conds[j]} = {v:.2f}",
+                title=f"{rows[i]} × {cols[j]} = {v:.2f}",
                 style={"width": "28px", "height": "28px", "borderRadius": "7px",
                        "background": _cell_color(v, vmax), "border": f"1px solid {LINE}"}))
     grid = html.Div(cells, style={"display": "grid",
@@ -151,6 +161,8 @@ def _species_block(code, name):
             html.Span(id=f"vw-{code}-status", style={"fontSize": "11px", "color": ACCENT}),
             html.Span(id=f"vw-{code}-tablenote", style={"fontSize": "11px", "color": "#a36", "marginLeft": "auto"}),
         ]),
+        html.Div(id=f"vw-{code}-region", children="Click a voxel to name its region.",
+                 style={"fontSize": "12px", "color": MUTED, "minHeight": "18px", "margin": "2px 0 4px"}),
         dcc.Graph(id=f"vw-{code}-vol", style={"height": "460px"}),
         dash_table.DataTable(
             id=f"vw-{code}-table", columns=[], data=[], page_size=8,
@@ -286,6 +298,39 @@ def cb_render(_loaded, zt, show):
     d_style = base if "D" in show else {**base, "display": "none"}
     h_style = base if "H" in show else {**base, "display": "none"}
     return _render_species("D", zt, show), _render_species("H", zt, show), d_style, h_style
+
+
+def _region_from_click(code, click_data):
+    if not click_data or not click_data.get("points"):
+        return no_update
+    c = _cache[code]
+    if c.get("overlay_aff") is None:
+        return no_update
+    p = click_data["points"][0]
+    try:
+        vox = (int(round(p["x"])), int(round(p["y"])), int(round(p["z"])))
+    except (KeyError, TypeError, ValueError):
+        return no_update
+    name = niftiutil.region_name_at(vox, c.get("overlay_aff"), c.get("label_data"),
+                                    c.get("label_aff"), c.get("label_dict", {}))
+    if name is None:
+        return "📍 region atlas unavailable (network disk offline?)"
+    ov = c.get("overlay_lo")
+    zval = None
+    if ov is not None and all(0 <= v < s for v, s in zip(vox, ov.shape)):
+        zval = float(ov[vox[0], vox[1], vox[2]])
+    ztxt = f"  ·  z = {zval:.2f}" if zval is not None else ""
+    return f"📍 {name}{ztxt}"
+
+
+@app.callback(Output("vw-D-region", "children"), Input("vw-D-vol", "clickData"))
+def cb_region_d(click_data):
+    return _region_from_click("D", click_data)
+
+
+@app.callback(Output("vw-H-region", "children"), Input("vw-H-vol", "clickData"))
+def cb_region_h(click_data):
+    return _region_from_click("H", click_data)
 
 
 if __name__ == "__main__":

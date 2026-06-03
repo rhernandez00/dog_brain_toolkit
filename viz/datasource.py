@@ -134,6 +134,17 @@ def overlay_path(datafolder, dataset, modality, specie, roi_type, model_name):
     return None, None
 
 
+def mean_path(datafolder, dataset, modality, specie, roi_type, model_name):
+    """Path to the group-mean RSA map (Kendall correlation values, ``_mean.nii.gz``).
+
+    This is the raw mean model-similarity (Kendall tau) per voxel — the effect
+    size behind the z-map. Returns None if it has not been mirrored yet.
+    """
+    d = _current_results_dir(datafolder, dataset, modality, specie, roi_type)
+    p = os.path.join(d, f"{specie}_{model_name}_mean.nii.gz")
+    return p if os.path.exists(p) else None
+
+
 def corrected_path(datafolder, dataset, modality, specie, roi_type, model_name, z_threshold=None):
     """Path to the cluster-corrected map for a given threshold (None = any)."""
     d = _current_results_dir(datafolder, dataset, modality, specie, roi_type)

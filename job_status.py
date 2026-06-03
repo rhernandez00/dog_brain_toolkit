@@ -39,6 +39,7 @@ def main():
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--model", default="basic-block")
     parser.add_argument("--rsa_model", required=True)
+    parser.add_argument("--method", default="mahalanobis")
     parser.add_argument("--z_threshold", type=float, default=3.1)
     parser.add_argument("--reps", type=int, default=100)
     parser.add_argument("--reps_group", type=int, default=1000)
@@ -51,6 +52,7 @@ def main():
     print(f"Dataset   : {args.dataset}")
     print(f"Model     : {args.model}")
     print(f"RSA model : {args.rsa_model}")
+    print(f"method    : {args.method}")
     print(f"z_thresh  : {args.z_threshold}  reps: {args.reps}  reps_group: {args.reps_group}")
     print()
 
@@ -65,7 +67,7 @@ def main():
         for specie in ("D", "H"):
             job_id = make_job_id(
                 args.dataset, args.model, args.rsa_model, specie, step,
-                args.z_threshold, args.reps, args.reps_group
+                args.z_threshold, args.reps, args.reps_group, args.method
             )
             state = find_state(queue_dir, job_id)
             cell = STATE_LABEL.get(state, "  --  ")

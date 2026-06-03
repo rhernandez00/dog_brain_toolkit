@@ -5,12 +5,15 @@ from pathlib import Path
 
 
 def load_job(path):
-    with open(path, 'r') as f:
+    # utf-8-sig transparently strips a UTF-8 BOM if one is present (some files
+    # get written with a BOM on Windows), and is a no-op otherwise.
+    with open(path, 'r', encoding='utf-8-sig') as f:
         return json.load(f)
 
 
 def save_job(path, job):
-    with open(path, 'w') as f:
+    # Write plain UTF-8 (no BOM) so the Linux worker's json.load never chokes.
+    with open(path, 'w', encoding='utf-8') as f:
         json.dump(job, f, indent=2)
 
 

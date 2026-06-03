@@ -23,6 +23,7 @@
   .seg button{flex:1;padding:10px 6px;background:#fff;color:var(--muted);border:none;
               font-size:13px;cursor:pointer;}
   .seg button.on{background:var(--accent);color:#fff;font-weight:bold;}
+  .seg button:disabled{opacity:.4;cursor:default;}
   .tabs{display:flex;gap:8px;}
   .tabs button{flex:1;padding:12px;border-radius:8px;border:1px solid var(--line);background:#fff;
                color:var(--ink);font-size:15px;font-weight:bold;cursor:pointer;}
@@ -67,6 +68,10 @@
   <div class="row">
     <div class="grow"><label>Model</label><select id="model"></select></div>
   </div>
+  <div class="seg" id="mapseg">
+    <button data-map="z" class="on">Z-map</button>
+    <button data-map="mean">Mean (Kendall &tau;)</button>
+  </div>
   <div class="seg" id="viewseg">
     <button data-view="render" class="on">3D</button>
     <button data-view="axial">Axial</button>
@@ -78,7 +83,7 @@
     <span class="grow muted" id="sliceinfo" style="text-align:center;"></span>
     <button class="navbtn" id="next">&#9654;</button>
   </div>
-  <div class="row">
+  <div class="row" id="ztrow">
     <label>z-threshold</label><span class="muted" id="ztval">3.1</span>
     <input class="grow" id="zt" type="range" min="0" max="8" step="0.1" value="3.1">
   </div>

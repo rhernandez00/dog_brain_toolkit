@@ -7,6 +7,7 @@ and (later) the static failsafe exporter.
 
 import os
 import numpy as np
+import pandas as pd
 import nibabel as nib
 import plotly.graph_objects as go
 
@@ -23,6 +24,18 @@ ATLAS_PATHS = {
         # High-res human atlas is a placeholder — reuse the 2mm for now.
         "high": os.path.join(SCRIPT_DIR, "Atlas", "Hum", "MNI152_T1_2mm_brain.nii.gz"),
     },
+}
+
+# Region-label sources for click-to-name (mirrors export_static / create_tables).
+# Dog: Czeibert labels (2mm) + dictionary. Human: AAL3 lives per-dataset under
+# {datafolder}/{dataset}/ROI/AAL3.nii.gz, so it is resolved at load time.
+LABEL_ATLAS_PATHS = {
+    "D": os.path.join(SCRIPT_DIR, "Atlas", "Dog", "Nitzsche", "Czeibert_labels2mm.nii.gz"),
+    "H": None,  # resolved per-dataset
+}
+LABEL_DICT_CSV = {
+    "D": os.path.join(SCRIPT_DIR, "Atlas", "Dog", "Czeibert_dictionary.csv"),
+    "H": os.path.join(SCRIPT_DIR, "Atlas", "Hum", "AAL_dictionary.csv"),
 }
 
 # Warm sequential scale for stat overlays, readable on a white background.
@@ -73,6 +86,44 @@ def load_atlas(specie):
     hi_max = np.percentile(hi[hi > 0], 99.5) if np.any(hi > 0) else 1
     hi = np.clip(hi / hi_max, 0, 1)
     return hi, hi_aff, lo_aff, lo.shape
+
+
+def load_label_atlas(specie, datafolder=None, dataset=None):
+    """Return (label_data, label_affine, {number: region_name}) for click-to-name.
+
+    Returns (None, None, {}) if the label atlas can't be found (e.g. the network
+    disk is unavailable), so the caller can degrade gracefully.
+    """
+    src = LABEL_ATLAS_PATHS.get(specie)
+    if specie == "H" and datafolder and dataset:
+        src = os.path.join(datafolder, dataset, "ROI", "AAL3.nii.gz")
+    mapping = {}
+    dcsv = LABEL_DICT_CSV.get(specie)
+    if dcsv and os.path.exists(dcsv):
+        df = pd.read_csv(dcsv)
+        for _, row in df.iterrows():
+            num = row.get("Number")
+            if pd.isna(num):
+                continue
+            mapping[int(num)] = str(row.get("Region", "Unknown"))
+    if not src or not os.path.exists(src):
+        return None, None, mapping
+    data, aff, _ = load_nifti(src)
+    return data, aff, mapping
+
+
+def region_name_at(vox_overlay, overlay_affine, label_data, label_affine, label_dict):
+    """Name the region under an overlay-grid voxel via the label atlas + dictionary."""
+    if label_data is None or overlay_affine is None or label_affine is None:
+        return None
+    world = voxel_to_world(vox_overlay, overlay_affine)
+    lv = world_to_voxel(world, label_affine)
+    if any(c < 0 or c >= s for c, s in zip(lv, label_data.shape)):
+        return "outside atlas"
+    num = int(label_data[lv[0], lv[1], lv[2]])
+    if num == 0:
+        return "outside atlas"
+    return label_dict.get(num, f"label {num}")
 
 
 # --- Figures --------------------------------------------------------------
@@ -190,10 +241,13 @@ def make_volume_fig(overlay_lowres, z_threshold, vmin, vmax, title="", height=42
 
     xs, ys, zs = np.where(supra)
     cvals = data[xs, ys, zs]
+    # Larger square markers read as contiguous blobs (closer to a regular fMRI
+    # overlay) than the sparse pin-prick dots that small circles produce.
     fig.add_trace(go.Scatter3d(
         x=xs, y=ys, z=zs, mode="markers",
-        marker=dict(size=4, color=cvals, colorscale=OVERLAY_COLORSCALE,
-                    cmin=vmin, cmax=vmax, opacity=0.95,
+        marker=dict(size=9, symbol="square", color=cvals, colorscale=OVERLAY_COLORSCALE,
+                    cmin=vmin, cmax=vmax, opacity=1.0, line=dict(width=0),
                     colorbar=dict(title="z", len=0.6, thickness=12)),
-        hovertemplate="z=%{marker.color:.2f}<extra></extra>"))
+        hovertemplate="z=%{marker.color:.2f}<br>voxel (%{x}, %{y}, %{z})"
+                      "<extra>click to name region</extra>"))
     return _layout(fig, f"({n_supra} voxels)")

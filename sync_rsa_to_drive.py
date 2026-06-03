@@ -14,10 +14,12 @@ Naming convention (must stay in sync with rsa_utils.create_tables)
 ------------------------------------------------------------------
 Source (per model):
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z.nii.gz   (unthresholded)
+    {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz
     {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.csv
 Destination (mask_type present); thresholded artifacts record zt{z_threshold}:
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_z.nii.gz
+    {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_mean.nii.gz
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_zt{z_threshold}.csv
 Destination (no mask_type):
@@ -68,10 +70,12 @@ def drive_dest_name(specie, rsa_model, kind, z_threshold=3.1):
     (it is threshold-independent and feeds the viewer's threshold slider).
 
     kind: 'z' (unthresholded z-map), 'z_corrected' (cluster-corrected z-map),
-          or 'table' (CSV cluster table).
+          'mean' (mean map), or 'table' (CSV cluster table).
     """
     if kind == 'z':
         return f"{specie}_{rsa_model}_z.nii.gz"
+    if kind == 'mean':
+        return f"{specie}_{rsa_model}_mean.nii.gz"
     if kind == 'z_corrected':
         return f"{specie}_{rsa_model}_zt{z_threshold}_corrected.nii.gz"
     if kind == 'table':
@@ -136,6 +140,9 @@ def sync(datafolder, dataset, model, drive_root, models=None, z_threshold=3.1,
             (f"{stem}_z_corrected.nii.gz",
              drive_dest_name(specie, rsa_model, 'z_corrected', z_threshold),
              'z_corrected', include_corrected),
+            (f"{stem}_mean.nii.gz",
+             drive_dest_name(specie, rsa_model, 'mean', z_threshold),
+             'mean', True),
             (f"{stem}_zt{z_threshold}.csv",
              drive_dest_name(specie, rsa_model, 'table', z_threshold), 'table',
              include_table),

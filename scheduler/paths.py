@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 
@@ -15,7 +16,10 @@ def get_paths():
         git_folder = os.path.join(
             '/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'github'
         )
-        python_exe = 'python'
+        # Launch worker subprocesses with the same interpreter that's running
+        # this script: the remote has no bare `python` on PATH (only python3),
+        # and sys.executable is guaranteed to exist with the right environment.
+        python_exe = sys.executable or 'python3'
     return datafolder, git_folder, python_exe
 
 
