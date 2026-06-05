@@ -62,7 +62,9 @@ Input arguments:
 --min_dist_mm: Minimum distance between peaks in mm (default: 8.0)
 --atlas_type: Type of atlas to use in case of dogs (default: 'Nitzsche')
 --replace_file: Overwrite existing output files (default: False)
+--replace_rnd_files: Overwrite existing rnd output files (default: False)
 --shuffle_participants: shuffle participants order in permutations (default: False)
+
 
 --participants_forced: List of participants to include (default: [])
 --verbose: Verbose output (default: False)
@@ -124,6 +126,8 @@ def parse_arguments():
                         help='Verbose output')
     parser.add_argument('--wait_time', type=int, default=3000,
                         help='Wait time between steps in seconds')
+    parser.add_argument('--replace_rnd_files', action='store_true',
+                        help='Overwrite existing rnd output files')
     parser.add_argument('--overwrite_movement', action='store_true',
                         help='Overwrite existing movement files')
     parser.add_argument('--skip_prefile_check', action='store_true',
@@ -161,6 +165,7 @@ def main():
     verbose = args.verbose
     wait_time = args.wait_time
     overwrite_movement = args.overwrite_movement
+    replace_rnd_files = args.replace_rnd_files  # use the same flag for replacing rnd files, can be set separately if needed
     skip_prefile_check = args.skip_prefile_check
     peak_id = args.peak_id
     dataset = args.dataset
@@ -282,7 +287,11 @@ def main():
         specie_label = 'Hum'
         apply_coords_transform=True #assumes that atlas and results are in different spaces, applies coordinate transform to get correct labels in excel output
         atlas_type = 'MNI'
-        design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
+        # not sure where from
+        # design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
+        # From beta_H EmoB
+        design_template = os.path.join(datafolder, dataset, 'FSL_designs', 'H_' + model + '.fsf')
+        
         # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
         
@@ -338,11 +347,6 @@ def main():
     for step in steps_to_run:
         if step == 0: # compute beta maps by participant/session/run
             print("### Step 0: Computing beta maps ###")
-            # if specie == H warn and skip
-            if specie == 'H':
-                print("Warning: Step 0 (computing beta maps) is done another way in humans. Skipping...")
-                continue
-
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 # session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
@@ -462,7 +466,7 @@ def main():
                                                 rsa_method=rsa_method,
                                                 method=method, verbose=verbose,
                                                 min_percentage_available=min_percentage_available,
-                                                reps=reps, replace_rnd_files=False, wait_time=300, reps_group=reps_group)
+                                                reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300, reps_group=reps_group)
             print("### Done computing group rnd mean model similarity maps ###")
             if result:
                 _write_marker(job_marker_dir, 5)

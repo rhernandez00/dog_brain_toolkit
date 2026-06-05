@@ -24,7 +24,7 @@ from scheduler.jobs import claim_job, complete_job, fail_job
 
 def build_command(job, git_folder, python_exe, marker_dir):
     searchlight = os.path.join(git_folder, "dog_brain_toolkit", "searchlight.py")
-    return [
+    cmd = [
         python_exe,
         "-u",  # unbuffered stdout/stderr so log files update in real time
         searchlight,
@@ -39,6 +39,9 @@ def build_command(job, git_folder, python_exe, marker_dir):
         "--reps_group",     str(job["reps_group"]),
         "--job_marker_dir", str(marker_dir),
     ]
+    if job.get("replace_rnd_files"):
+        cmd.append("--replace_rnd_files")
+    return cmd
 
 
 def run_job(job, git_folder, python_exe, log_dir, marker_dir):

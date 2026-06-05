@@ -2595,6 +2595,226 @@ def threshold_z_maps(datafolder, dataset, specie, model, task, radius,
         f.write('\n'.join(log))
     print(f"Saved log to {log_path}")
 
+def calculate_beta_mapsH(datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                        stim_types, design_template, atlas_file,
+                        smooth,
+                        radius_fwd,
+                        threshold_fwd,
+                        redo_if_exists,
+                        wait_time=300):
+    '''
+    
+    Calculate maps for given human participant, session, run using FSL FEAT
+    Parameters
+    ----------
+    datafolder : str. Path to the data folder
+    dataset : str. Dataset name
+    model : str. Model name
+    specie : str. Species identifier
+    sub_N : int. Subject number
+    session : str. Session identifier
+    run_N : int. Run number
+    task : str. Task name
+    stim_types : list. List of stimulus types
+    design_template : str. Path to the design template file
+    atlas_file : str. Path to the atlas file
+    smooth : int. Smoothing kernel size.
+    radius_fwd : float. Radius for framewise displacement calculation
+    threshold_fwd : float. Threshold for framewise displacement calculation
+    redo_if_exists : bool. If True, redo the calculation even if maps exist
+    wait_time : int. Time to wait between checks for existing maps
+    
+    '''
+    print('### Running calculate_beta_mapsH with the following parameters:')
+    # datafolder
+    print(f"datafolder: {datafolder}")
+    
+
+    session = str(session).zfill(2)
+    print(f"sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}...")
+    # "P:\userdata\raulh87\data\EmoB\results\GLM\basic\D-sub-01\ses-01_task-EmoB_run-01_(len(stim_types))"
+    design_template_modified = (datafolder + os.sep + dataset + os.sep + 
+    'results' + os.sep + 'GLM' + os.sep + model + os.sep + specie +
+    '-sub-' + str(sub_N).zfill(2) + os.sep +
+    f"ses-{session}_task-{task}_run-{run_N:02d}_{len(stim_types)}.fsf"
+    )
+    # create a copy of design_template with len(stim_types) in the filename
+    # create directories if they do not exist
+    os.makedirs(os.path.dirname(design_template_modified), exist_ok=True)
+    
+    # shutil.copy(design_template, design_template_modified)
+    # Create an appropiate design for the number of stim types
+    utils.generate_fsf(len(stim_types), design_template, design_template_modified)
+    # print(f"Design template modified {design_template_modified}.")
+    ## stop program here
+    # trigger error
+    # raise NotImplementedError("Stopping execution for testing purposes.")
+
+    
+    ## Determine if this model/sub/run should be run or skipped
+    # Output directory for FSL
+    fsl_out = os.path.join(
+        datafolder, dataset, 'results', 'GLM', model,
+        f"{specie}-sub-{sub_N:02d}",
+        f"ses-{session}_task-{task}_run-{run_N:02d}.feat"
+    )
+    # create a tmp file to indicate processing, replace .feat with .tmp
+    tmp_file = fsl_out.replace('.feat', '.tmp')
+    # check if tmp file exists
+    if os.path.exists(tmp_file):
+        # check how old the file is
+        mod_time = os.path.getmtime(tmp_file)
+        current_time = time()
+        # if the file is recent, another process is probably running it, skip
+        if current_time - mod_time < wait_time:
+            print(f"Temporary file {tmp_file} exists and is recent. Another process may be running it. Skipping GLM...")
+            return
+        else:
+            print(f"Temporary file {tmp_file} exists but is old. Removing stale tmp file...")
+            os.remove(tmp_file)
+            print(f"Removed stale temporary file {tmp_file}. Proceeding with GLM...")
+    print(f"Creating temporary file {tmp_file} to indicate processing...")
+    # create tmp file to indicate processing
+    with open(tmp_file, 'w') as f:
+        f.write('Processing...\n')
+        # close file
+    f.close() 
+
+    # check if .feat exists, it means that GLM is done, running or failed
+    if os.path.exists(fsl_out):
+        print(f"FSL output {fsl_out} already exists.")
+        # check how old the file is
+        mod_time = os.path.getmtime(fsl_out)
+        current_time = time()
+        if current_time - mod_time > wait_time: # file exist and it's old. No other process is probably running it
+            # check if we want to redo
+            if redo_if_exists: # we do want to redo. Remove 
+                print(f"Existing FSL output {fsl_out} is older than {wait_time} seconds.")
+                print(f"Removing existing output to redo GLM...")
+                shutil.rmtree(fsl_out)
+                print(f"Removed existing FSL output {fsl_out}.")
+            else: # file exist, check if finished, if it didn't, remove the folder and redo
+                print(f"Checking for .pe1 file to confirm completion...")
+                pe1_file = os.path.join(fsl_out, 'stats', 'pe1.nii.gz')
+                if os.path.exists(pe1_file):
+                    print(f"GLM already completed for sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}. Skipping...")
+                    return
+                else:
+                    print(f"GLM not completed for sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}. Removing incomplete output...")
+                    try:
+                        shutil.rmtree(fsl_out)
+                    except Exception as e:
+                        print(f"Error removing incomplete FSL output {fsl_out}: {e}")
+                    print(f"Removed incomplete FSL output {fsl_out}. Proceeding with GLM...")
+        else: # .feat exist and it's recent, another process is probably running it
+            print(f"Existing FSL output {fsl_out} is recent. Skipping GLM...")
+            return
+    else: 
+        print(f"FSL output {fsl_out} does not exist. Proceeding with GLM...")
+    # if we reach here, either .feat doesn't exist or we want to redo
+    
+    ## Original and target movement file paths
+    # original par file "P:\userdata\raulh87\data\EmoB\movement\H-sub-01_ses-01_task-EmoB_run-01.par"
+    par_file = os.path.join(
+        datafolder, dataset, 'movement',
+        f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}.par"
+    )
+    mov_txt = os.path.join(
+        datafolder, dataset, 'movement',
+        f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}_fwd.txt"
+    )
+    print("Calculating framewise displacement...")
+    preprocess_functions.fwd(
+        par_file, radius_fwd, threshold_fwd, output_file=mov_txt, add_movement_params=False
+    )
+
+    # Input preprocessed NIfTI file
+    # "P:\userdata\raulh87\data\EmoB\BIDS\H-sub-01\H-sub-01_ses-01_task-EmoB_run-01_bold.nii.gz"
+    input_nifti = os.path.join(
+        datafolder, dataset, 'BIDS',
+        f"{specie}-sub-{sub_N:02d}",
+        f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}_bold.nii.gz"
+    )
+    # Input structural NIfTI file # os.path.join(bids_folder, f"{sub_ID}_T1.nii.gz"))
+    structural_nifti = os.path.join(
+        datafolder, dataset, 'BIDS',f"{specie}-sub-{sub_N:02d}",f"{specie}-sub-{sub_N:02d}_T1.nii.gz"
+    )
+    # slice timing file
+    # "P:\userdata\raulh87\data\EmoB\BIDS\H-sub-01\H-sub-01_ses-01_task-EmoB_run-01_bold_slicetiming.txt"
+    slice_timing_txt = os.path.join(
+        datafolder, dataset, 'BIDS',
+        f"{specie}-sub-{sub_N:02d}",
+        f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}_bold_slicetiming.txt"
+    )
+    
+    # Extract TR and volumes
+    data = nib.load(input_nifti)
+    tr = data.header.get_zooms()[3]
+    volumes = data.shape[3]
+
+    # TR, volumes = utils.extract_params(input_nifti)
+    # Prepare FSF template replacement dictionary
+    #design_in = os.path.join(datafolder, dataset, 'FSL_designs', base_design_file)
+    design_out = os.path.join(datafolder, dataset, 'FSL_designs', model + f"{specie}-sub-{sub_N:02d}_ses-{session}_run-{run_N:02d}_tmp.fsf")
+    labels = {
+        'outputdir': (fsl_out,        'set fmri(outputdir)'),
+        'TR':        (tr,             'set fmri(tr)'),
+        'volumes':   (volumes,        'set fmri(npts)'),
+        'BET':       (1 if specie=='H' else 0, 'set fmri(bet_yn)'),
+        'smooth':    (smooth,         'set fmri(smooth)'),
+        'input':     (input_nifti,    'set feat_files(1)'),
+        'atlas':     (atlas_file,     'set fmri(regstandard)'),
+        'movement':  (mov_txt,     'set confoundev_files(1)'),
+        'structural': (structural_nifti, 'set highres_files(1)'),
+        'slice_timing': (slice_timing_txt, 'set fmri(st_file)')
+    }
+
+    # add conditions based on stim_types
+    for i, stim in enumerate(stim_types, start=1):
+        # "C:\data\EmoB\models\all_types\D-sub-01\ses-01_task-EmoB_run-01\A.txt"
+        cond_file = os.path.join(
+            datafolder, dataset, 'models', model, f"{specie}-sub-{sub_N:02d}",
+            f"ses-{session}_task-{task}_run-{run_N:02d}",
+            f"{stim}.txt"
+        )
+        labels[f'condition{i}'] = (cond_file, f'set fmri(custom{i})')
+
+
+    # Build replacement dict
+    to_fill = {}
+    for key, (val, find_str) in labels.items():
+        rep = f'set {find_str.split()[1]}("{val}"' if isinstance(val, str) else f'set {find_str.split()[1]} {val}'
+        # Actually ensure correct format
+        if key in labels.keys():
+            rep = f'{find_str} "{val}"'
+        else:
+            rep = f'{find_str} {val}'
+        to_fill[key] = {
+            'string_to_find': find_str,
+            'string_to_replace': rep
+        }
+    # Fill FSF and run FSL
+    utils.fill_fsf(to_fill, design_template_modified, design_out)
+    # Remove existing .feat dir if present. 
+    if os.path.exists(fsl_out + '.feat'):
+        # remove directory, even if not empty
+        shutil.rmtree(fsl_out + '.feat')
+
+    cmd = f'feat {design_out}'
+
+    if os.name != 'nt':
+        print(f"Running: {cmd}")
+        os.system(cmd)
+    else:
+        print('testing in Windows')
+    
+    # remove temporary design file
+    # os.remove(design_out)
+    print(f"GLM completed for sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}.")
+    # remove tmp file
+    if os.path.exists(tmp_file):
+        os.remove(tmp_file)
+        print(f"Removed temporary file {tmp_file}.")
 
 def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_N, task,
                         stim_types, design_template, atlas_file,
@@ -2627,6 +2847,17 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
     wait_time : int. Time to wait between checks for existing beta maps
     
     '''
+    # if H, run calculate_beta_mapsH, if not continue
+    if specie == 'H':
+        calculate_beta_mapsH(datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                        stim_types, design_template, atlas_file,
+                        smooth,
+                        radius_fwd,
+                        threshold_fwd,
+                        redo_if_exists,
+                        wait_time)
+        return
+        
     session = str(session).zfill(2)
     print(f"sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}...")
     # "P:\userdata\raulh87\data\EmoB\results\GLM\basic\D-sub-01\ses-01_task-EmoB_run-01_(len(stim_types))"
@@ -2700,6 +2931,7 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
         datafolder, dataset, 'movement',
         f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}.par"
     )
+
     mov_txt = os.path.join(
             datafolder, dataset, 'movement',
             f"{specie}-sub-{sub_N:02d}_ses-{session}_task-{task}_run-{run_N:02d}_fwd.txt"

@@ -38,7 +38,7 @@ def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps
 
 def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
                     z_threshold=3.1, reps=100, reps_group=1000,
-                    method="mahalanobis"):
+                    method="mahalanobis", replace_rnd_files=False):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.
@@ -56,8 +56,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             deps = []  # humans have pre-existing beta maps
         queue.extend(deps)
 
-    if specie == 'H':
-        needed.discard(0)  # step 0 not applicable for humans
+    # (step 0 for humans is now allowed — testing human beta-map code)
 
     # Build per-step dep lists restricted to needed steps
     adj = {}
@@ -103,6 +102,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "z_threshold": z_threshold,
             "reps": reps,
             "reps_group": reps_group,
+            "replace_rnd_files": replace_rnd_files,
             "created_at": None,
             "started_at": None,
             "completed_at": None,

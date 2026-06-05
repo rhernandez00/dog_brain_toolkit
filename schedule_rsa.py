@@ -41,6 +41,8 @@ def main():
                         help="Number of permutations for step 4 (default: 100; use fewer for testing)")
     parser.add_argument("--reps_group", type=int, default=1000,
                         help="Number of group permutations for step 5 (default: 1000; use fewer for testing)")
+    parser.add_argument("--replace_rnd_files", action="store_true",
+                        help="Force recompute/overwrite existing rnd output files (steps 4-5)")
     args = parser.parse_args()
 
     datafolder, _, _ = get_paths()
@@ -61,6 +63,7 @@ def main():
             reps=args.reps,
             reps_group=args.reps_group,
             method=args.method,
+            replace_rnd_files=args.replace_rnd_files,
         )
         for job in jobs:
             created = create_job(queue_dir, job)
