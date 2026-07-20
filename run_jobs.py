@@ -32,7 +32,9 @@ def build_command(job, git_folder, python_exe, marker_dir):
         "--model",          job["model"],
         "--rsa_model",      job["rsa_model"],
         "--specie",         job["specie"],
-        "--method",         job.get("method", "mahalanobis"),
+        "--rsa_method",     job.get("rsa_method", "kendall"),
+        "--dis_method",     job.get("dis_method", "mahalanobis"),
+        "--mah_fold",       job.get("mah_fold", "stim-wise"),
         "--steps_to_run",   str(job["step"]),
         "--z_threshold",    str(job["z_threshold"]),
         "--reps",           str(job["reps"]),
@@ -58,8 +60,8 @@ def main():
     parser = argparse.ArgumentParser(
         description="Run pending RSA analysis jobs from the shared queue"
     )
-    parser.add_argument("--max_jobs", type=int, default=1,
-                        help="Max jobs to run before stopping (0 = unlimited; default: 1)")
+    parser.add_argument("--max_jobs", type=int, default=0,
+                        help="Max jobs to run before stopping (0 = unlimited; default: 0)")
     parser.add_argument("--loop", action="store_true",
                         help="Keep polling for new jobs when queue is empty")
     parser.add_argument("--poll_interval", type=int, default=60,

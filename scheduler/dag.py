@@ -28,20 +28,24 @@ _STEP_DEPS = {
 }
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group,
-                method="mahalanobis"):
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise"):
     return (
         f"{dataset}__{model}__{rsa_model}__{specie}"
-        f"__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}__m{method}"
+        f"__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}"
+        f"__rsa{rsa_method}__dis{dis_method}__mah{mah_fold}"
     )
 
 
 def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
-                    z_threshold=3.1, reps=100, reps_group=1000,
-                    method="mahalanobis", replace_rnd_files=False):
+                    start_step=2,
+                    z_threshold=3.1, reps=100, reps_group=1000, rsa_method="kendall",
+                    dis_method="mahalanobis", 
+                    mah_fold="stim-wise",
+                    replace_rnd_files=False):
     """
     Return job dicts in topological order (leaf steps first) for running
-    target_step for the given specie.
+    target_step for the given specie.  Steps below start_step are never
+    scheduled (their outputs are assumed to already exist on disk).
     """
     # Collect all needed steps via backwards walk from target_step
     needed = set()
@@ -56,7 +60,8 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             deps = []  # humans have pre-existing beta maps
         queue.extend(deps)
 
-    # (step 0 for humans is now allowed — testing human beta-map code)
+    # Drop steps below the floor; their dependents become roots (pending)
+    needed = {s for s in needed if s >= start_step}
 
     # Build per-step dep lists restricted to needed steps
     adj = {}
@@ -84,10 +89,10 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
     for step in topo_order:
         dep_steps = adj[step]
         dep_ids = [
-            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, method)
+            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold)
             for d in dep_steps
         ]
-        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, method)
+        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold)
         jobs.append({
             "job_id": job_id,
             "dataset": dataset,
@@ -98,7 +103,9 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "label": STEP_LABELS.get(step, f"Step {step}"),
             "status": "pending" if not dep_ids else "waiting",
             "deps": dep_ids,
-            "method": method,
+            "rsa_method": rsa_method,
+            "dis_method": dis_method,
+            "mah_fold": mah_fold,
             "z_threshold": z_threshold,
             "reps": reps,
             "reps_group": reps_group,

@@ -46,9 +46,10 @@ std across maps. Save as nifti.
 Input arguments:
 --steps_to_run: List of steps to run (default: [1,2,3,4,5,6,7,8,9,10])
 --model: GLM model to use (default: 'basic')
---method: Method for pairwise similarity calculation (default: 'mahalanobis')
+--dis_method: Method for pairwise similarity calculation (default: 'mahalanobis')
 --rsa_model: RSA model to use
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
+--rsa_class: RSA class to use, used when comparing based on class pairs (e.g. all dog-dog pairs, all human-human pairs, all dog-human pairs)
 --specie: 'D' for Dog, 'H' for Human (default: 'H')
 --mask_type: Type of brain mask to use (default: 'b_GreyMatter2mm')
 --radius: Radius for searchlight (default: 3)
@@ -82,16 +83,18 @@ def parse_arguments():
     # parse task
     parser.add_argument('--task', type=str, default=None,
                         help='Task to use, if not provided, will use the same as dataset')
-    parser.add_argument('--steps_to_run', type=int, nargs='+', default=[1,2,3,4,5,6,7,8,9,10],
+    parser.add_argument('--steps_to_run', type=float, nargs='+', default=[1,2,3,4,5,6,7,8,9,10,11.5],
                         help='List of steps to run')
     parser.add_argument('--model', type=str, default='basic',
                         help='GLM model to use')
-    parser.add_argument('--method', type=str, default='mahalanobis',
+    parser.add_argument('--dis_method', type=str, default='mahalanobis',
                         help='Method for pairwise similarity calculation')
     parser.add_argument('--rsa_model', type=str, default=None, required=False,
                         help='RSA model to use')
     parser.add_argument('--rsa_method', type=str, default='kendall',
                         help='Method to compare similarity maps with model')
+    parser.add_argument('--rsa_class', type=str, default=None,
+                        help='RSA class to use')
     parser.add_argument('--specie', type=str, default='H',
                         help="'D' for Dog, 'H' for Human")
     parser.add_argument('--mask_type', type=str, default='b_GreyMatter2mmB',
@@ -138,6 +141,7 @@ def parse_arguments():
                         help='Folding method for Mahalanobis distance, either "stim-wise" or "run-wise"')
     parser.add_argument('--job_marker_dir', type=str, default=None,
                         help='Directory where step completion markers are written (used by the scheduler)')
+    
     return parser.parse_args()
 
 # main execution
@@ -146,10 +150,11 @@ def main():
     steps_to_run = args.steps_to_run
     model = args.model
     # mask_path = args.mask_path
-    method = args.method
+    dis_method = args.dis_method
     coords = args.coords
     rsa_model = args.rsa_model
     rsa_method = args.rsa_method
+    rsa_class = args.rsa_class
     specie = args.specie
     mask_type = args.mask_type
     radius = args.radius
@@ -290,7 +295,7 @@ def main():
         # not sure where from
         # design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
         # From beta_H EmoB
-        design_template = os.path.join(datafolder, dataset, 'FSL_designs', 'H_' + model + '.fsf')
+        design_template = os.path.join(datafolder, dataset, 'FSL_designs', 'H_basic.fsf')
         
         # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
         atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
@@ -347,6 +352,10 @@ def main():
     for step in steps_to_run:
         if step == 0: # compute beta maps by participant/session/run
             print("### Step 0: Computing beta maps ###")
+            # if shuffle_participants is true, shuffle participants order
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
+            
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 # session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
@@ -385,17 +394,23 @@ def main():
                         session = entry['session']
                         run_N = entry['run_N']
                         print(f"Processing sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}...")
-                        rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, [entry],
+                        try:
+                            rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, [entry],
                                     specie, model, stim_types, mask2, task, radius=radius, 
-                                    method=method, replace_file=replace_file, mah_fold=mah_fold, 
+                                    dis_method=dis_method, replace_file=replace_file, mah_fold=mah_fold, 
                                     verbose=verbose, skip_prefile_check=skip_prefile_check, 
                                     categories=categories, shuffle_runs=shuffle_runs, model_dict=model_dict)
+                        except Exception as e:
+                            print(f"Error processing sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}: {e}")
 
                 else:
-                    rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
+                    try:
+                        rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types, mask2, task, radius=radius, 
-                                    method=method, replace_file=replace_file, mah_fold=mah_fold, 
+                                    dis_method=dis_method, replace_file=replace_file, mah_fold=mah_fold, 
                                     verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories, shuffle_runs=shuffle_runs, model_dict=model_dict)
+                    except Exception as e:
+                        print(f"Error processing sub-{sub_N:02d}: {e}")
                 
                 
                 print(f"Finished sub-{sub_N:02d}...")
@@ -411,7 +426,7 @@ def main():
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 rsa_utils.compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
-                                    method=method, rsa_method=rsa_method, replace_file=replace_file, 
+                                    dis_method=dis_method, rsa_method=rsa_method, replace_file=replace_file, 
                                     verbose=verbose, wait_time=wait_time, rnd=False,
                                     create_subject_mean=False, mask_type=mask_type)
                 
@@ -430,7 +445,7 @@ def main():
             result = rsa_utils.calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model,
                                                 task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
-                                                method=method, replace_file=True, verbose=verbose,
+                                                dis_method=dis_method, replace_file=True, verbose=verbose,
                                                 min_percentage_available=min_percentage_available, mask_type=mask_type
                                                 )
             print("### Done computing group model similarity map ###")
@@ -446,7 +461,7 @@ def main():
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 rsa_utils.compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
-                                    method=method, rsa_method=rsa_method, replace_file=replace_file, 
+                                    dis_method=dis_method, rsa_method=rsa_method, replace_file=replace_file, 
                                     verbose=verbose, wait_time=wait_time, rnd=True, reps=reps,
                                     create_subject_mean=False, replace_rnd_files=False, skip_prefile_check=skip_prefile_check)
                 
@@ -464,7 +479,7 @@ def main():
             result = rsa_utils.calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model,
                                                 task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
-                                                method=method, verbose=verbose,
+                                                dis_method=dis_method, verbose=verbose,
                                                 min_percentage_available=min_percentage_available,
                                                 reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300, reps_group=reps_group)
             print("### Done computing group rnd mean model similarity maps ###")
@@ -475,7 +490,7 @@ def main():
             print("### Step 6: Calculating voxelwise distribution maps from permutations ###")
             verbose = False
             result = rsa_utils.calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
-                                        method=method, rsa_method=rsa_method,
+                                        dis_method=dis_method, rsa_method=rsa_method,
                                         rsa_model=rsa_model, reps_group=reps_group,
                                         verbose=verbose)
             print("### Done computing per voxel rnd distribution ###")
@@ -484,29 +499,29 @@ def main():
         if step == 7: # Calculate z map for each mean rnd model similarity map
             print("### Step 7: Calculating z maps for permutations ###")
             result_rnd = rsa_utils.calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
-                                        method=method, rsa_method=rsa_method,
+                                        dis_method=dis_method, rsa_method=rsa_method,
                                         rsa_model=rsa_model,
                                         verbose=verbose, replace_file=True,
                                         reps_group=reps_group)
             ## Z -score mean from real data with mean and std from rnd distribution
             result_real = rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie,
                                                 model, radius,
-                                        method, rsa_method,
-                                        rsa_model, verbose=verbose, mask_type=mask_type)
+                                        dis_method=dis_method, rsa_method=rsa_method,
+                                        rsa_model=rsa_model, verbose=verbose, mask_type=mask_type)
             if result_rnd and result_real:
                 _write_marker(job_marker_dir, 7)
         if step == 75:
             print("### Step 75 (75 actually): Calculating z map for real data ###")
             rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
-                                        method, rsa_method,
-                                        rsa_model, verbose=verbose, mask_type=mask_type)
+                                        dis_method=dis_method, rsa_method=rsa_method,
+                                        rsa_model=rsa_model, verbose=verbose, mask_type=mask_type)
             print("### Done computing z maps for rnd distribution ###")
         if step == 8: # Threshold z maps, calculate cluster size distribution 
             print("### Step 8: Calculating cluster size distribution ###")
             # this function calculates the cluster size distribution
             result = rsa_utils.calculate_cluster_size_distribution(
             datafolder, dataset, model, rsa_model, radius, specie,
-            method, rsa_method, z_threshold=z_threshold, verbose=verbose
+            dis_method=dis_method, rsa_method=rsa_method, z_threshold=z_threshold, verbose=verbose
             )
             print("### Done computing cluster size distribution ###")
             if result:
@@ -516,7 +531,7 @@ def main():
             forced_minimal_cluster_size = None
             # this function applies cluster correction to the real z map
             result = rsa_utils.apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius=radius,
-                                method=method, rsa_method=rsa_method, z_threshold=z_threshold,
+                                dis_method=dis_method, rsa_method=rsa_method, z_threshold=z_threshold,
                                 cluster_threshold=cluster_threshold, forced_minimal_cluster_size=forced_minimal_cluster_size,
                                 verbose=verbose, mask_type=mask_type)
             print("### Done applying cluster correction to z maps ###")
@@ -525,7 +540,7 @@ def main():
         if step == 10: # Summarize results, create formatted report and save xlsx
             print("### Step 10: Summarizing results and saving to Excel ###")
             result = rsa_utils.create_tables(datafolder, dataset, specie, model, rsa_model, radius,
-                  method, rsa_method, z_threshold=z_threshold, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
+                  dis_method=dis_method, rsa_method=rsa_method, z_threshold=z_threshold, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
                   label_dict=label_dict, label_nii_data=label_nii_data,
                   apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask,
                   mask_type=mask_type)
@@ -537,10 +552,33 @@ def main():
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
-            rsa_utils.calculate_cross_participant_similarity(datafolder, dataset, session_and_run_all_dict, participants, specie,
-                                                            mask, model, task, radius, method=method, rsa_method=rsa_method,
-                                                            rsa_model=rsa_model, verbose=verbose)
+            
+            rsa_utils.calculate_cross_participant_similarity(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie, mask=mask, model = model, task=task, radius=radius, rsa_class=rsa_class, dis_method=dis_method, rsa_method=rsa_method,rsa_model=rsa_model, verbose=verbose)
             print("### Done computing cross-participant similarity ###")
+            
+        if step == 11.1: # because I didn't wanted to start new numbers
+            
+            print("### Computing Group-average cross-participant similarity map ###")
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
+                print(f"Shuffled participants order: {participants}")
+            session_and_run_all_dict = {}
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                session_and_run_all_dict[sub_N] = session_and_run_dict
+            # if shuffle_participants is true, shuffle participants order
+            
+            rsa_utils.calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, session_and_run_all_dict, specie=specie, model=model,task=task, radius=radius, rsa_model=rsa_model, rsa_class=rsa_class,rsa_method=rsa_method,dis_method=dis_method, replace_file=True, verbose=verbose, min_percentage_available=min_percentage_available, mask_type=mask_type)
+        if step == 11.2: # Calculate leave one out cross-participant similarity, calculate the group average excluding one participant, and then calculate similarity with the left out participant, repeat for all participants
+            print("### Step 11.2: Calculating leave-one-out cross-participant similarity ###")
+            session_and_run_all_dict = {}
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                session_and_run_all_dict[sub_N] = session_and_run_dict
+            
+            rsa_utils.calculate_leave_one_out_cross_participant_similarity(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie, mask=mask, model = model, task=task, radius=radius, rsa_class=rsa_class, dis_method=dis_method, rsa_method=rsa_method,rsa_model=rsa_model, verbose=verbose)
+            print("### Done computing leave-one-out cross-participant similarity ###")
+                
         if step == 12: # Calculate similarity across all pairs in a model, save files as txt
             print("### Step 12: DSM extraction: ###")
             # load roi_database
@@ -570,7 +608,7 @@ def main():
                     print(f"voxel_coords: {voxel_coords}")
                     print(f"type of voxel_coords: {type(voxel_coords)}")
                     rsa_utils.calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie,
-                                                mask=mask, model=model, task=task, radius=radius, method=method, 
+                                                mask=mask, model=model, task=task, radius=radius, dis_method=dis_method, 
                                                 rsa_model=rsa_model, voxel_coords=voxel_coords, config_path=config_path, verbose=True, shuffle_participants=True,
                                                 shuffle_runs=shuffle_runs, wait_time=wait_time)
             print("### Done computing similarity across all pairs in a model ###")
@@ -594,7 +632,8 @@ def main():
                     elif specie == 'H':
                         preprocess_functions.fwd(par_file, radius_fwd, threshold_fwd, output_file=mov_txt, add_movement_params=False)
                     else:
-                        raise ValueError("Specie must be 'D' for Dog or '`H' for Human")
+                        raise ValueError("Specie must be 'D' for Dog or 'H' for Human")
+        
     print("### All steps completed! ###")
         
 

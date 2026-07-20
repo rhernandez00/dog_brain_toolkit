@@ -427,64 +427,181 @@ def get_path(path_label, project_dict, local_data=True, rnd=False, figure_letter
         print('Path label not recognized')
     return path
 
-def generate_fsf(n: int, template_path: str, outfile_path: str) -> None:
+def generate_fsf(
+    n: int,
+    template_path: str,
+    outfile_path: str,
+    conditions: list[str] | None = None,
+    ev_files: list[str] | None = None,
+) -> None:
     from pathlib import Path
     import re
 
-    template_lines = Path(template_path).read_text(encoding="utf-8").splitlines()
+    template_path = Path(template_path)
+    outfile_path = Path(outfile_path)
 
-    out_parts = []
+    lines = template_path.read_text(encoding="utf-8").splitlines()
 
-    # Header: lines 1..276 (1-based) — includes the single confound file line at 275
-    head = "\n".join(template_lines[:276]) + "\n"
-    head = re.sub(r"\bNUM\b", str(n), head).replace("NUM2", str(n * 2))
-    out_parts.append(head)
+    if conditions is None:
+        conditions = [f"cond{i:03d}" for i in range(1, n + 1)]
 
-    # Per-EV block: lines 277..316 (1-based)
-    block_tpl = "\n".join(template_lines[276:316]) + "\n"
-    for i in range(1, n + 1):
-        con = f"cond{i:03d}"
-        block = block_tpl.replace("NUM", str(i)).replace("CONDITION", con)
-        out_parts.append(block)
+    if len(conditions) != n:
+        raise ValueError("conditions must have length n")
 
-        # Orthogonalization (unchanged)
+    if ev_files is not None and len(ev_files) != n:
+        raise ValueError("ev_files must have length n")
+
+    def find_line(pattern: str) -> int:
+        rx = re.compile(pattern)
+        for idx, line in enumerate(lines):
+            if rx.search(line):
+                return idx
+        raise ValueError(f"Could not find line matching: {pattern}")
+
+    def replace_fsf_value(text: str, key: str, value: int | str) -> str:
+        return re.sub(
+            rf"(?m)^(set fmri\({re.escape(key)}\)\s+).*$",
+            rf"\g<1>{value}",
+            text,
+        )
+
+    # Sections in the uploaded H_basic.fsf
+    ev1_start = find_line(r"^# EV 1 title$")
+    ortho_start = find_line(r"^# Orthogonalise EV 1 wrt EV 0")
+    conmask_tail_start = find_line(r"^# Do contrast masking at all\?$")
+
+    # Keep everything before EV 1.
+    # This includes feat_files, confounds, and highres_files exactly once.
+    head = "\n".join(lines[:ev1_start]) + "\n"
+
+    # Keep only the EV definition block, not orthogonalisation.
+    ev_core_tpl = lines[ev1_start:ortho_start]
+
+    # Keep only the final non-GUI tail after generated contrast masks.
+    tail = "\n".join(lines[conmask_tail_start:]) + "\n"
+
+    # Update counts in header
+    head = replace_fsf_value(head, "evs_orig", n)
+    head = replace_fsf_value(head, "evs_real", n * 2)
+    head = replace_fsf_value(head, "ncon_orig", n)
+    head = replace_fsf_value(head, "ncon_real", n)
+
+    out_parts = [head]
+
+    def make_ev_block(i: int, condition: str, ev_file: str | None) -> str:
+        block = "\n".join(ev_core_tpl) + "\n"
+
+        # Update comments: EV 1 -> EV i
+        block = re.sub(r"\bEV 1\b", f"EV {i}", block)
+
+        # Update fmri keys: evtitle1, shape1, custom1, etc.
+        keys = [
+            "evtitle",
+            "shape",
+            "convolve",
+            "convolve_phase",
+            "tempfilt_yn",
+            "deriv_yn",
+            "custom",
+        ]
+
+        for key in keys:
+            block = re.sub(
+                rf"(set fmri\({key})1(\))",
+                rf"\g<1>{i}\2",
+                block,
+            )
+
+        # Update EV title
+        block = re.sub(
+            r'(set fmri\(evtitle\d+\)\s+)"[^"]*"',
+            rf'\1"{condition}"',
+            block,
+        )
+
+        # Update custom EV file
+        if ev_file is None:
+            # Replace only the filename, preserving the directory.
+            block = re.sub(
+                r'(set fmri\(custom\d+\)\s+")([^"]*/)?[^"/]+\.txt(")',
+                rf"\1\2{condition}.txt\3",
+                block,
+            )
+        else:
+            block = re.sub(
+                r'(set fmri\(custom\d+\)\s+)"[^"]*"',
+                rf'\1"{ev_file}"',
+                block,
+            )
+
+        return block
+
+    # EVs + orthogonalisation
+    for i, condition in enumerate(conditions, start=1):
+        ev_file = None if ev_files is None else ev_files[i - 1]
+        out_parts.append(make_ev_block(i, condition, ev_file))
+
         for ii in range(0, n + 1):
             out_parts.append(f"# Orthogonalise EV {i} wrt EV {ii}\n")
             out_parts.append(f"set fmri(ortho{i}.{ii}) 0\n\n")
 
-    # Contrast sections + masking (unchanged)
-    out_parts.append("# Contrast & F-tests mode\n# real : control real EVs\n# orig : control original EVs\n")
-    out_parts.append("set fmri(con_mode_old) orig\nset fmri(con_mode) orig\n\n")
+    # Contrast sections
+    out_parts.append(
+        "# Contrast & F-tests mode\n"
+        "# real : control real EVs\n"
+        "# orig : control original EVs\n"
+    )
+    out_parts.append("set fmri(con_mode_old) orig\n")
+    out_parts.append("set fmri(con_mode) orig\n\n")
 
     contrastnum = n * 2
-    c = 1
-    for i in range(1, n + 1):
-        con = f"cond{i:03d}"
-        out_parts.append(f"# Display images for contrast_real {i}\nset fmri(conpic_real.{i}) 1\n\n")
-        out_parts.append(f"# Title for contrast_real {i}\nset fmri(conname_real.{i}) \"{con}\"\n\n")
+
+    # Real contrasts.
+    # Because temporal derivatives are on, each EV has 2 real columns:
+    # EV i main effect is column 2*i - 1.
+    for i, condition in enumerate(conditions, start=1):
+        out_parts.append(f"# Display images for contrast_real {i}\n")
+        out_parts.append(f"set fmri(conpic_real.{i}) 1\n\n")
+
+        out_parts.append(f"# Title for contrast_real {i}\n")
+        out_parts.append(f'set fmri(conname_real.{i}) "{condition}"\n\n')
+
+        active_col = 2 * i - 1
+
         for ii in range(1, contrastnum + 1):
-            out_parts.append(f"# Real contrast_real vector {i} element {ii}\nset fmri(con_real{i}.{ii}) {'1.0' if c == ii else '0'}\n\n")
-        c += 2
+            value = "1.0" if ii == active_col else "0"
+            out_parts.append(f"# Real contrast_real vector {i} element {ii}\n")
+            out_parts.append(f"set fmri(con_real{i}.{ii}) {value}\n\n")
 
-    for i in range(1, n + 1):
-        con = f"cond{i:03d}"
-        out_parts.append(f"# Display images for contrast_orig {i}\nset fmri(conpic_orig.{i}) 1\n\n")
-        out_parts.append(f"# Title for contrast_orig {i}\nset fmri(conname_orig.{i}) \"{con}\"\n\n")
+    # Original contrasts
+    for i, condition in enumerate(conditions, start=1):
+        out_parts.append(f"# Display images for contrast_orig {i}\n")
+        out_parts.append(f"set fmri(conpic_orig.{i}) 1\n\n")
+
+        out_parts.append(f"# Title for contrast_orig {i}\n")
+        out_parts.append(f'set fmri(conname_orig.{i}) "{condition}"\n\n')
+
         for ii in range(1, n + 1):
-            out_parts.append(f"# Real contrast_orig vector {i} element {ii}\nset fmri(con_orig{i}.{ii}) {'1.0' if i == ii else '0'}\n\n")
+            value = "1.0" if ii == i else "0"
+            out_parts.append(f"# Real contrast_orig vector {i} element {ii}\n")
+            out_parts.append(f"set fmri(con_orig{i}.{ii}) {value}\n\n")
 
-    out_parts.append("# Contrast masking - use >0 instead of thresholding?\nset fmri(conmask_zerothresh_yn) 0\n\n")
+    # Contrast masking
+    out_parts.append("# Contrast masking - use >0 instead of thresholding?\n")
+    out_parts.append("set fmri(conmask_zerothresh_yn) 0\n\n")
+
     for i in range(1, n + 1):
         for ii in range(1, n + 1):
             if i != ii:
-                out_parts.append(f"# Mask real contrast/F-test {i} with real contrast/F-test {ii}?\nset fmri(conmask{i}_{ii}) 0\n\n")
+                out_parts.append(
+                    f"# Mask real contrast/F-test {i} with real contrast/F-test {ii}?\n"
+                )
+                out_parts.append(f"set fmri(conmask{i}_{ii}) 0\n\n")
 
-    # Tail: lines 310..end (1-based)
-    out_parts.append("\n".join(template_lines[309:]) + "\n")
-    # create outfile_path directory if it does not exist
-    os.makedirs(os.path.dirname(outfile_path), exist_ok=True)
+    out_parts.append(tail)
 
-    Path(outfile_path).write_text("".join(out_parts), encoding="utf-8")
+    outfile_path.parent.mkdir(parents=True, exist_ok=True)
+    outfile_path.write_text("".join(out_parts), encoding="utf-8")
 
 
 def run_individual_GLM(project_dict, model, sub_N, session_and_run_list):

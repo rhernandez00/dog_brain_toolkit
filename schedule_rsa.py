@@ -32,7 +32,12 @@ def main():
                         help="Species to schedule: H, D, or both (default: both)")
     parser.add_argument("--target_step", type=int, default=10,
                         help="Final pipeline step to schedule (default: 10)")
-    parser.add_argument("--method", default="mahalanobis",
+    parser.add_argument("--start_step", type=int, default=2,
+                        help="Earliest pipeline step to schedule; steps below are assumed "
+                             "to exist on disk already (default: 2)")
+    parser.add_argument("--rsa_method", default="kendall",
+                        help="Method to calculate correlation with model")
+    parser.add_argument("--dis_method", default="mahalanobis",
                         help="Pairwise similarity method passed to searchlight.py "
                              "(e.g. mahalanobis, correlation; default: mahalanobis)")
     parser.add_argument("--z_threshold", type=float, default=3.1,
@@ -43,6 +48,9 @@ def main():
                         help="Number of group permutations for step 5 (default: 1000; use fewer for testing)")
     parser.add_argument("--replace_rnd_files", action="store_true",
                         help="Force recompute/overwrite existing rnd output files (steps 4-5)")
+    parser.add_argument("--mah_fold", default="stim-wise",
+                        help="Folding strategy for Mahalanobis distance with cross-validation "
+                             "(stim-wise [default], stim-wise-all-runs, run-wise-multiple-runs)")
     args = parser.parse_args()
 
     datafolder, _, _ = get_paths()
@@ -52,17 +60,20 @@ def main():
 
     total_created = 0
     for specie in species:
-        print(f"\n--- Scheduling {specie} (target: step {args.target_step}) ---")
+        print(f"\n--- Scheduling {specie} (steps {args.start_step}–{args.target_step}) ---")
         jobs = build_job_graph(
             dataset=args.dataset,
             model=args.model,
             rsa_model=args.rsa_model,
             specie=specie,
             target_step=args.target_step,
+            start_step=args.start_step,
             z_threshold=args.z_threshold,
             reps=args.reps,
             reps_group=args.reps_group,
-            method=args.method,
+            rsa_method=args.rsa_method,
+            dis_method=args.dis_method,
+            mah_fold=args.mah_fold,
             replace_rnd_files=args.replace_rnd_files,
         )
         for job in jobs:

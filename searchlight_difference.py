@@ -212,7 +212,7 @@ def main():
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types, mask, task, radius, 
-                                    method=method, replace_file=replace_file, mah_fold='run-wise', verbose=verbose)
+                                    dis_method=method, replace_file=replace_file, mah_fold='run-wise', verbose=verbose)
                 
                 
                 print(f"Finished sub-{sub_N:02d}...")
