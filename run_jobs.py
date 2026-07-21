@@ -41,6 +41,17 @@ def build_command(job, git_folder, python_exe, marker_dir):
         "--reps_group",     str(job["reps_group"]),
         "--job_marker_dir", str(marker_dir),
     ]
+    # Fields below are only present on dashboard-scheduled jobs; classic
+    # scheduler jobs omit them and fall back to searchlight.py's own defaults.
+    if job.get("radius") is not None:
+        cmd += ["--radius", str(job["radius"])]
+    if job.get("mask_type"):
+        cmd += ["--mask_type", str(job["mask_type"])]
+    if job.get("participant") is not None:
+        # Scope a per-participant job to a single subject.
+        cmd += ["--participants_forced", str(job["participant"])]
+    if job.get("replace_file"):
+        cmd.append("--replace_file")
     if job.get("replace_rnd_files"):
         cmd.append("--replace_rnd_files")
     return cmd

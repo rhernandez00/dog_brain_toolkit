@@ -4088,7 +4088,7 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     # same name but with .json extension
     log_json_output = output.replace('.nii.gz', '.json')
     
-    nifti_mean(files_list, mean_model_map_path, std_model_map_path)
+    
 
     # check if log_json output file already exists
     if os.path.exists(log_json_output):

@@ -28,12 +28,18 @@ _STEP_DEPS = {
 }
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise"):
-    return (
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None):
+    job_id = (
         f"{dataset}__{model}__{rsa_model}__{specie}"
         f"__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}"
         f"__rsa{rsa_method}__dis{dis_method}__mah{mah_fold}"
     )
+    # Per-participant jobs (scheduled from the dashboard for a single missing map)
+    # get a __subNN suffix so they never collide with the whole-step job or with
+    # each other. participant=None keeps the classic whole-step id unchanged.
+    if participant is not None:
+        job_id += f"__sub{int(participant):02d}"
+    return job_id
 
 
 def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
@@ -117,3 +123,57 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "error": None,
         })
     return jobs
+
+
+def build_single_job(dataset, model, rsa_model, specie, step,
+                     z_threshold=3.1, reps=100, reps_group=1000,
+                     rsa_method="kendall", dis_method="mahalanobis",
+                     mah_fold="stim-wise", participant=None,
+                     radius=None, mask_type=None,
+                     replace_file=False, replace_rnd_files=False):
+    """Build a single, *independent* job dict (no dependencies, status=pending).
+
+    Used by the dashboard's "schedule missing" / per-map buttons: the user has
+    looked at the disk and wants to (re)compute one specific map, so the job is
+    created ready-to-run with an empty ``deps`` list. ``participant`` (an int)
+    scopes the job to one subject via searchlight's ``--participants_forced``;
+    ``participant=None`` schedules the whole step (the single group map for the
+    group steps 3/5/6/7/8/9/10).
+
+    The extra ``radius`` / ``mask_type`` / ``replace_file`` fields are honoured
+    by ``run_jobs.build_command`` (they are absent from classic scheduler jobs,
+    which read them with ``.get()`` and fall back to searchlight's defaults).
+    """
+    job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold,
+                         reps, reps_group, rsa_method, dis_method, mah_fold,
+                         participant=participant)
+    label = STEP_LABELS.get(step, f"Step {step}")
+    if participant is not None:
+        label = f"{label} (sub-{int(participant):02d})"
+    return {
+        "job_id": job_id,
+        "dataset": dataset,
+        "model": model,
+        "rsa_model": rsa_model,
+        "specie": specie,
+        "step": step,
+        "label": label,
+        "status": "pending",
+        "deps": [],
+        "rsa_method": rsa_method,
+        "dis_method": dis_method,
+        "mah_fold": mah_fold,
+        "z_threshold": z_threshold,
+        "reps": reps,
+        "reps_group": reps_group,
+        "participant": (int(participant) if participant is not None else None),
+        "radius": radius,
+        "mask_type": mask_type,
+        "replace_file": replace_file,
+        "replace_rnd_files": replace_rnd_files,
+        "created_at": None,
+        "started_at": None,
+        "completed_at": None,
+        "machine": None,
+        "error": None,
+    }

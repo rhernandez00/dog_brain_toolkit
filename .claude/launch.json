@@ -12,6 +12,12 @@
       "runtimeExecutable": "C:/ProgramData/anaconda3/python.exe",
       "runtimeArgs": ["brain_viewer.py"],
       "port": 8050
+    },
+    {
+      "name": "pipeline_dashboard",
+      "runtimeExecutable": "C:/ProgramData/anaconda3/python.exe",
+      "runtimeArgs": ["pipeline_dashboard.py"],
+      "port": 8060
     }
   ]
 }

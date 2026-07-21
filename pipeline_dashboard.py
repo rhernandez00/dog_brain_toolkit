@@ -51,9 +51,16 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pipeline_console as pc  # noqa: E402  (reuse the probe logic)
-from scheduler.paths import get_paths  # noqa: E402
+from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
+from scheduler.dag import build_single_job  # noqa: E402
+from scheduler.jobs import create_job  # noqa: E402
 
 from dash import Dash, dcc, html, Input, Output, State, ALL, callback_context, no_update  # noqa: E402
+
+# Steps whose output is one map *per participant* (probes report a per_sub
+# breakdown for these). "Schedule missing" queues one job per missing subject
+# for these; every other step produces a single group map -> one job.
+PER_PARTICIPANT_STEPS = {0, 1, 2, 4}
 
 # ---------------------------------------------------------------------------
 # Parameters that define a "run" (and therefore the cache signature)
@@ -172,6 +179,82 @@ def run_probe(params, step):
 
 
 # ---------------------------------------------------------------------------
+# Scheduling — create independent (no-dependency) jobs in the shared queue
+# ---------------------------------------------------------------------------
+def _schedule_jobs(params, step, participants, overwrite):
+    """Create one independent pending job per entry in ``participants``.
+
+    ``participants`` is a list of subject ints, or ``[None]`` for the single
+    group-map jobs. Returns ``(created, skipped)`` — lists of the same entries,
+    where *skipped* were already present in the queue (``create_job`` dedups by
+    job id across all states).
+    """
+    queue_dir = get_queue_dir(DATAFOLDER)
+    # The searchlight overwrite flag differs by step family: rnd steps (4/5)
+    # write into RSA_rnd and honour --replace_rnd_files; the rest use --replace_file.
+    replace_rnd = bool(overwrite and step in (4, 5))
+    created, skipped = [], []
+    for sub in participants:
+        job = build_single_job(
+            dataset=params['dataset'], model=params['model'],
+            rsa_model=params['rsa_model'], specie=params['specie'], step=step,
+            z_threshold=params['z_threshold'], reps=params['reps'],
+            reps_group=params['reps_group'],
+            rsa_method=params['rsa_method'], dis_method=params['method'],
+            mah_fold='stim-wise',
+            participant=sub, radius=params['radius'], mask_type=params['mask_type'],
+            replace_file=bool(overwrite), replace_rnd_files=replace_rnd,
+        )
+        if create_job(queue_dir, job):
+            created.append(sub)
+        else:
+            skipped.append(sub)
+    return created, skipped
+
+
+def _fmt_maps(maps):
+    names = ['group' if s is None else f'sub-{int(s):02d}' for s in maps]
+    return ', '.join(names) if names else '—'
+
+
+def _msg_span(text, ok=True):
+    color = '#1a7f37' if ok else '#bf8700'
+    return html.Span(text, style={'color': color, 'fontWeight': '600'})
+
+
+def _schedule_result_msg(params, step, created, skipped, overwrite):
+    label = pc.STEP_LABELS.get(step, f'Step {step}')
+    tag = ' [overwrite]' if overwrite else ''
+    txt = (f"Step {step} ({label}), specie {params['specie']}{tag}: "
+           f"scheduled {len(created)} job(s)")
+    if created:
+        txt += f" → {_fmt_maps(created)}"
+    if skipped:
+        txt += f"; {len(skipped)} already in queue ({_fmt_maps(skipped)})"
+    return _msg_span(txt, ok=bool(created))
+
+
+def _schedule_missing(params, step, probe_result, overwrite):
+    """Schedule jobs for the not-DONE maps of ``step`` from a fresh probe."""
+    if step in PER_PARTICIPANT_STEPS:
+        per_sub = probe_result.get('per_sub') or []
+        subs = [int(s) for s, v, _ in per_sub if v in (pc.MISSING, pc.PARTIAL)]
+        if not subs:
+            return _msg_span(
+                f"Step {step}: no missing/partial participants to schedule "
+                f"(verdict {probe_result.get('verdict')}).", ok=True)
+        created, skipped = _schedule_jobs(params, step, subs, overwrite)
+        return _schedule_result_msg(params, step, created, skipped, overwrite)
+    # group step -> a single map
+    if probe_result.get('verdict') == pc.DONE:
+        return _msg_span(
+            f"Step {step} already DONE — nothing to schedule "
+            f"(use Details → Schedule to force a re-run).", ok=True)
+    created, skipped = _schedule_jobs(params, step, [None], overwrite)
+    return _schedule_result_msg(params, step, created, skipped, overwrite)
+
+
+# ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
 URL_BASE = os.environ.get('PIPELINE_DASHBOARD_URL_BASE', '/')
@@ -229,9 +312,20 @@ app.layout = html.Div([
                     style={'marginRight': '10px'}),
         html.Span(id='sig-label', style={'color': '#57606a', 'marginLeft': '10px'}),
     ], style={'margin': '14px 0'}),
+    html.Div(id='schedule-msg', style={'margin': '8px 0', 'minHeight': '20px'}),
     html.Div(id='status-table'),
     html.Hr(),
     html.H4('Step detail'),
+    html.Div([
+        dcc.Checklist(
+            id='detail-overwrite',
+            options=[{'label': ' overwrite existing files when scheduling '
+                               '(adds --replace_file / --replace_rnd_files)',
+                      'value': 'ow'}],
+            value=[],
+            style={'display': 'inline-block', 'color': '#57606a'},
+        ),
+    ], style={'margin': '4px 0'}),
     html.Div(id='detail-panel', style={'minHeight': '80px'}),
     html.Hr(),
     html.Details([
@@ -243,6 +337,19 @@ app.layout = html.Div([
             "or permutations missing), red = missing, grey = N/A or unknown.\n"
             "* **Details** shows the per-participant breakdown and, if a scheduler "
             "job failed, the recorded error (the 'why').\n"
+            "* **Sched missing** (blue, per step) probes that step now and queues one "
+            "*independent* job per missing map — one job per missing participant for "
+            "steps 0/1/2/4, or one job for the single group map otherwise. Jobs land "
+            "in the shared `job_queue/pending/` and are picked up by `run_jobs.py`.\n"
+            "* Inside **Details**, each participant has its own **Schedule** button "
+            "(and group steps get a **Schedule this step** button) so you can queue "
+            "any single map — including one that is already DONE, to force a re-run.\n"
+            "* Tick **overwrite** (above the detail panel) before scheduling to add "
+            "`--replace_file` (and `--replace_rnd_files` for steps 4/5) so existing "
+            "files are recomputed instead of skipped.\n"
+            "* Scheduled jobs are created with **no dependencies** — they run as soon "
+            "as a worker is free, so make sure a map's inputs (earlier steps) already "
+            "exist before scheduling it.\n"
             "* Results are remembered in `~/.rsa_pipeline_dashboard_cache.json`. "
             "Use a step's **Clear** or **Clear all** after you redo a step so it "
             "gets re-checked.\n"
@@ -283,43 +390,53 @@ def populate_models(dataset, model, _n, current):
 @app.callback(
     Output('cache-version', 'data'),
     Output('selected-step', 'data'),
+    Output('schedule-msg', 'children'),
     Input('check-all', 'n_clicks'),
     Input('clear-all', 'n_clicks'),
     Input({'type': 'step-check', 'index': ALL}, 'n_clicks'),
     Input({'type': 'step-clear', 'index': ALL}, 'n_clicks'),
     Input({'type': 'step-details', 'index': ALL}, 'n_clicks'),
+    Input({'type': 'step-schedule-missing', 'index': ALL}, 'n_clicks'),
+    Input({'type': 'detail-schedule-sub', 'step': ALL, 'sub': ALL}, 'n_clicks'),
+    Input({'type': 'detail-schedule-group', 'index': ALL}, 'n_clicks'),
     State('cache-version', 'data'),
+    State('detail-overwrite', 'value'),
     State('p-dataset', 'value'), State('p-model', 'value'), State('p-rsa_model', 'value'),
     State('p-specie', 'value'), State('p-method', 'value'), State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
     prevent_initial_call=True,
 )
-def do_action(_ca, _cl, _sc, _sx, _sd, version,
+def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _dss, _dsg, version, overwrite_val,
               dataset, model, rsa_model, specie, method, rsa_method,
               radius, z_threshold, mask_type, reps, reps_group):
     trig = callback_context.triggered
     if not trig or trig[0]['value'] in (None, 0):
-        return no_update, no_update
+        return no_update, no_update, no_update
     prop = trig[0]['prop_id']
+
+    def _id_from_prop(p):
+        # p looks like '{"index":7,"type":"step-check"}.n_clicks'
+        try:
+            return json.loads(p.split('.n_clicks')[0])
+        except Exception:
+            return None
+
+    idd = _id_from_prop(prop) or {}
+    ttype = idd.get('type')
+    overwrite = 'ow' in (overwrite_val or [])
 
     params = params_from_inputs(dataset, model, rsa_model, specie, method, rsa_method,
                                 radius, z_threshold, mask_type, reps, reps_group)
     if not params['rsa_model']:
         _log(f"button pressed ({prop}) but no rsa_model selected — ignoring")
-        return no_update, no_update
+        return no_update, no_update, _msg_span('⚠ pick an rsa_model first', ok=False)
     sig = signature(params)
     cache = load_cache()
     entry = cache.setdefault(sig, {'params': params, 'steps': {}})
     entry['params'] = params
     selected = no_update
-
-    def _step_from_prop(p):
-        # p looks like '{"index":7,"type":"step-check"}.n_clicks'
-        try:
-            return json.loads(p.split('.n_clicks')[0])['index']
-        except Exception:
-            return None
+    msg = no_update
 
     if prop.startswith('check-all'):
         _log(f"'Check all steps' pressed — {sig}")
@@ -339,26 +456,50 @@ def do_action(_ca, _cl, _sc, _sx, _sd, version,
         _log(f"'Clear all' pressed — {sig}")
         cache.pop(sig, None)
         save_cache(cache)
-        return (version or 0) + 1, None
-    elif '"type":"step-check"' in prop or "'type': 'step-check'" in prop:
-        step = _step_from_prop(prop)
+        return (version or 0) + 1, None, no_update
+    elif ttype == 'step-check':
+        step = idd.get('index')
         if step is not None:
             _log(f"'Check' pressed for step {step} — {sig}")
             entry['steps'][str(step)] = run_probe(params, step)
             selected = step
-    elif '"type":"step-clear"' in prop or "'type': 'step-clear'" in prop:
-        step = _step_from_prop(prop)
+    elif ttype == 'step-clear':
+        step = idd.get('index')
         if step is not None:
             _log(f"'Clear' pressed for step {step} — {sig}")
             entry['steps'].pop(str(step), None)
             selected = no_update
-    elif '"type":"step-details"' in prop or "'type': 'step-details'" in prop:
-        step = _step_from_prop(prop)
+    elif ttype == 'step-details':
+        step = idd.get('index')
         _log(f"'Details' pressed for step {step}")
         selected = step if step is not None else no_update
+    elif ttype == 'step-schedule-missing':
+        step = idd.get('index')
+        if step is not None:
+            _log(f"'Sched missing' pressed for step {step} (overwrite={overwrite}) — {sig}")
+            # probe fresh so we schedule exactly what is missing right now, and
+            # remember the result so the table/detail reflect it.
+            result = run_probe(params, step)
+            entry['steps'][str(step)] = result
+            selected = step
+            msg = _schedule_missing(params, step, result, overwrite)
+    elif ttype == 'detail-schedule-sub':
+        step, sub = idd.get('step'), idd.get('sub')
+        if step is not None and sub is not None:
+            _log(f"'Schedule' pressed for step {step} sub-{sub} (overwrite={overwrite}) — {sig}")
+            created, skipped = _schedule_jobs(params, step, [int(sub)], overwrite)
+            msg = _schedule_result_msg(params, step, created, skipped, overwrite)
+            selected = step
+    elif ttype == 'detail-schedule-group':
+        step = idd.get('index')
+        if step is not None:
+            _log(f"'Schedule step' (group) pressed for step {step} (overwrite={overwrite}) — {sig}")
+            created, skipped = _schedule_jobs(params, step, [None], overwrite)
+            msg = _schedule_result_msg(params, step, created, skipped, overwrite)
+            selected = step
 
     save_cache(cache)
-    return (version or 0) + 1, selected
+    return (version or 0) + 1, selected, msg
 
 
 # ---------------------------------------------------------------------------
@@ -405,7 +546,14 @@ def render_table(_v, dataset, model, rsa_model, specie, method, rsa_method,
                         style={'marginRight': '6px'}),
             html.Button('Clear', id={'type': 'step-clear', 'index': step}, n_clicks=0,
                         style={'marginRight': '6px'}),
-            html.Button('Details', id={'type': 'step-details', 'index': step}, n_clicks=0),
+            html.Button('Details', id={'type': 'step-details', 'index': step}, n_clicks=0,
+                        style={'marginRight': '6px'}),
+            html.Button('Sched missing', id={'type': 'step-schedule-missing', 'index': step},
+                        n_clicks=0, title='Probe this step now, then queue a job for each '
+                        'missing map',
+                        style={'background': '#0969da', 'color': 'white',
+                               'border': 'none', 'borderRadius': '4px',
+                               'padding': '2px 8px'}),
         ])
         rows.append(html.Tr([
             html.Td(step, style={'padding': '6px 10px'}),
@@ -448,7 +596,10 @@ def render_detail(step, _v, dataset, model, rsa_model, specie, method, rsa_metho
     if not c:
         return html.Div([html.B(f'Step {step} — {label}'), html.Br(),
                          html.Span('Not checked yet for this parameter set. Press '
-                                   '"Check" on that step.', style={'color': '#57606a'})])
+                                   '"Check" on that step to get per-map Schedule '
+                                   'buttons, or "Sched missing" to probe and queue '
+                                   'the missing maps in one go.',
+                                   style={'color': '#57606a'})])
 
     color = VERDICT_COLOR.get(c['verdict'], NOT_CHECKED_COLOR)
     blocks = [
@@ -473,9 +624,15 @@ def render_detail(step, _v, dataset, model, rsa_model, specie, method, rsa_metho
                 html.Span(f'{mark} ', style={'color': col, 'fontWeight': 'bold'}),
                 html.Span(f'sub-{int(sub):02d}: ', style={'fontFamily': 'monospace'}),
                 html.Span(f'{verdict} — {note}', style={'color': col}),
-            ]))
+                html.Button('Schedule',
+                            id={'type': 'detail-schedule-sub', 'step': step, 'sub': int(sub)},
+                            n_clicks=0, title='Queue a job for just this participant',
+                            style={'marginLeft': '8px', 'fontSize': '11px',
+                                   'padding': '0 6px', 'cursor': 'pointer'}),
+            ], style={'breakInside': 'avoid'}))
         blocks.append(html.Details([
-            html.Summary(f'per-participant ({len(per_sub)})'),
+            html.Summary(f'per-participant ({len(per_sub)}) — Schedule queues that '
+                         'one map (honours the overwrite checkbox above)'),
             html.Ul(items, style={'columns': '2', 'fontSize': '13px'}),
         ], open=True))
 
@@ -503,6 +660,25 @@ def render_detail(step, _v, dataset, model, rsa_model, specie, method, rsa_metho
             html.B('recorded scheduler failures (why):', style={'color': '#cf222e'}),
             html.Ul(fitems),
         ]))
+
+    # --- scheduling controls -------------------------------------------------
+    if step in PER_PARTICIPANT_STEPS:
+        blocks.append(html.Div(
+            'Per-participant step: use the Schedule button next to a participant '
+            'above to queue that one map, or "Sched missing" in the table to queue '
+            'every missing/partial participant at once.',
+            style={'color': '#57606a', 'fontSize': '12px', 'margin': '8px 0'}))
+    else:
+        blocks.append(html.Div([
+            html.Button('▶ Schedule this step',
+                        id={'type': 'detail-schedule-group', 'index': step}, n_clicks=0,
+                        style={'background': '#0969da', 'color': 'white', 'border': 'none',
+                               'borderRadius': '4px', 'padding': '4px 10px',
+                               'cursor': 'pointer', 'marginRight': '8px'}),
+            html.Span('single group map — queues one job '
+                      '(honours the overwrite checkbox above).',
+                      style={'color': '#57606a', 'fontSize': '12px'}),
+        ], style={'margin': '8px 0'}))
     return html.Div(blocks)
 
 
