@@ -91,6 +91,12 @@ DATAFOLDER, _, _ = get_paths()
 CACHE_PATH = os.path.join(os.path.expanduser('~'), '.rsa_pipeline_dashboard_cache.json')
 
 
+def _log(msg):
+    """Print to the console the app was launched from, so button presses that
+    trigger a (possibly slow) disk scan are visible even before the page updates."""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {msg}", flush=True)
+
+
 # ---------------------------------------------------------------------------
 # Cache (persisted JSON, keyed by parameter signature)
 # ---------------------------------------------------------------------------
@@ -145,9 +151,14 @@ def make_ctx(params):
 
 def run_probe(params, step):
     """Run one step's disk probe and return a JSON-serialisable result dict."""
+    label = pc.STEP_LABELS.get(step, f'Step {step}')
+    t0 = datetime.now()
+    _log(f"  scanning step {step} ({label}) ...")
     ctx = make_ctx(params)
     r = pc.PROBES[step](ctx)
     failures = pc.find_failure_info(ctx, step)
+    elapsed = (datetime.now() - t0).total_seconds()
+    _log(f"  step {step} ({label}) -> {r['verdict']} — {r['summary']}  [{elapsed:.1f}s]")
     return {
         'verdict': r['verdict'],
         'summary': r['summary'],
@@ -258,7 +269,9 @@ app.layout = html.Div([
     State('p-rsa_model', 'value'),
 )
 def populate_models(dataset, model, _n, current):
+    _log(f"reloading rsa_model list for dataset={dataset!r} model={model!r} ...")
     models, _folder = pc.list_rsa_models(DATAFOLDER, (dataset or '').strip())
+    _log(f"  found {len(models)} rsa_model(s)")
     options = [{'label': m, 'value': m} for m in models]
     value = current if current in models else (models[0] if models else None)
     return options, value
@@ -293,6 +306,7 @@ def do_action(_ca, _cl, _sc, _sx, _sd, version,
     params = params_from_inputs(dataset, model, rsa_model, specie, method, rsa_method,
                                 radius, z_threshold, mask_type, reps, reps_group)
     if not params['rsa_model']:
+        _log(f"button pressed ({prop}) but no rsa_model selected — ignoring")
         return no_update, no_update
     sig = signature(params)
     cache = load_cache()
@@ -308,8 +322,12 @@ def do_action(_ca, _cl, _sc, _sx, _sd, version,
             return None
 
     if prop.startswith('check-all'):
+        _log(f"'Check all steps' pressed — {sig}")
+        t0 = datetime.now()
         for step in pc.STEPS:
             entry['steps'][str(step)] = run_probe(params, step)
+        elapsed = (datetime.now() - t0).total_seconds()
+        _log(f"'Check all steps' done in {elapsed:.1f}s")
         # focus the first incomplete step
         selected = None
         for step in pc.STEPS:
@@ -318,21 +336,25 @@ def do_action(_ca, _cl, _sc, _sx, _sd, version,
                 selected = step
                 break
     elif prop.startswith('clear-all'):
+        _log(f"'Clear all' pressed — {sig}")
         cache.pop(sig, None)
         save_cache(cache)
         return (version or 0) + 1, None
     elif '"type":"step-check"' in prop or "'type': 'step-check'" in prop:
         step = _step_from_prop(prop)
         if step is not None:
+            _log(f"'Check' pressed for step {step} — {sig}")
             entry['steps'][str(step)] = run_probe(params, step)
             selected = step
     elif '"type":"step-clear"' in prop or "'type': 'step-clear'" in prop:
         step = _step_from_prop(prop)
         if step is not None:
+            _log(f"'Clear' pressed for step {step} — {sig}")
             entry['steps'].pop(str(step), None)
             selected = no_update
     elif '"type":"step-details"' in prop or "'type': 'step-details'" in prop:
         step = _step_from_prop(prop)
+        _log(f"'Details' pressed for step {step}")
         selected = step if step is not None else no_update
 
     save_cache(cache)

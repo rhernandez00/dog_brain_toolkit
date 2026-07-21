@@ -317,17 +317,26 @@ def probe_step2(ctx):
     """Model similarity maps (real) per participant."""
     if not ctx.participants:
         return _result(UNKNOWN, "participant list unavailable")
+    is_mah = ctx.method == 'mahalanobis'
     per_sub, done, partial = [], 0, 0
     fname = f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}.nii.gz"
     masked = f"{ctx.mask_type}-{fname}" if ctx.mask_type else fname
     for sub in ctx.participants:
         sub_dir = os.path.join(ctx.rsa_dir, ctx.rsa_model, ctx.sub_folder(sub))
-        # tolerate both masked and unmasked names, across run subfolders
-        n = _count(os.path.join(sub_dir, 'ses-*run-*', masked))
-        if n == 0 and ctx.mask_type:
-            n = _count(os.path.join(sub_dir, 'ses-*run-*', fname))
-        sess = _sessions_for(ctx, sub)
-        exp = len(sess) if sess is not None else None
+        if is_mah:
+            # mahalanobis: single file directly under the subject folder,
+            # no per-session/run subfolder (see rsa_utils.compare_with_model)
+            n = _count(os.path.join(sub_dir, masked))
+            if n == 0 and ctx.mask_type:
+                n = _count(os.path.join(sub_dir, fname))
+            exp = 1
+        else:
+            # tolerate both masked and unmasked names, across run subfolders
+            n = _count(os.path.join(sub_dir, 'ses-*run-*', masked))
+            if n == 0 and ctx.mask_type:
+                n = _count(os.path.join(sub_dir, 'ses-*run-*', fname))
+            sess = _sessions_for(ctx, sub)
+            exp = len(sess) if sess is not None else None
         per_sub.append(_grade_count(sub, n, exp))
         done += per_sub[-1][1] == DONE
         partial += per_sub[-1][1] == PARTIAL
