@@ -52,8 +52,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pipeline_console as pc  # noqa: E402  (reuse the probe logic)
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
-from scheduler.dag import build_single_job  # noqa: E402
+from scheduler.dag import build_single_job, build_job_graph  # noqa: E402
 from scheduler.jobs import create_job  # noqa: E402
+
+# Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
+FINAL_STEP = 10
 
 from dash import Dash, dcc, html, Input, Output, State, ALL, callback_context, no_update  # noqa: E402
 
@@ -254,6 +257,64 @@ def _schedule_missing(params, step, probe_result, overwrite):
     return _schedule_result_msg(params, step, created, skipped, overwrite)
 
 
+def _schedule_from_here(params, start_step, overwrite):
+    """Schedule the full *dependent* DAG from ``start_step`` through FINAL_STEP.
+
+    Unlike ``_schedule_jobs`` (which queues independent, ready-to-run jobs for a
+    single step), this uses ``build_job_graph`` — the scheduler's nested-job
+    builder. It queues one whole-step job per needed step; each job ``waits`` on
+    its in-graph dependencies and is promoted to ``pending`` automatically by
+    ``run_jobs.py`` as those deps complete, so the steps run in order without
+    any manual sequencing. Steps below ``start_step`` are assumed to exist on
+    disk already.
+
+    ``radius`` / ``mask_type`` and the overwrite flags are not threaded through
+    ``build_job_graph``, so they are injected per job here to match the rest of
+    the dashboard's scheduled jobs. Returns ``(created, skipped)`` lists of step
+    numbers (``create_job`` dedups by job id across every queue state).
+    """
+    queue_dir = get_queue_dir(DATAFOLDER)
+    jobs = build_job_graph(
+        dataset=params['dataset'], model=params['model'],
+        rsa_model=params['rsa_model'], specie=params['specie'],
+        target_step=FINAL_STEP, start_step=start_step,
+        z_threshold=params['z_threshold'], reps=params['reps'],
+        reps_group=params['reps_group'],
+        rsa_method=params['rsa_method'], dis_method=params['method'],
+        mah_fold='stim-wise',
+    )
+    created, skipped = [], []
+    for job in jobs:
+        step = job['step']
+        # Inject the dashboard-specific fields build_job_graph does not set, so
+        # these jobs run with the same radius / mask / overwrite as every other
+        # map scheduled from this UI. rnd steps (4/5) honour --replace_rnd_files.
+        job['radius'] = params['radius']
+        job['mask_type'] = params['mask_type']
+        job['replace_file'] = bool(overwrite)
+        job['replace_rnd_files'] = bool(overwrite and step in (4, 5))
+        if create_job(queue_dir, job):
+            created.append(step)
+        else:
+            skipped.append(step)
+    return created, skipped
+
+
+def _steps_list(steps):
+    return ', '.join(str(s) for s in sorted(steps)) if steps else '—'
+
+
+def _schedule_from_here_msg(params, start_step, created, skipped, overwrite):
+    tag = ' [overwrite]' if overwrite else ''
+    txt = (f"Schedule steps {start_step}→{FINAL_STEP} (dependent DAG), "
+           f"specie {params['specie']}{tag}: created {len(created)} job(s)")
+    if created:
+        txt += f" → steps {_steps_list(created)}"
+    if skipped:
+        txt += f"; {len(skipped)} already in queue (steps {_steps_list(skipped)})"
+    return _msg_span(txt, ok=bool(created))
+
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
@@ -341,6 +402,13 @@ app.layout = html.Div([
             "*independent* job per missing map — one job per missing participant for "
             "steps 0/1/2/4, or one job for the single group map otherwise. Jobs land "
             "in the shared `job_queue/pending/` and are picked up by `run_jobs.py`.\n"
+            "* **Sched from here** (purple, per step) queues every step from that row "
+            "through step 10 as a *dependent DAG*: each later step `waits` on the "
+            "steps it needs and is promoted to `pending` automatically as they "
+            "finish, so the whole chain runs in order from one click. Steps below the "
+            "chosen one are assumed to already exist on disk; steps that are already "
+            "done are skipped by `searchlight.py` unless you tick **overwrite**. This "
+            "is the same nested-job graph that `schedule_rsa.py` builds.\n"
             "* Inside **Details**, each participant has its own **Schedule** button "
             "(and group steps get a **Schedule this step** button) so you can queue "
             "any single map — including one that is already DONE, to force a re-run.\n"
@@ -397,6 +465,7 @@ def populate_models(dataset, model, _n, current):
     Input({'type': 'step-clear', 'index': ALL}, 'n_clicks'),
     Input({'type': 'step-details', 'index': ALL}, 'n_clicks'),
     Input({'type': 'step-schedule-missing', 'index': ALL}, 'n_clicks'),
+    Input({'type': 'step-schedule-from-here', 'index': ALL}, 'n_clicks'),
     Input({'type': 'detail-schedule-sub', 'step': ALL, 'sub': ALL}, 'n_clicks'),
     Input({'type': 'detail-schedule-group', 'index': ALL}, 'n_clicks'),
     State('cache-version', 'data'),
@@ -407,7 +476,7 @@ def populate_models(dataset, model, _n, current):
     State('p-reps', 'value'), State('p-reps_group', 'value'),
     prevent_initial_call=True,
 )
-def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _dss, _dsg, version, overwrite_val,
+def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite_val,
               dataset, model, rsa_model, specie, method, rsa_method,
               radius, z_threshold, mask_type, reps, reps_group):
     trig = callback_context.triggered
@@ -483,6 +552,13 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _dss, _dsg, version, overwrite_val,
             entry['steps'][str(step)] = result
             selected = step
             msg = _schedule_missing(params, step, result, overwrite)
+    elif ttype == 'step-schedule-from-here':
+        step = idd.get('index')
+        if step is not None:
+            _log(f"'Sched from here' pressed at step {step} (overwrite={overwrite}) — {sig}")
+            created, skipped = _schedule_from_here(params, step, overwrite)
+            msg = _schedule_from_here_msg(params, step, created, skipped, overwrite)
+            selected = step
     elif ttype == 'detail-schedule-sub':
         step, sub = idd.get('step'), idd.get('sub')
         if step is not None and sub is not None:
@@ -552,6 +628,13 @@ def render_table(_v, dataset, model, rsa_model, specie, method, rsa_method,
                         n_clicks=0, title='Probe this step now, then queue a job for each '
                         'missing map',
                         style={'background': '#0969da', 'color': 'white',
+                               'border': 'none', 'borderRadius': '4px',
+                               'padding': '2px 8px', 'marginRight': '6px'}),
+            html.Button('Sched from here',
+                        id={'type': 'step-schedule-from-here', 'index': step}, n_clicks=0,
+                        title=f'Queue every step from {step} through {FINAL_STEP} as a '
+                              'dependent DAG (later steps wait for earlier ones)',
+                        style={'background': '#8250df', 'color': 'white',
                                'border': 'none', 'borderRadius': '4px',
                                'padding': '2px 8px'}),
         ])
