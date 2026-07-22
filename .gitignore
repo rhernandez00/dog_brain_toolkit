@@ -3,3 +3,5 @@
 /__pycache__
 /old
 CLAUDE.md
+/tools/__pycache__
+/scheduler/__pycache__
