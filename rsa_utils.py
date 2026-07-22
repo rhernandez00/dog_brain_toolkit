@@ -1240,7 +1240,7 @@ def calculate_similarity_in_roi(datafolder,
     return results_df
 
 def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radius,
-                             method, rsa_method, z_threshold, cluster_threshold, forced_minimal_cluster_size=None,
+                             dis_method, rsa_method, z_threshold, cluster_threshold, forced_minimal_cluster_size=None,
                              verbose=False, mask_type=None):
     """
     """
@@ -1249,7 +1249,7 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
     cluster_sizes_dict_path = (datafolder + os.sep + dataset + os.sep +
                         'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'dist' + os.sep +
-                        f"{specie}-r-{radius}_{method}_{rsa_method}_dist.npy")
+                        f"{specie}-r-{radius}_{dis_method}_{rsa_method}_dist.npy")
     # check if file exists
     if os.path.exists(cluster_sizes_dict_path):
         cluster_sizes_dict = np.load(cluster_sizes_dict_path, allow_pickle=True).item()
@@ -1263,12 +1263,12 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
         # mean model similarity map
         mean_model_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                        f"{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz")
+                        f"{specie}-r-{radius}_{dis_method}_{rsa_method}_mean.nii.gz")
     else:
         # mean model similarity map without mask
         mean_model_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                        f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz")
+                        f"{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_mean.nii.gz")
 
     # distribution mean and std maps
     distribution_mean_map_path = (datafolder + os.sep + dataset + os.sep + 
@@ -1318,17 +1318,18 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
     if mask_type is None:
         corrected_z_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                                f"{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz")
+                                f"{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz")
     else:
         corrected_z_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                                 model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                                f"{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz")
+                                f"{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz")
     nib.save(nib.Nifti1Image(z_map_thresholded, affine=img_affine), corrected_z_map_path)
     print(f"Saved corrected z map to {corrected_z_map_path}")
     return True
 
 import numpy as np
 from scipy import ndimage
+from time import perf_counter
 
 from typing import Callable, Union, Optional
 
@@ -4478,19 +4479,19 @@ def calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
     if mask_type is None:
         group_mean_map_path = os.path.join(datafolder, dataset, 'results', 'RSA',
                                         model, rsa_model, 'mean',
-                                        f'{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz')
+                                        f'{specie}-r-{radius}_{dis_method}_{rsa_method}_mean.nii.gz')
 
         group_z_map_path = os.path.join(datafolder, dataset, 'results', 'RSA',
                                         model, rsa_model, 'mean',
-                                        f'{specie}-r-{radius}_{method}_{rsa_method}_z.nii.gz')
+                                        f'{specie}-r-{radius}_{dis_method}_{rsa_method}_z.nii.gz')
     else:
         group_mean_map_path = os.path.join(datafolder, dataset, 'results', 'RSA',
                                         model, rsa_model, 'mean',
-                                        f'{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz')
+                                        f'{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_mean.nii.gz')
 
         group_z_map_path = os.path.join(datafolder, dataset, 'results', 'RSA',
                                         model, rsa_model, 'mean',
-                                        f'{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z.nii.gz')
+                                        f'{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_z.nii.gz')
 
     # load images
     ref_img   = nib.load(group_mean_map_path)         # reference space
@@ -5372,7 +5373,12 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,
                                          label_nii_data=label_nii_data)
-    
+    # if results is empty
+    if not results:
+        print(f"No clusters found in {res_image}. No table will be created.")
+        return False
+        
+        
     
     clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
     print(f"Files written in: {out_path}")

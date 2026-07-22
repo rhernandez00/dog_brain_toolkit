@@ -18,6 +18,12 @@
       "runtimeExecutable": "C:/ProgramData/anaconda3/python.exe",
       "runtimeArgs": ["pipeline_dashboard.py"],
       "port": 8060
+    },
+    {
+      "name": "hypothesis_explorer",
+      "runtimeExecutable": "C:/ProgramData/anaconda3/python.exe",
+      "runtimeArgs": ["hypothesis_explorer.py"],
+      "port": 8055
     }
   ]
 }

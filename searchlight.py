@@ -111,7 +111,7 @@ def parse_arguments():
                         help='Number of repetitions for permutations in individual run')
     parser.add_argument('--reps_group', type=int, default=1000,
                         help='Number of repetitions for permutations in group analysis')
-    parser.add_argument('--min_percentage_available', type=float, default=0.8,
+    parser.add_argument('--min_percentage_available', type=float, default=1.0,
                         help='Minimum percentage of database available to process')
     parser.add_argument('--min_dist_mm', type=float, default=8.0,
                         help='Minimum distance between peaks in mm')
