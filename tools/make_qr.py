@@ -5,8 +5,8 @@ The QR encodes the STABLE GitHub Pages landing URL (never the changing laptop
 tunnel URL). The landing page then offers both the live and failsafe links.
 
 Usage:
-  & "C:\\ProgramData\\anaconda3\\python.exe" make_qr.py
-  & "C:\\ProgramData\\anaconda3\\python.exe" make_qr.py --url https://rhernandez00.github.io/dog_brain_toolkit/
+  & "C:\\ProgramData\\anaconda3\\python.exe" tools\\make_qr.py
+  & "C:\\ProgramData\\anaconda3\\python.exe" tools\\make_qr.py --url https://rhernandez00.github.io/dog_brain_toolkit/
 
 Needs the 'qrcode' package (pip install "qrcode[pil]"). If missing, prints an
 online generator link you can use immediately.
@@ -17,7 +17,7 @@ import webbrowser
 from urllib.parse import quote
 
 DEFAULT_URL = "https://rhernandez00.github.io/dog_brain_toolkit/"
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tools/ lives one level below the repo root
 
 
 def main():

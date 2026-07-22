@@ -5,15 +5,15 @@ Run this each session after starting your tunnel (cloudflared/ngrok), then
 commit & push docs/live.json. The printed QR never changes — only this link.
 
 Usage:
-  & "C:\\ProgramData\\anaconda3\\python.exe" set_live.py https://something.trycloudflare.com
-  & "C:\\ProgramData\\anaconda3\\python.exe" set_live.py --clear      # mark laptop offline
+  & "C:\\ProgramData\\anaconda3\\python.exe" tools\\set_live.py https://something.trycloudflare.com
+  & "C:\\ProgramData\\anaconda3\\python.exe" tools\\set_live.py --clear      # mark laptop offline
 """
 import os
 import sys
 import json
 import argparse
 
-REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # tools/ lives one level below the repo root
 LIVE_PATH = os.path.join(REPO_ROOT, "docs", "live.json")
 
 

@@ -5,12 +5,14 @@ hypothesis_explorer.py — EmoC RSA hypothesis-tree explorer (standalone Dash ap
 Two linked halves on one page:
 
   1. A **hypothesis tree** you author yourself. Each node is one you name, give
-     categories + notes, and link to an RSA model; the connector (link) into each
-     node can be named too. The tree is drawn top-down and each node is coloured by
-     whether its linked model has results (dog / human / both / none / unlinked).
-     Click a node to select it. Add / delete / reorder nodes and Save the tree to
-     disk. Keep several named trees (e.g. one that splits by species first, another
-     by valence first).
+     categories + notes, and link to an RSA *hypothesis* (e.g. emo-id); the
+     connector (link) into each node can be named too. The **Grouping** toggle in
+     the top bar is the main branching axis (collapse / within / cross / dog / hum):
+     it decides which concrete "{hypothesis}__{grouping}" model each node loads, so
+     flipping it re-colours the whole tree and re-loads every un-pinned panel at
+     once. The tree is drawn top-down and each node is coloured by whether its
+     resolved model has results (dog / human / both / none / unlinked). Click a node
+     to select it. Add / delete / reorder nodes and Save the tree to disk.
 
   2. A row of **comparison panels**. Selecting a node loads its model's maps into
      every un-pinned panel; pin a panel to freeze it while you browse other nodes,
@@ -19,8 +21,8 @@ Two linked halves on one page:
      cluster-corrected) — all drawn as 2D atlas slices.
 
 Standalone only (own port, default 8055):
-    & "C:\\ProgramData\\anaconda3\\python.exe" hypothesis_explorer.py
-    & "C:\\ProgramData\\anaconda3\\python.exe" hypothesis_explorer.py --port 8056
+    & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py
+    & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py --port 8056
 
 Reuses viz/datasource.py (result resolution), viz/niftiutil.py (atlas + 2D slices),
 viz/stimuli.py (stimulus categories) and viz/hypothesis_tree.py (tree model).
@@ -37,7 +39,11 @@ import plotly.graph_objects as go
 from dash import Dash, dcc, html, dash_table, no_update, callback_context
 from dash.dependencies import Input, Output, State
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)  # tools/ lives one level below the repo root
+for _p in (_REPO_ROOT, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from viz import datasource, niftiutil, stimuli, hypothesis_tree as ht
 # Reuse the RSA Model Builder's polished rounded-cell matrix renderer so a linked
 # model is shown here exactly as it looks in the builder (with its saved style).
@@ -140,6 +146,98 @@ def available_models(datafolder, dataset, modality, roi):
     return sorted(models)
 
 
+# ---------------------------------------------------------------------------
+# Grouping — the main branching axis
+# ---------------------------------------------------------------------------
+# Every battery model is named "{hypothesis}__{grouping}.csv"; the trailing token
+# after "__" is one of GROUPINGS. A tree node links to a *hypothesis* (e.g.
+# "emo-id"); the global Grouping toggle decides which concrete
+# "{hypothesis}__{grouping}" model is loaded into the tree colouring and panels.
+# Suffix-less models (e.g. "agent-species-id") are grouping-agnostic and resolve
+# to themselves under every grouping.
+
+GROUPINGS = ["collapse", "within", "cross", "dog", "hum"]
+GROUPING_DESC = {
+    "collapse": "collapsed across agent species (Dog/Hum pooled)",
+    "within":   "within agent species only (Dog-Dog & Hum-Hum)",
+    "cross":    "cross agent species only (Dog-Hum) — agent-invariant test",
+    "dog":      "Dog-shown block only",
+    "hum":      "Hum-shown block only",
+}
+DEFAULT_GROUPING = "collapse"
+
+_MANIFEST_CACHE = {}
+
+
+def _manifest(datafolder, dataset):
+    """{model_name: {'hypothesis','grouping','description'}} from the battery
+    manifest CSV, if present. Cached per (datafolder, dataset); empty if absent."""
+    key = (datafolder, dataset)
+    if key not in _MANIFEST_CACHE:
+        out = {}
+        path = os.path.join(datafolder or "", dataset or "", "rsa_models",
+                            "_MODEL_BATTERY_MANIFEST.csv")
+        try:
+            df = pd.read_csv(path)
+            for _, row in df.iterrows():
+                out[str(row["model"])] = {
+                    "hypothesis": str(row.get("hypothesis", "") or ""),
+                    "grouping": str(row.get("grouping", "") or ""),
+                    "description": str(row.get("description", "") or ""),
+                }
+        except Exception:
+            out = {}
+        _MANIFEST_CACHE[key] = out
+    return _MANIFEST_CACHE[key]
+
+
+def split_model(name):
+    """(hypothesis, grouping) for a model filename stem. The grouping is the
+    trailing '__{grouping}' token when it is one of GROUPINGS, else None."""
+    if not name:
+        return name, None
+    base, sep, suffix = name.rpartition("__")
+    if sep and suffix in GROUPINGS:
+        return base, suffix
+    return name, None
+
+
+def hypothesis_index(models):
+    """{hypothesis: {grouping_or_None: model_name}} over the given model names."""
+    idx = {}
+    for name in (models or []):
+        hyp, grp = split_model(name)
+        idx.setdefault(hyp, {})[grp] = name
+    return idx
+
+
+def resolve_model(stored, grouping, idx):
+    """Concrete model name for a node's stored value under the active grouping.
+    `stored` may be a bare hypothesis or a legacy full "{hyp}__{grouping}" name."""
+    if not stored:
+        return None
+    hyp, _grp = split_model(stored)               # normalise any legacy full name
+    variants = idx.get(hyp)
+    if not variants:
+        return stored                              # unknown model — use as-is
+    if grouping in variants:
+        return variants[grouping]
+    if None in variants:                           # grouping-agnostic (agent-species-id)
+        return variants[None]
+    return f"{hyp}__{grouping}"                     # no such variant — canonical name
+
+
+def hypothesis_descriptions(datafolder, dataset):
+    """{hypothesis: short description} from the manifest (grouping clause stripped)."""
+    out = {}
+    for meta in _manifest(datafolder, dataset).values():
+        hyp = meta.get("hypothesis") or ""
+        desc = (meta.get("description") or "").split(" | ")[0].strip()
+        if hyp and desc:
+            out.setdefault(hyp, desc)
+    return out
+
+
 # --- RSA model matrix, drawn with the RSA Model Builder's renderer ---------
 
 def _model_heatmap(datafolder, dataset, model):
@@ -175,7 +273,7 @@ def _short(label, n=20):
     return label if len(label) <= n else label[: n - 1] + "…"
 
 
-def tree_figure(tree, selected_id, result_sets):
+def tree_figure(tree, selected_id, result_sets, grouping, idx):
     root = tree["root"]
     pos = ht.compute_layout(root)
     max_depth = max(d for _n, d, _p in ht.iter_nodes(root))
@@ -193,11 +291,14 @@ def tree_figure(tree, selected_id, result_sets):
     node_x, node_y, colors, texts, hovers, line_w, line_c, custom = [], [], [], [], [], [], [], []
     for node, _d, _p in ht.iter_nodes(root):
         x, y = pos[node["id"]]
-        st = ht.node_status(node.get("model"), result_sets)
+        hyp, _g = split_model(node.get("model") or "")
+        resolved = resolve_model(node.get("model"), grouping, idx)
+        st = ht.node_status(resolved, result_sets)
         color, st_label = STATUS_STYLE[st]
         node_x.append(x); node_y.append(-y); colors.append(color)
         texts.append(_short(node.get("label")))
-        hovers.append(f"<b>{node.get('label','')}</b><br>model: {node.get('model') or '—'}"
+        hovers.append(f"<b>{node.get('label','')}</b><br>hypothesis: {hyp or '—'}"
+                      f"<br>grouping: {grouping}<br>model: {resolved or '—'}"
                       f"<br>status: {st_label}"
                       f"<br>categories: {', '.join(node.get('categories') or []) or '—'}")
         sel = node["id"] == selected_id
@@ -265,6 +366,10 @@ def top_bar():
         _labeled("ROI / mask", dcc.Dropdown(id="ex-roi", options=[], value=None, style={"width": "190px"})),
         html.Button("Load data", id="ex-load", n_clicks=0, style=BTN),
         html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
+        _labeled("Grouping (main branch)", dcc.Dropdown(id="ex-grouping",
+                 options=[{"label": g, "value": g, "title": GROUPING_DESC[g]} for g in GROUPINGS],
+                 value=DEFAULT_GROUPING, clearable=False, style={"width": "150px"})),
+        html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
         _labeled("Tree", dcc.Dropdown(id="ex-tree-select", options=[], value=None, style={"width": "200px"})),
         _labeled("New / Save as name", dcc.Input(id="ex-tree-name", value="my-tree", type="text",
                  style={**INPUT_STYLE, "width": "150px"})),
@@ -289,9 +394,10 @@ def node_editor():
         html.Div(f"stimulus codes: {', '.join(stimuli.condition_code(s, l) for s, l in stimuli.stimulus_conditions())}",
                  style={"fontSize": "10px", "color": MUTED, "margin": "2px 0 6px"}),
         _labeled("Notes", dcc.Textarea(id="ed-notes", style={"width": "100%", "height": "48px", **INPUT_STYLE})),
-        _labeled("Filter models", dcc.Input(id="ed-model-filter", type="text", debounce=True,
-                 placeholder="e.g. val · dog · cross", style={**INPUT_STYLE, "width": "100%"})),
-        _labeled("Linked model", dcc.Dropdown(id="ed-model", options=[], value=None, style={"width": "100%"})),
+        _labeled("Filter hypotheses", dcc.Input(id="ed-model-filter", type="text", debounce=True,
+                 placeholder="e.g. val · threat · emo", style={**INPUT_STYLE, "width": "100%"})),
+        _labeled("Linked hypothesis (grouping set globally above)",
+                 dcc.Dropdown(id="ed-model", options=[], value=None, style={"width": "100%"})),
         html.Div([
             html.Button("Apply", id="ed-apply", n_clicks=0, style={**BTN, "marginRight": "6px"}),
             html.Button("+ Child", id="ed-add-child", n_clicks=0, style={**BTN2, "marginRight": "6px"}),
@@ -409,16 +515,30 @@ def cb_load(_n, datafolder, dataset, modality, roi, ver):
 
 @app.callback(Output("ed-model", "options"), Output("pl-0-model", "options"),
               Output("pl-1-model", "options"), Output("pl-2-model", "options"),
-              Input("ex-models", "data"), Input("ed-model-filter", "value"))
-def cb_model_options(models, filt):
+              Input("ex-models", "data"), Input("ed-model-filter", "value"),
+              State("ex-datafolder", "value"), State("ex-dataset", "value"))
+def cb_model_options(models, filt, datafolder, dataset):
     models = models or []
-    opts_all = [{"label": m, "value": m} for m in models]
+    idx = hypothesis_index(models)
+    descs = hypothesis_descriptions(datafolder, dataset)
+    # Node editor: one option per hypothesis (grouping is chosen globally).
+    ed_opts = []
+    for h in sorted(idx.keys()):
+        groups = sorted(g for g in idx[h] if g)
+        note = f"  [{', '.join(groups)}]" if groups else ""
+        opt = {"label": f"{h}{note}", "value": h}
+        if descs.get(h):
+            opt["title"] = descs[h]
+        ed_opts.append(opt)
     if filt:
         f = filt.lower()
-        ed_opts = [o for o in opts_all if f in o["value"].lower()]
-    else:
-        ed_opts = opts_all
-    return ed_opts, opts_all, opts_all, opts_all
+        ed_opts = [o for o in ed_opts if f in o["value"].lower()]
+    # Panels keep the full model list (manual per-panel override), grouping-labelled.
+    panel_opts = []
+    for m in models:
+        hyp, grp = split_model(m)
+        panel_opts.append({"label": (f"{hyp} · {grp}" if grp else hyp), "value": m})
+    return ed_opts, panel_opts, panel_opts, panel_opts
 
 
 # ---------------------------------------------------------------------------
@@ -549,52 +669,61 @@ def cb_node_click(click):
 
 @app.callback(Output("ex-tree-graph", "figure"), Output("ex-tree-title", "children"),
               Input("ex-tree-store", "data"), Input("ex-selected", "data"), Input("ex-dataver", "data"),
+              Input("ex-grouping", "value"),
               State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              State("ex-modality", "value"), State("ex-roi", "value"))
-def cb_render_tree(tree, sel_id, _ver, datafolder, dataset, modality, roi):
+              State("ex-modality", "value"), State("ex-roi", "value"), State("ex-models", "data"))
+def cb_render_tree(tree, sel_id, _ver, grouping, datafolder, dataset, modality, roi, models):
     if not tree:
         fig = niftiutil.empty_fig("Create or open a tree", height=320)
         fig.update_layout(paper_bgcolor=PANEL, plot_bgcolor=PANEL)
         return fig, ""
     result_sets = ht.models_with_results(datafolder, dataset, modality, roi) if roi else {"D": set(), "H": set()}
-    title = f"{tree.get('name', '')} · {sum(1 for _ in ht.iter_nodes(tree['root']))} nodes"
+    idx = hypothesis_index(models)
+    title = (f"{tree.get('name', '')} · grouping = {grouping} · "
+             f"{sum(1 for _ in ht.iter_nodes(tree['root']))} nodes")
     if tree.get("notes"):
         title += f" · {tree['notes']}"
-    return tree_figure(tree, sel_id, result_sets), title
+    return tree_figure(tree, sel_id, result_sets, grouping, idx), title
 
 
 @app.callback(Output("ed-label", "value"), Output("ed-link", "value"),
               Output("ed-categories", "value"), Output("ed-notes", "value"),
               Output("ed-model", "value"), Output("ed-status", "children"),
               Input("ex-selected", "data"), Input("ex-tree-store", "data"), Input("ex-dataver", "data"),
+              Input("ex-grouping", "value"),
               State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              State("ex-modality", "value"), State("ex-roi", "value"))
-def cb_editor_fill(sel_id, tree, _ver, datafolder, dataset, modality, roi):
+              State("ex-modality", "value"), State("ex-roi", "value"), State("ex-models", "data"))
+def cb_editor_fill(sel_id, tree, _ver, grouping, datafolder, dataset, modality, roi, models):
     if not tree or not sel_id:
         return "", "", "", "", None, "Select a node in the tree."
     node = ht.find_node(tree["root"], sel_id)
     if node is None:
         return "", "", "", "", None, "Node not found."
+    hyp, _g = split_model(node.get("model") or "")
+    idx = hypothesis_index(models)
+    resolved = resolve_model(node.get("model"), grouping, idx)
     result_sets = ht.models_with_results(datafolder, dataset, modality, roi) if roi else {"D": set(), "H": set()}
-    st = ht.node_status(node.get("model"), result_sets)
+    st = ht.node_status(resolved, result_sets)
     _color, st_label = STATUS_STYLE[st]
-    status = f"status: {st_label}" + (f"  ·  model: {node['model']}" if node.get("model") else "")
+    status = f"grouping: {grouping}  ·  status: {st_label}" + (f"  ·  model: {resolved}" if resolved else "")
     return (node.get("label", ""), node.get("link", ""), ", ".join(node.get("categories") or []),
-            node.get("notes", ""), node.get("model"), status)
+            node.get("notes", ""), (hyp or None), status)
 
 
 @app.callback(Output("ed-matrix-graph", "figure"), Output("ed-matrix-note", "children"),
               Input("ed-load-model", "n_clicks"),
               State("ex-selected", "data"), State("ex-tree-store", "data"),
               State("ex-datafolder", "value"), State("ex-dataset", "value"),
+              State("ex-grouping", "value"), State("ex-models", "data"),
               prevent_initial_call=True)
-def cb_load_model_matrix(_n, sel_id, tree, datafolder, dataset):
+def cb_load_model_matrix(_n, sel_id, tree, datafolder, dataset, grouping, models):
     if not tree or not sel_id:
         return no_update, "select a node first"
     node = ht.find_node(tree["root"], sel_id)
-    model = node.get("model") if node else None
+    stored = node.get("model") if node else None
+    model = resolve_model(stored, grouping, hypothesis_index(models))
     if not model:
-        return niftiutil.empty_fig("no model linked", height=260), "link a model to this node first"
+        return niftiutil.empty_fig("no hypothesis linked", height=260), "link a hypothesis to this node first"
     return _model_heatmap(datafolder, dataset, model), f"loaded {model}"
 
 
@@ -603,13 +732,15 @@ def cb_load_model_matrix(_n, sel_id, tree, datafolder, dataset):
 # ---------------------------------------------------------------------------
 
 @app.callback(Output("pl-0-model", "value"), Output("pl-1-model", "value"), Output("pl-2-model", "value"),
-              Input("ex-selected", "data"), Input("ex-tree-store", "data"),
-              State("pl-0-pin", "value"), State("pl-1-pin", "value"), State("pl-2-pin", "value"))
-def cb_sync_panel_models(sel_id, tree, pin0, pin1, pin2):
+              Input("ex-selected", "data"), Input("ex-tree-store", "data"), Input("ex-grouping", "value"),
+              State("pl-0-pin", "value"), State("pl-1-pin", "value"), State("pl-2-pin", "value"),
+              State("ex-models", "data"))
+def cb_sync_panel_models(sel_id, tree, grouping, pin0, pin1, pin2, models):
     model = None
     if tree and sel_id:
         node = ht.find_node(tree["root"], sel_id)
-        model = node.get("model") if node else None
+        stored = node.get("model") if node else None
+        model = resolve_model(stored, grouping, hypothesis_index(models))
     pins = [pin0, pin1, pin2]
     return tuple((no_update if ("pin" in (p or [])) else model) for p in pins)
 

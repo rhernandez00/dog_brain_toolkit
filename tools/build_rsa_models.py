@@ -20,8 +20,8 @@ immediately runnable by searchlight.py / the scheduler. Use --out_dir to target 
 different location (e.g. the Google-Drive results mirror used by the builder UI).
 
 Run:
-    & "C:\\ProgramData\\anaconda3\\python.exe" build_rsa_models.py
-    & "C:\\ProgramData\\anaconda3\\python.exe" build_rsa_models.py --dry-run
+    & "C:\\ProgramData\\anaconda3\\python.exe" tools\\build_rsa_models.py
+    & "C:\\ProgramData\\anaconda3\\python.exe" tools\\build_rsa_models.py --dry-run
 
 Design dimensions (see EmoC_Stimulus_Design_Configuration_Handoff.md):
     emotions       P=Positive anticipation, H=Happiness, A=Anger, F=Fear, N=Neutral
@@ -39,7 +39,11 @@ import argparse
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)  # tools/ lives one level below the repo root
+for _p in (_REPO_ROOT, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from scheduler.paths import get_paths
 
 # ---------------------------------------------------------------------------
@@ -122,10 +126,10 @@ BASE_RULES = {
 }
 
 # ---------------------------------------------------------------------------
-# Agent-species-shown treatments (how a base rule sees the Dog/Hum dimension)
+# Agent-species-shown groupings (how a base rule sees the Dog/Hum dimension)
 # ---------------------------------------------------------------------------
 
-def _treat(name):
+def _grouping(name):
     if name == "collapse":   # ignore agent species entirely
         return lambda si, sj: True
     if name == "within":     # only Dog-Dog and Hum-Hum pairs
@@ -138,7 +142,7 @@ def _treat(name):
         return lambda si, sj: si == "Hum" and sj == "Hum"
     raise ValueError(name)
 
-TREATMENTS = {
+GROUPINGS = {
     "collapse": "collapsed across agent species (Dog/Hum pooled)",
     "within":   "within agent species only (Dog-Dog & Hum-Hum)",
     "cross":    "cross agent species only (Dog-Hum) — agent-invariant test",
@@ -150,14 +154,14 @@ TREATMENTS = {
 # Matrix builders
 # ---------------------------------------------------------------------------
 
-def build_matrix(base_rule, treat_ok):
+def build_matrix(base_rule, grouping_ok):
     m = np.full((N, N), NAN, dtype=np.float64)
     for i, (_, si, ei) in enumerate(CONDITIONS):
         for j, (_, sj, ej) in enumerate(CONDITIONS):
             if i == j:
                 m[i, j] = 0.0
                 continue
-            if not treat_ok(si, sj):
+            if not grouping_ok(si, sj):
                 continue
             m[i, j] = base_rule(ei, ej)
     return m
@@ -225,16 +229,16 @@ def main():
 
     manifest = []
 
-    # Factorial: every base hypothesis x every agent-species treatment.
+    # Factorial: every base hypothesis x every agent-species grouping.
     for hyp, (base_rule, hyp_desc) in BASE_RULES.items():
-        for treat, treat_desc in TREATMENTS.items():
-            name = f"{args.prefix}{hyp}__{treat}"
-            m = build_matrix(base_rule, _treat(treat))
+        for grouping, grouping_desc in GROUPINGS.items():
+            name = f"{args.prefix}{hyp}__{grouping}"
+            m = build_matrix(base_rule, _grouping(grouping))
             st = matrix_stats(m)
             write_model(out_dir, name, m, dry_run=args.dry_run)
             manifest.append({
-                "model": name, "hypothesis": hyp, "treatment": treat,
-                "description": f"{hyp_desc} | {treat_desc}", **st,
+                "model": name, "hypothesis": hyp, "grouping": grouping,
+                "description": f"{hyp_desc} | {grouping_desc}", **st,
             })
 
     # Standalone: agent-species identity (emotion-agnostic).
@@ -243,7 +247,7 @@ def main():
     st = matrix_stats(m)
     write_model(out_dir, name, m, dry_run=args.dry_run)
     manifest.append({
-        "model": name, "hypothesis": "agent-species-id", "treatment": "collapse",
+        "model": name, "hypothesis": "agent-species-id", "grouping": "collapse",
         "description": "Agent species shown: Dog-shown vs Hum-shown (emotion ignored).", **st,
     })
 
@@ -255,7 +259,7 @@ def main():
         print(bad[["model"]].to_string(index=False))
 
     print(f"\nGenerated {len(manifest)} models "
-          f"({len(BASE_RULES)} hypotheses x {len(TREATMENTS)} treatments + 1 standalone).\n")
+          f"({len(BASE_RULES)} hypotheses x {len(GROUPINGS)} groupings + 1 standalone).\n")
     with pd.option_context("display.max_rows", None, "display.width", 160):
         print(man_df[["model", "pairs_used", "n_0", "n_half", "n_1"]].to_string(index=False))
 

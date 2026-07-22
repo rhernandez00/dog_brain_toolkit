@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from scheduler.paths import get_paths, get_queue_dir
 from scheduler.dag import STEP_LABELS, make_job_id
+from scheduler.jobs import job_files
 
 STATE_LABEL = {
     "pending":   "READY ",
@@ -27,9 +28,12 @@ STATE_LABEL = {
 
 
 def find_state(queue_dir, job_id):
+    """Most-active state this job_id is in. Checks the canonical filename
+    plus any ``__dup{N}`` re-run/duplicate instances (see create_job) so a
+    fresh in-flight duplicate outranks a stale completed/failed record."""
     queue_dir = Path(queue_dir)
     for state in ("running", "pending", "waiting", "completed", "failed"):
-        if (queue_dir / state / f"{job_id}.json").exists():
+        if job_files(queue_dir, job_id, state):
             return state
     return None
 

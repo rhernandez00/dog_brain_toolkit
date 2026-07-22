@@ -22,12 +22,12 @@ Design goals (per request)
 
 Running it
 ----------
-    python pipeline_dashboard.py                # http://127.0.0.1:8060
-    python pipeline_dashboard.py --port 8062    # pick another port
-    RSA_DASHBOARD_PORT=8062 python pipeline_dashboard.py
+    python tools/pipeline_dashboard.py                # http://127.0.0.1:8060
+    python tools/pipeline_dashboard.py --port 8062    # pick another port
+    RSA_DASHBOARD_PORT=8062 python tools/pipeline_dashboard.py
 
 On Windows use the full interpreter path, e.g.:
-    & "C:\\ProgramData\\anaconda3\\python.exe" pipeline_dashboard.py
+    & "C:\\ProgramData\\anaconda3\\python.exe" tools\\pipeline_dashboard.py
 
 **It will not interfere with your other consoles.** It runs as its own process
 on its own port (default 8060 — distinct from the 8050 unified dashboard and the
@@ -48,12 +48,31 @@ import sys
 import types
 from datetime import datetime
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)  # tools/ lives one level below the repo root
+for _p in (_REPO_ROOT, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
-import pipeline_console as pc  # noqa: E402  (reuse the probe logic)
+import pipeline_console as pc  # noqa: E402  (reuse the probe logic; sibling in tools/)
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
 from scheduler.dag import build_single_job, build_job_graph  # noqa: E402
 from scheduler.jobs import create_job  # noqa: E402
+
+# ---------------------------------------------------------------------------
+# Version — bump VERSION and update LAST_CHANGE on every edit to this file.
+# See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
+# ---------------------------------------------------------------------------
+VERSION = "1.2.0"
+LAST_CHANGE = ("Step 1's expected pairwise-map count now follows the creation "
+               "rules per participant: it uses each participant's own run list "
+               "(get_session_and_run_dict) and the selected mah_fold's layout, so "
+               "per-run folds (stim-wise-multiple-folds / -all-runs) and the "
+               "correlation method expect C(n,2)×n_runs in the run subfolders "
+               "instead of a flat, run-blind total. Only the exact expected names "
+               "are counted, so garbage/leftover files no longer inflate the "
+               "verdict. (Prior 1.1.0 change: mah_fold became a first-class "
+               "parameter and step 1 counts per-model exact pairs.)")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10
@@ -69,7 +88,7 @@ PER_PARTICIPANT_STEPS = {0, 1, 2, 4}
 # Parameters that define a "run" (and therefore the cache signature)
 # ---------------------------------------------------------------------------
 PARAM_KEYS = [
-    'dataset', 'model', 'rsa_model', 'specie', 'method', 'rsa_method',
+    'dataset', 'model', 'rsa_model', 'specie', 'method', 'mah_fold', 'rsa_method',
     'radius', 'z_threshold', 'mask_type', 'reps', 'reps_group',
 ]
 
@@ -79,6 +98,7 @@ DEFAULTS = {
     'rsa_model': None,
     'specie': 'D',
     'method': 'mahalanobis',
+    'mah_fold': 'stim-wise',
     'rsa_method': 'kendall',
     'radius': None,          # None -> auto (3 dog / 4 human)
     'z_threshold': 3.1,
@@ -86,6 +106,13 @@ DEFAULTS = {
     'reps': 100,
     'reps_group': 1000,
 }
+
+# Mahalanobis folding strategies (searchlight.py --mah_fold). Only meaningful when
+# method == 'mahalanobis'; it decides where/which pairwise maps land on disk, so it
+# is part of the run signature — two folds of the same model are tracked apart.
+MAH_FOLD_OPTIONS = [
+    'stim-wise', 'stim-wise-multiple-folds', 'stim-wise-all-runs', 'run-wise',
+]
 
 VERDICT_COLOR = {
     pc.DONE: '#1a7f37',
@@ -132,7 +159,7 @@ def signature(params):
     return " | ".join(f"{k}={params.get(k)}" for k in PARAM_KEYS)
 
 
-def params_from_inputs(dataset, model, rsa_model, specie, method, rsa_method,
+def params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
                        radius, z_threshold, mask_type, reps, reps_group):
     def _int_or_none(v):
         try:
@@ -145,6 +172,7 @@ def params_from_inputs(dataset, model, rsa_model, specie, method, rsa_method,
         'rsa_model': rsa_model,
         'specie': specie or 'D',
         'method': (method or '').strip(),
+        'mah_fold': (mah_fold or 'stim-wise').strip(),
         'rsa_method': (rsa_method or '').strip(),
         'radius': _int_or_none(radius),
         'z_threshold': float(z_threshold) if z_threshold not in (None, '') else 3.1,
@@ -188,15 +216,17 @@ def _schedule_jobs(params, step, participants, overwrite):
     """Create one independent pending job per entry in ``participants``.
 
     ``participants`` is a list of subject ints, or ``[None]`` for the single
-    group-map jobs. Returns ``(created, skipped)`` — lists of the same entries,
-    where *skipped* were already present in the queue (``create_job`` dedups by
-    job id across all states).
+    group-map jobs. Returns the list of scheduled entries. ``create_job``
+    always succeeds — if a job with the same id already exists anywhere in
+    the queue (still in flight, or a previous completed/failed run), it's
+    scheduled again under a disambiguated filename with
+    ``shuffle_participants`` set, rather than being skipped.
     """
     queue_dir = get_queue_dir(DATAFOLDER)
     # The searchlight overwrite flag differs by step family: rnd steps (4/5)
     # write into RSA_rnd and honour --replace_rnd_files; the rest use --replace_file.
     replace_rnd = bool(overwrite and step in (4, 5))
-    created, skipped = [], []
+    created = []
     for sub in participants:
         job = build_single_job(
             dataset=params['dataset'], model=params['model'],
@@ -204,15 +234,13 @@ def _schedule_jobs(params, step, participants, overwrite):
             z_threshold=params['z_threshold'], reps=params['reps'],
             reps_group=params['reps_group'],
             rsa_method=params['rsa_method'], dis_method=params['method'],
-            mah_fold='stim-wise',
+            mah_fold=params['mah_fold'],
             participant=sub, radius=params['radius'], mask_type=params['mask_type'],
             replace_file=bool(overwrite), replace_rnd_files=replace_rnd,
         )
-        if create_job(queue_dir, job):
-            created.append(sub)
-        else:
-            skipped.append(sub)
-    return created, skipped
+        create_job(queue_dir, job)
+        created.append(sub)
+    return created
 
 
 def _fmt_maps(maps):
@@ -225,15 +253,13 @@ def _msg_span(text, ok=True):
     return html.Span(text, style={'color': color, 'fontWeight': '600'})
 
 
-def _schedule_result_msg(params, step, created, skipped, overwrite):
+def _schedule_result_msg(params, step, created, overwrite):
     label = pc.STEP_LABELS.get(step, f'Step {step}')
     tag = ' [overwrite]' if overwrite else ''
     txt = (f"Step {step} ({label}), specie {params['specie']}{tag}: "
            f"scheduled {len(created)} job(s)")
     if created:
         txt += f" → {_fmt_maps(created)}"
-    if skipped:
-        txt += f"; {len(skipped)} already in queue ({_fmt_maps(skipped)})"
     return _msg_span(txt, ok=bool(created))
 
 
@@ -246,15 +272,15 @@ def _schedule_missing(params, step, probe_result, overwrite):
             return _msg_span(
                 f"Step {step}: no missing/partial participants to schedule "
                 f"(verdict {probe_result.get('verdict')}).", ok=True)
-        created, skipped = _schedule_jobs(params, step, subs, overwrite)
-        return _schedule_result_msg(params, step, created, skipped, overwrite)
+        created = _schedule_jobs(params, step, subs, overwrite)
+        return _schedule_result_msg(params, step, created, overwrite)
     # group step -> a single map
     if probe_result.get('verdict') == pc.DONE:
         return _msg_span(
             f"Step {step} already DONE — nothing to schedule "
             f"(use Details → Schedule to force a re-run).", ok=True)
-    created, skipped = _schedule_jobs(params, step, [None], overwrite)
-    return _schedule_result_msg(params, step, created, skipped, overwrite)
+    created = _schedule_jobs(params, step, [None], overwrite)
+    return _schedule_result_msg(params, step, created, overwrite)
 
 
 def _schedule_from_here(params, start_step, overwrite):
@@ -270,8 +296,10 @@ def _schedule_from_here(params, start_step, overwrite):
 
     ``radius`` / ``mask_type`` and the overwrite flags are not threaded through
     ``build_job_graph``, so they are injected per job here to match the rest of
-    the dashboard's scheduled jobs. Returns ``(created, skipped)`` lists of step
-    numbers (``create_job`` dedups by job id across every queue state).
+    the dashboard's scheduled jobs. Returns the list of scheduled step numbers.
+    ``create_job`` always succeeds — a job id that already exists elsewhere in
+    the queue is scheduled again under a disambiguated filename instead of
+    being skipped (see ``create_job`` in ``scheduler/jobs.py``).
     """
     queue_dir = get_queue_dir(DATAFOLDER)
     jobs = build_job_graph(
@@ -281,9 +309,9 @@ def _schedule_from_here(params, start_step, overwrite):
         z_threshold=params['z_threshold'], reps=params['reps'],
         reps_group=params['reps_group'],
         rsa_method=params['rsa_method'], dis_method=params['method'],
-        mah_fold='stim-wise',
+        mah_fold=params['mah_fold'],
     )
-    created, skipped = [], []
+    created = []
     for job in jobs:
         step = job['step']
         # Inject the dashboard-specific fields build_job_graph does not set, so
@@ -293,25 +321,21 @@ def _schedule_from_here(params, start_step, overwrite):
         job['mask_type'] = params['mask_type']
         job['replace_file'] = bool(overwrite)
         job['replace_rnd_files'] = bool(overwrite and step in (4, 5))
-        if create_job(queue_dir, job):
-            created.append(step)
-        else:
-            skipped.append(step)
-    return created, skipped
+        create_job(queue_dir, job)
+        created.append(step)
+    return created
 
 
 def _steps_list(steps):
     return ', '.join(str(s) for s in sorted(steps)) if steps else '—'
 
 
-def _schedule_from_here_msg(params, start_step, created, skipped, overwrite):
+def _schedule_from_here_msg(params, start_step, created, overwrite):
     tag = ' [overwrite]' if overwrite else ''
     txt = (f"Schedule steps {start_step}→{FINAL_STEP} (dependent DAG), "
            f"specie {params['specie']}{tag}: created {len(created)} job(s)")
     if created:
         txt += f" → steps {_steps_list(created)}"
-    if skipped:
-        txt += f"; {len(skipped)} already in queue (steps {_steps_list(skipped)})"
     return _msg_span(txt, ok=bool(created))
 
 
@@ -347,6 +371,12 @@ def param_panel():
                          style={'width': '120px', 'display': 'inline-block',
                                 'verticalAlign': 'middle', 'marginRight': '10px'}),
             html.Label('method'), _input('p-method', DEFAULTS['method'], '120px'),
+            html.Label('mah_fold'),
+            dcc.Dropdown(id='p-mah_fold',
+                         options=[{'label': m, 'value': m} for m in MAH_FOLD_OPTIONS],
+                         value=DEFAULTS['mah_fold'], clearable=False,
+                         style={'width': '210px', 'display': 'inline-block',
+                                'verticalAlign': 'middle', 'marginRight': '10px'}),
             html.Label('rsa_method'), _input('p-rsa_method', DEFAULTS['rsa_method'], '100px'),
             html.Label('radius'), _input('p-radius', '', '60px', 'number'),
             html.Label('z_threshold'), _input('p-z_threshold', DEFAULTS['z_threshold'], '70px', 'number'),
@@ -362,6 +392,10 @@ def param_panel():
 
 app.layout = html.Div([
     html.H2('RSA Pipeline Status'),
+    html.Div([
+        html.Span(f'v{VERSION}', style={'fontWeight': '600'}),
+        html.Span(f'  —  last change: {LAST_CHANGE}', style={'color': '#57606a'}),
+    ], style={'fontSize': '12px', 'margin': '-6px 0 10px'}),
     html.P('Checks the actual output files on disk. Nothing is scanned until you '
            'press a "Check" button. Results are remembered per parameter set.',
            style={'color': '#57606a'}),
@@ -412,6 +446,11 @@ app.layout = html.Div([
             "* Inside **Details**, each participant has its own **Schedule** button "
             "(and group steps get a **Schedule this step** button) so you can queue "
             "any single map — including one that is already DONE, to force a re-run.\n"
+            "* Scheduling a job whose id already exists in the queue (pending, "
+            "waiting, running, completed, or failed) never gets skipped — it's queued "
+            "again under a `__dup{N}` filename with `--shuffle_participants` set, so a "
+            "duplicate run walks participants/permutations in a different order than "
+            "the other instance instead of racing it file-by-file.\n"
             "* Tick **overwrite** (above the detail panel) before scheduling to add "
             "`--replace_file` (and `--replace_rnd_files` for steps 4/5) so existing "
             "files are recomputed instead of skipped.\n"
@@ -471,13 +510,14 @@ def populate_models(dataset, model, _n, current):
     State('cache-version', 'data'),
     State('detail-overwrite', 'value'),
     State('p-dataset', 'value'), State('p-model', 'value'), State('p-rsa_model', 'value'),
-    State('p-specie', 'value'), State('p-method', 'value'), State('p-rsa_method', 'value'),
+    State('p-specie', 'value'), State('p-method', 'value'), State('p-mah_fold', 'value'),
+    State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
     prevent_initial_call=True,
 )
 def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite_val,
-              dataset, model, rsa_model, specie, method, rsa_method,
+              dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
               radius, z_threshold, mask_type, reps, reps_group):
     trig = callback_context.triggered
     if not trig or trig[0]['value'] in (None, 0):
@@ -495,8 +535,8 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     ttype = idd.get('type')
     overwrite = 'ow' in (overwrite_val or [])
 
-    params = params_from_inputs(dataset, model, rsa_model, specie, method, rsa_method,
-                                radius, z_threshold, mask_type, reps, reps_group)
+    params = params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold,
+                                rsa_method, radius, z_threshold, mask_type, reps, reps_group)
     if not params['rsa_model']:
         _log(f"button pressed ({prop}) but no rsa_model selected — ignoring")
         return no_update, no_update, _msg_span('⚠ pick an rsa_model first', ok=False)
@@ -556,22 +596,22 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
         step = idd.get('index')
         if step is not None:
             _log(f"'Sched from here' pressed at step {step} (overwrite={overwrite}) — {sig}")
-            created, skipped = _schedule_from_here(params, step, overwrite)
-            msg = _schedule_from_here_msg(params, step, created, skipped, overwrite)
+            created = _schedule_from_here(params, step, overwrite)
+            msg = _schedule_from_here_msg(params, step, created, overwrite)
             selected = step
     elif ttype == 'detail-schedule-sub':
         step, sub = idd.get('step'), idd.get('sub')
         if step is not None and sub is not None:
             _log(f"'Schedule' pressed for step {step} sub-{sub} (overwrite={overwrite}) — {sig}")
-            created, skipped = _schedule_jobs(params, step, [int(sub)], overwrite)
-            msg = _schedule_result_msg(params, step, created, skipped, overwrite)
+            created = _schedule_jobs(params, step, [int(sub)], overwrite)
+            msg = _schedule_result_msg(params, step, created, overwrite)
             selected = step
     elif ttype == 'detail-schedule-group':
         step = idd.get('index')
         if step is not None:
             _log(f"'Schedule step' (group) pressed for step {step} (overwrite={overwrite}) — {sig}")
-            created, skipped = _schedule_jobs(params, step, [None], overwrite)
-            msg = _schedule_result_msg(params, step, created, skipped, overwrite)
+            created = _schedule_jobs(params, step, [None], overwrite)
+            msg = _schedule_result_msg(params, step, created, overwrite)
             selected = step
 
     save_cache(cache)
@@ -586,14 +626,15 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     Output('sig-label', 'children'),
     Input('cache-version', 'data'),
     Input('p-dataset', 'value'), Input('p-model', 'value'), Input('p-rsa_model', 'value'),
-    Input('p-specie', 'value'), Input('p-method', 'value'), Input('p-rsa_method', 'value'),
+    Input('p-specie', 'value'), Input('p-method', 'value'), Input('p-mah_fold', 'value'),
+    Input('p-rsa_method', 'value'),
     Input('p-radius', 'value'), Input('p-z_threshold', 'value'), Input('p-mask_type', 'value'),
     Input('p-reps', 'value'), Input('p-reps_group', 'value'),
 )
-def render_table(_v, dataset, model, rsa_model, specie, method, rsa_method,
+def render_table(_v, dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
                  radius, z_threshold, mask_type, reps, reps_group):
-    params = params_from_inputs(dataset, model, rsa_model, specie, method, rsa_method,
-                                radius, z_threshold, mask_type, reps, reps_group)
+    params = params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold,
+                                rsa_method, radius, z_threshold, mask_type, reps, reps_group)
     sig = signature(params)
     cache = load_cache()
     steps_cache = cache.get(sig, {}).get('steps', {})
@@ -662,17 +703,18 @@ def render_table(_v, dataset, model, rsa_model, specie, method, rsa_method,
     Input('selected-step', 'data'),
     Input('cache-version', 'data'),
     State('p-dataset', 'value'), State('p-model', 'value'), State('p-rsa_model', 'value'),
-    State('p-specie', 'value'), State('p-method', 'value'), State('p-rsa_method', 'value'),
+    State('p-specie', 'value'), State('p-method', 'value'), State('p-mah_fold', 'value'),
+    State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
 )
-def render_detail(step, _v, dataset, model, rsa_model, specie, method, rsa_method,
+def render_detail(step, _v, dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
                   radius, z_threshold, mask_type, reps, reps_group):
     if step is None:
         return html.Span('Select a step\'s "Details" (or "Check" a step) to see the '
                          'per-participant breakdown here.', style={'color': '#57606a'})
-    params = params_from_inputs(dataset, model, rsa_model, specie, method, rsa_method,
-                                radius, z_threshold, mask_type, reps, reps_group)
+    params = params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold,
+                                rsa_method, radius, z_threshold, mask_type, reps, reps_group)
     sig = signature(params)
     c = load_cache().get(sig, {}).get('steps', {}).get(str(step))
     label = pc.STEP_LABELS.get(step, f'Step {step}')
@@ -776,6 +818,7 @@ def main():
     parser.add_argument('--host', default='127.0.0.1',
                         help='Host to bind (default 127.0.0.1 — local only)')
     args = parser.parse_args()
+    print(f"[pipeline_dashboard] version    : v{VERSION} - {LAST_CHANGE}")
     print(f"[pipeline_dashboard] datafolder : {DATAFOLDER}")
     print(f"[pipeline_dashboard] cache file : {CACHE_PATH}")
     print(f"[pipeline_dashboard] open       : http://{args.host}:{args.port}")

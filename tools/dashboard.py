@@ -13,14 +13,18 @@ Each sub-app keeps its own Dash instance and callbacks, so there are no
 component-ID collisions. To share at a conference, expose port 8050 through a
 tunnel (cloudflared / ngrok) — one URL serves every tab.
 
-Launch:  & "C:\\ProgramData\\anaconda3\\python.exe" dashboard.py
+Launch:  & "C:\\ProgramData\\anaconda3\\python.exe" tools\\dashboard.py
 Then open http://127.0.0.1:8050
 """
 
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)  # tools/ lives one level below the repo root
+for _p in (_REPO_ROOT, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # --- Mount prefixes: set BEFORE importing the sub-apps -------------------
 # Each sub-app reads its own *_URL_BASE at import time and constructs its Dash

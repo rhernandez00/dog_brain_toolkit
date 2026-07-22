@@ -18,10 +18,10 @@ files that ``searchlight.py`` would have written are present on disk.
 Usage
 -----
 Interactive (menu-driven):
-    python pipeline_console.py --dataset EmoC
+    python tools/pipeline_console.py --dataset EmoC
 
 Non-interactive one-shot report for a specific model:
-    python pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --report
+    python tools/pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --report
 
 Key options (all optional except --dataset):
     --model        GLM model               (default: basic-block)
@@ -51,7 +51,11 @@ import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_ROOT = os.path.dirname(_THIS_DIR)  # tools/ lives one level below the repo root
+for _p in (_REPO_ROOT, _THIS_DIR):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
 
@@ -113,7 +117,8 @@ class Ctx:
     """Everything a probe needs to locate a model's files."""
 
     def __init__(self, datafolder, dataset, model, rsa_model, specie, method,
-                 rsa_method, radius, z_threshold, mask_type, reps, reps_group):
+                 rsa_method, radius, z_threshold, mask_type, reps, reps_group,
+                 mah_fold='stim-wise'):
         self.datafolder = datafolder
         self.dataset = dataset
         self.model = model
@@ -126,12 +131,25 @@ class Ctx:
         self.mask_type = mask_type
         self.reps = reps
         self.reps_group = reps_group
+        # Mahalanobis folding strategy. Only relevant when method == 'mahalanobis';
+        # it decides *where* the per-pair pairwise maps land (see mah_direct below)
+        # and, together with the model's own categories, *which* files to expect —
+        # so two mahalanobis models run under different folds are probed apart
+        # instead of being lumped together in the shared subject folder.
+        self.mah_fold = mah_fold
 
         # Lazily resolved (need the data disk / rsa_utils).
         self.task = dataset
         self.participants = []
         self.stim_types = []
         self.categories = []
+        # config['model_dict'] — per-run stim mapping, only needed to count the
+        # 'stim-wise-all-runs' fold's per-run stimuli (None if absent).
+        self.model_dict = None
+        # Per-participant run lists, cached lazily by _runs_for(); the number of
+        # runs varies by participant (read from the BIDS database), which is why
+        # run-dependent expected counts must be computed per participant.
+        self._runs_cache = {}
         self._resolve_error = None
 
     # --- path helpers ------------------------------------------------------
@@ -165,6 +183,20 @@ class Ctx:
     def sub_folder(self, sub_N):
         return f"{self.specie}-sub-{sub_N:02d}"
 
+    @property
+    def mah_direct(self):
+        """Whether this mahalanobis fold writes the per-pair pairwise maps
+        *directly* under the subject folder (True) or inside per-run
+        ``ses-*_run-*`` subfolders (False).
+
+        Mirrors ``rsa_utils.calculate_pairwise_similarity_maps2``:
+        ``stim-wise`` / ``stim-wise-all-runs`` / ``run-wise`` collapse across
+        runs and save one map per pair directly under the subject folder;
+        ``stim-wise-multiple-folds`` keeps one map per pair *per run* in the
+        run subfolders.
+        """
+        return self.mah_fold != 'stim-wise-multiple-folds'
+
 
 def build_ctx(args, datafolder):
     ctx = Ctx(
@@ -180,6 +212,7 @@ def build_ctx(args, datafolder):
         mask_type=(None if args.mask_type in ("none", "None", "") else args.mask_type),
         reps=args.reps,
         reps_group=args.reps_group,
+        mah_fold=getattr(args, 'mah_fold', 'stim-wise') or 'stim-wise',
     )
     _resolve_dynamic(ctx)
     return ctx
@@ -205,6 +238,7 @@ def _resolve_dynamic(ctx):
             config = yaml.safe_load(f)
         ctx.task = config.get('task', ctx.dataset) or ctx.dataset
         ctx.stim_types = config.get('stim_types', []) or []
+        ctx.model_dict = config.get('model_dict')  # per-run stim mapping (may be absent)
         # searchlight.py forces humans to participants 1..40
         if ctx.specie == 'H':
             ctx.participants = list(range(1, 41))
@@ -231,14 +265,25 @@ def _resolve_dynamic(ctx):
 
 
 def _sessions_for(ctx, sub_N):
-    """Return the session/run list for a participant, or None if unavailable."""
+    """Return the session/run list for a participant, or None if unavailable.
+
+    This is the authoritative per-participant run list — the same
+    ``rsa_utils.get_session_and_run_dict`` that ``searchlight.py`` loops over to
+    create the files (it reads ``{dataset}/BIDS/{specie}_database-details.csv``).
+    Run counts differ between participants, so any expected-file total that is
+    per-run must be summed over *this* list, not a fixed number. Cached on the
+    ctx so repeated probes don't re-read the database over the network."""
+    if sub_N in ctx._runs_cache:
+        return ctx._runs_cache[sub_N]
     try:
         import rsa_utils
-        return rsa_utils.get_session_and_run_dict(
+        runs = rsa_utils.get_session_and_run_dict(
             ctx.datafolder, ctx.dataset, ctx.specie, sub_N
         )
     except Exception:
-        return None
+        runs = None
+    ctx._runs_cache[sub_N] = runs
+    return runs
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +306,19 @@ def _exists(path):
 
 def _count(pattern):
     return len(glob.glob(pattern))
+
+
+def _listdir_set(folder):
+    """Set of filenames directly in ``folder`` (empty if it isn't a dir).
+
+    One directory read, so membership tests against a set of expected names
+    cost nothing extra over the network — used to count exact files without a
+    stat per candidate.
+    """
+    try:
+        return set(os.listdir(folder))
+    except OSError:
+        return set()
 
 
 def probe_step0(ctx):
@@ -290,24 +348,139 @@ def probe_step0(ctx):
     return _summarize(per_sub, done, partial, "beta maps")
 
 
+def _pairs(labels):
+    """Unordered pairs ``(a, b)`` (upper triangle, ``i < j``) of ``labels``."""
+    return [(a, b) for i, a in enumerate(labels)
+            for j, b in enumerate(labels) if i < j]
+
+
+def _pair_present(ctx, files, a, b):
+    """True if the pairwise map for the unordered pair ``{a, b}`` is in ``files``
+    (a set of filenames), in *either* filename orientation.
+
+    Step-1 maps are shared and written once, using whichever model's category
+    order created them — that order need not match this model's CSV column order —
+    so ``a_b`` and ``b_a`` are the same map and either spelling counts."""
+    pre = f"r-{ctx.radius}_{ctx.method}_"
+    return f"{pre}{a}_{b}.nii.gz" in files or f"{pre}{b}_{a}.nii.gz" in files
+
+
+def _run_folder(ctx, session, run_N):
+    """The per-run subfolder name, matching rsa_utils' convention
+    ``ses-{session:02d}_task-{task}_run-{run_N:02d}``."""
+    return f"ses-{int(session):02d}_task-{ctx.task}_run-{int(run_N):02d}"
+
+
+def _step1_expected(ctx, sub):
+    """Expected step-1 pairwise maps for one participant as
+    ``{folder_abs_path: [(a, b), ...]}`` (unordered label pairs per folder),
+    mirroring the creation rules in
+    ``rsa_utils.calculate_pairwise_similarity_maps2`` /
+    ``calculate_mahalanobis_pairwise_maps`` (and how ``searchlight.py`` calls
+    them). Returns ``None`` when the inputs needed to know the expected set
+    (categories / runs / per-run stims) can't be resolved.
+
+    Two things this gets right that a flat ``C(n,2)`` or a wildcard glob did not:
+
+    * **Per-participant runs.** ``searchlight.py`` loops the participant's own
+      ``get_session_and_run_dict`` list, so run-dependent folds/methods expect a
+      *different* number of files for a participant with 6 runs than one with 7.
+      The per-run folds sum over *this* participant's runs (via ``_sessions_for``).
+    * **Model + fold specific names/locations.** ``categories`` come from the RSA
+      model CSV (``searchlight.py`` passes ``categories=rsa_model_dict['categories']``),
+      and ``mah_fold`` decides where the maps land. Counting only these exact
+      names in these exact folders ignores garbage/leftover files that other
+      models or mistaken runs may have dropped in the shared subject folder.
+
+    Fold → layout (mahalanobis):
+      * ``stim-wise``               — one map per model-category pair, **directly**
+                                      under the subject folder. Run-independent.
+      * ``run-wise``                — one map per *stim-type* pair, directly under
+                                      the subject folder. Run-independent.
+      * ``stim-wise-multiple-folds``— one map per model-category pair **per run**,
+                                      in each ``ses-*_run-*`` subfolder → ``× n_runs``.
+      * ``stim-wise-all-runs``      — one map per pair of *that run's* stimuli
+                                      (from ``config['model_dict']``) per run.
+    Non-mahalanobis: one map per stim-type pair **per run**, in the run subfolders.
+    """
+    sub_dir = os.path.join(ctx.rsa_dir, ctx.sub_folder(sub))
+    is_mah = ctx.method == 'mahalanobis'
+
+    if is_mah:
+        fold = ctx.mah_fold
+        if fold in ('stim-wise', 'run-wise', None):
+            labels = ctx.stim_types if fold == 'run-wise' else ctx.categories
+            if not labels:
+                return None
+            return {sub_dir: _pairs(labels)}
+        if fold == 'stim-wise-multiple-folds':
+            runs = _sessions_for(ctx, sub)
+            if not ctx.categories or runs is None:
+                return None
+            pairs = _pairs(ctx.categories)
+            return {os.path.join(sub_dir, _run_folder(ctx, e['session'], e['run_N'])): pairs
+                    for e in runs}
+        if fold == 'stim-wise-all-runs':
+            runs = _sessions_for(ctx, sub)
+            md = ctx.model_dict
+            if runs is None or not isinstance(md, dict):
+                return None
+            exp = {}
+            for e in runs:
+                run_key = f"run{int(e['run_N']):02d}"
+                run_map = md.get(run_key)
+                if not isinstance(run_map, dict):
+                    return None
+                # per-run stimuli: video_file (fallback stim_file), as in rsa_utils
+                stims = []
+                for s in run_map:
+                    info = run_map[s]
+                    stims.append(info.get('video_file', info.get('stim_file', s))
+                                 if isinstance(info, dict) else s)
+                folder = os.path.join(sub_dir, _run_folder(ctx, e['session'], e['run_N']))
+                exp[folder] = _pairs(stims)
+            return exp
+        return None
+
+    # non-mahalanobis: per stim-type pair, per run
+    runs = _sessions_for(ctx, sub)
+    if not ctx.stim_types or runs is None:
+        return None
+    pairs = _pairs(ctx.stim_types)
+    return {os.path.join(sub_dir, _run_folder(ctx, e['session'], e['run_N'])): pairs
+            for e in runs}
+
+
 def probe_step1(ctx):
-    """Pairwise similarity maps per participant."""
+    """Pairwise similarity maps per participant.
+
+    Expected files follow the creation rules (see ``_step1_expected``) and are
+    counted per participant, so participants with different run counts get
+    different expected totals. Only the exact expected names in their expected
+    folders are counted; stray/garbage files are ignored.
+    """
     if not ctx.participants:
         return _result(UNKNOWN, "participant list unavailable")
-    is_mah = ctx.method == 'mahalanobis'
-    # expected number of pairs (upper triangle)
-    units = ctx.categories if is_mah else ctx.stim_types
-    exp_pairs = len(units) * (len(units) - 1) // 2 if units else None
     per_sub, done, partial = [], 0, 0
     for sub in ctx.participants:
-        sub_dir = os.path.join(ctx.rsa_dir, ctx.sub_folder(sub))
-        if is_mah:
-            # mahalanobis stim-wise: files live directly under the subject folder
-            n = _count(os.path.join(sub_dir, f"r-{ctx.radius}_{ctx.method}_*.nii.gz"))
+        exp_map = _step1_expected(ctx, sub)
+        if exp_map is None:
+            # Can't resolve the expected set exactly — fall back to a fold-aware
+            # wildcard so the row is still informative (expected count unknown).
+            sub_dir = os.path.join(ctx.rsa_dir, ctx.sub_folder(sub))
+            pat = f"r-{ctx.radius}_{ctx.method}_*.nii.gz"
+            glob_pat = (os.path.join(sub_dir, pat) if ctx.mah_direct
+                        else os.path.join(sub_dir, 'ses-*run-*', pat))
+            per_sub.append(_grade_count(sub, _count(glob_pat), None))
         else:
-            # correlation etc.: per-run subfolders
-            n = _count(os.path.join(sub_dir, 'ses-*run-*', f"r-{ctx.radius}_{ctx.method}_*.nii.gz"))
-        per_sub.append(_grade_count(sub, n, exp_pairs))
+            exp_total = sum(len(pairs) for pairs in exp_map.values())
+            # One directory read per expected folder; a pair counts if the map
+            # exists in either filename orientation (see _pair_present).
+            present = 0
+            for folder, pairs in exp_map.items():
+                files = _listdir_set(folder)
+                present += sum(1 for a, b in pairs if _pair_present(ctx, files, a, b))
+            per_sub.append(_grade_count(sub, present, exp_total))
         done += per_sub[-1][1] == DONE
         partial += per_sub[-1][1] == PARTIAL
     return _summarize(per_sub, done, partial, "pairwise maps")
@@ -523,6 +696,8 @@ def render_header(ctx):
     print(f"  rsa_model : {cyan(ctx.rsa_model)}")
     print(f"  specie    : {ctx.specie}   radius: {ctx.radius}   method: {ctx.method}   "
           f"rsa_method: {ctx.rsa_method}")
+    if ctx.method == 'mahalanobis':
+        print(f"  mah_fold  : {ctx.mah_fold}")
     print(f"  mask_type : {ctx.mask_type}   z_threshold: {ctx.z_threshold}   "
           f"reps: {ctx.reps}   reps_group: {ctx.reps_group}")
     if ctx.participants:
@@ -667,6 +842,8 @@ def interactive(args, datafolder):
         if cmd.lower() == 's':
             args.specie = _prompt("specie (D/H)", args.specie) or args.specie
             args.method = _prompt("method", args.method) or args.method
+            args.mah_fold = _prompt("mah_fold", getattr(args, 'mah_fold', 'stim-wise')) \
+                or getattr(args, 'mah_fold', 'stim-wise')
             args.rsa_method = _prompt("rsa_method", args.rsa_method) or args.rsa_method
             rad = _prompt("radius (blank=auto)", "")
             args.radius = int(rad) if rad else None
@@ -703,6 +880,10 @@ def parse_args():
     p.add_argument('--rsa_model', default=None)
     p.add_argument('--specie', default='D', choices=['D', 'H'])
     p.add_argument('--method', default='mahalanobis')
+    p.add_argument('--mah_fold', default='stim-wise',
+                   help="Mahalanobis folding (decides pairwise-map layout): "
+                        "stim-wise, stim-wise-multiple-folds, stim-wise-all-runs, "
+                        "run-wise (default: stim-wise)")
     p.add_argument('--rsa_method', default='kendall')
     p.add_argument('--radius', type=int, default=None)
     p.add_argument('--z_threshold', type=float, default=3.1)

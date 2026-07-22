@@ -15,7 +15,7 @@ written are present.
 Interactive (menu-driven):
 
 ```bash
-python pipeline_console.py --dataset EmoC
+python tools/pipeline_console.py --dataset EmoC
 ```
 
 You get a numbered list of the RSA models found in
@@ -27,13 +27,13 @@ report; `q` to quit.
 One-shot report (non-interactive, scriptable):
 
 ```bash
-python pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --report
+python tools/pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --report
 ```
 
 Single-step detail:
 
 ```bash
-python pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --report --step 5
+python tools/pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --report --step 5
 ```
 
 ## Options
@@ -45,6 +45,7 @@ python pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --re
 | `--rsa_model` | picker | RSA model CSV name; omit for the interactive picker. |
 | `--specie` | `D` | `D` or `H`. |
 | `--method` | `mahalanobis` | Pairwise method — part of every filename. |
+| `--mah_fold` | `stim-wise` | Mahalanobis folding (`stim-wise`, `stim-wise-multiple-folds`, `stim-wise-all-runs`, `run-wise`). Sets which/where the step-1 pairwise maps are expected, so models/folds sharing a subject folder aren't mixed. |
 | `--rsa_method` | `kendall` | Model-comparison method. |
 | `--radius` | 3 (D) / 4 (H) | Searchlight radius. |
 | `--z_threshold` | `3.1` | Threshold baked into step 9/10 filenames. |
@@ -53,9 +54,10 @@ python pipeline_console.py --dataset EmoC --rsa_model test-model --specie D --re
 | `--report` / `--step` | off | Non-interactive report; optional single step. |
 
 > **Important:** the parameters must match how the model was actually run — the
-> pipeline encodes `method`, `rsa_method`, `radius`, `mask_type`, and
-> `z_threshold` into the output filenames, so a mismatch makes a completed step
-> look missing. The defaults mirror `searchlight.py`'s defaults.
+> pipeline encodes `method`, `mah_fold`, `rsa_method`, `radius`, `mask_type`, and
+> `z_threshold` into the output filenames (or their on-disk layout), so a
+> mismatch makes a completed step look missing. The defaults mirror
+> `searchlight.py`'s defaults.
 
 ## What each step checks
 

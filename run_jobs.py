@@ -54,6 +54,12 @@ def build_command(job, git_folder, python_exe, marker_dir):
         cmd.append("--replace_file")
     if job.get("replace_rnd_files"):
         cmd.append("--replace_rnd_files")
+    if job.get("shuffle_participants"):
+        # Set by create_job() when this job duplicates one already in the
+        # queue, so a concurrent duplicate walks participants/permutations
+        # in a different order rather than racing the other instance
+        # file-by-file.
+        cmd.append("--shuffle_participants")
     return cmd
 
 
