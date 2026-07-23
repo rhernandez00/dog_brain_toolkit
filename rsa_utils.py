@@ -19,6 +19,202 @@ import numpy as np
 from scipy import ndimage                                                                                                                                      
 import preprocess_functions
 
+
+def _get_emoc_multiple_fold_stim_files(session_and_run_dict, model_dict):
+    """Return EmoC condition IDs and their common cross-validation folds."""
+    if not isinstance(model_dict, dict):
+        raise ValueError("EmoC stim-wise-multiple-folds requires config['model_dict'].")
+
+    stim_files = []
+    seen = set()
+    stim_partitions = {}
+    for entry in session_and_run_dict:
+        run_key = f"run{int(entry['run_N']):02d}"
+        run_dict = model_dict.get(run_key)
+        if not isinstance(run_dict, dict):
+            raise ValueError(f"model_dict is missing metadata for {run_key}.")
+        for stim, metadata in run_dict.items():
+            if not isinstance(metadata, dict):
+                raise ValueError(f"model_dict[{run_key!r}][{stim!r}] must be a dictionary.")
+            stim_file = metadata.get('stim_file')
+            if not stim_file or 'partition' not in metadata:
+                raise ValueError(
+                    f"model_dict[{run_key!r}][{stim!r}] requires 'stim_file' and 'partition'."
+                )
+            if stim_file not in seen:
+                stim_files.append(stim_file)
+                seen.add(stim_file)
+                stim_partitions[stim_file] = set()
+            stim_partitions[stim_file].add(metadata['partition'])
+
+    repeated_stim_files = [
+        stim_file for stim_file in stim_files if len(stim_partitions[stim_file]) >= 2
+    ]
+    if len(repeated_stim_files) < 2:
+        raise ValueError("EmoC stim-wise-multiple-folds requires at least two repeated stimuli.")
+
+    fold_partitions = set.intersection(
+        *(stim_partitions[stim_file] for stim_file in repeated_stim_files)
+    )
+    if len(fold_partitions) < 2:
+        raise ValueError(
+            "Repeated EmoC stimuli do not share at least two partitions for cross-validation."
+        )
+    return repeated_stim_files, fold_partitions
+
+
+def check_existing_similarity_maps(datafolder, dataset, session_and_run_dict, specie, sub_N, model, task, radius, dis_method, stim_types, categories, mah_fold=None, model_dict=None, verbose=False):
+    '''
+    Checks for existing similarity map files {specie}-sub-{sub_N:02d}
+    returns:
+    - True if all files exist, False if any file is missing
+    '''
+    if dis_method != 'mahalanobis':
+        ## check if output files already exist
+        print(f"Checking for existing similarity map files {specie}-sub-{sub_N:02d}...")
+        all_exist = True
+
+        for indx, entry in enumerate(session_and_run_dict):
+            session = entry['session']
+            run_N = entry['run_N']
+            # correct session to 2 digits
+            session = f"{session:02d}"
+            for i, stim_i in enumerate(stim_types):
+                for j, stim_j in enumerate(stim_types):
+                    if i >= j:
+                        continue  # avoid duplicates and self-comparison
+                    output_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{run_N:02d}",
+                        f"r-{radius}_{dis_method}_{stim_i}_{stim_j}.nii.gz"
+                    )
+                    # check if output_file exists
+                    if not os.path.exists(output_file):
+                        if verbose:
+                            print(f"Not found {output_file}.")
+                        all_exist = False
+                    else:
+                        if verbose:
+                            print(f"Found {output_file} exists.")
+    else: # dis_method is mahalanobis
+        # dis_method is mahalanobis, check if mah_fold is stim-wise, if so check for output files accordingly
+        if mah_fold == 'stim-wise':#
+            print("Checking for existing Mahalanobis similarity map files with stim-wise folding...")
+            all_exist = True
+            # go over all pairs of categories
+            for i, cat1 in enumerate(categories):
+                for j, cat2 in enumerate(categories):
+                    if i >= j:
+                        continue  # avoid duplicates and self-comparison
+                    output_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"r-{radius}_{dis_method}_{cat1}_{cat2}.nii.gz"
+                    )
+                    # check if file exists
+                    if not os.path.exists(output_file):
+                        if verbose:
+                            print(f"Not found {output_file}.")
+                        all_exist = False
+                    else:
+                        if verbose:
+                            print(f"Found {output_file} exists.")
+        elif mah_fold == 'stim-wise-all-runs':
+            print("Checking for existing Mahalanobis similarity map files with stim-wise folding for all runs...")
+            all_exist = True
+            for entry in session_and_run_dict:
+                session = entry['session']
+                run_N = entry['run_N']
+                # correct session to 2 digits
+                session = f"{session:02d}"
+                # go over all pairs of categories
+                for i, cat1 in enumerate(categories):
+                    for j, cat2 in enumerate(categories):
+                        if i >= j:
+                            continue  # avoid duplicates and self-comparison
+                        output_file = os.path.join(
+                            datafolder, dataset, 'results', 'RSA', model,
+                            f"{specie}-sub-{sub_N:02d}",
+                            f"ses-{session}_task-{task}_run-{run_N:02d}",
+                            f"r-{radius}_{dis_method}_{cat1}_{cat2}.nii.gz"
+                        )
+                        # check if file exists
+                        if not os.path.exists(output_file):
+                            if verbose:
+                                print(f"Not found {output_file}.")
+                            all_exist = False
+                        else:
+                            if verbose:
+                                print(f"Found {output_file} exists.")
+        elif mah_fold == 'stim-wise-multiple-folds':
+            if dataset != 'EmoC':
+                raise ValueError("mah_fold option 'stim-wise-multiple-folds' is only implemented for EmoC.")
+            categories, _ = _get_emoc_multiple_fold_stim_files(session_and_run_dict, model_dict)
+            print("Checking for existing Mahalanobis similarity map files with stim-wise multiple folds...")
+            all_exist = True
+
+            # pairwise file will be associated to a specific stimuli repeated across runs, output is a per-stimuli pair
+            # go over all pairs of stims, categories is a list of stims available
+            for i, stim1 in enumerate(categories):
+                for j, stim2 in enumerate(categories):
+                    if i >= j:
+                        continue  # avoid duplicates and self-comparison
+                    output_file = os.path.join(
+                        datafolder, dataset, 'results', 'RSA', model,
+                        f"{specie}-sub-{sub_N:02d}",
+                        f"r-{radius}_{dis_method}_{stim1}_{stim2}.nii.gz"
+                    )
+                    # check if file exists
+                    if not os.path.exists(output_file):
+                        if verbose:
+                            print(f"Not found {output_file}.")
+                        all_exist = False
+                    else:
+                        if verbose:
+                            print(f"Found {output_file} exists.")
+        elif mah_fold == 'stim-wise-all-runs':
+            # if dataset is not EmoC, throw error as this option is only implemented for EmoC
+            if dataset != 'EmoC':
+                raise ValueError(f"mah_fold option 'stim-wise-all-runs' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
+            print("Checking for existing Mahalanobis similarity map files with stim-wise folding for all runs...")
+            all_exist = True
+            for entry in session_and_run_dict:
+                session = entry['session']
+                run_N = entry['run_N']
+                # correct session to 2 digits
+                session = f"{session:02d}"
+                # stims available depends on the run, get stims available for this run
+                # for each stim_list, get the video_file
+                stims_available = []
+                for stim in model_dict[f'run{run_N:02d}'].keys():
+                    stim_file = model_dict[f'run{run_N:02d}'][stim]['video_file']
+                    stims_available.append(stim_file)
+
+                # go over all pairs of stim types
+                for i, cat1 in enumerate(stims_available):
+                    for j, cat2 in enumerate(stims_available):
+                        if i >= j:
+                            continue  # avoid duplicates and self-comparison
+                        output_file = os.path.join(
+                            datafolder, dataset, 'results', 'RSA', model,
+                            f"{specie}-sub-{sub_N:02d}",
+                            f"ses-{session}_task-{task}_run-{run_N:02d}",
+                            f"r-{radius}_{dis_method}_{cat1}_{cat2}.nii.gz"
+                        )
+                        # check if file exists
+                        if not os.path.exists(output_file):
+                            if verbose:
+                                print(f"Not found {output_file}.")
+                            all_exist = False
+                        else:
+                            if verbose:
+                                print(f"Found {output_file} exists.")
+    return all_exist
+
+
+
+
 def calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, task, radius, rsa_model, rsa_class, rsa_method, dis_method, replace_file=True, verbose=True, min_percentage_available=0, mask_type=None):
     '''
     Calculates average of cross-participant similarity maps for a given rsa_class. Saves the mean and std maps as nifti files.
@@ -3273,7 +3469,9 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
             - 'odd-even': splits data into odd and even trials (for single run)
             - 'run-wise': each run is a fold (deprecated, do not use)
             - 'stim-wise': folds based on stimulus categories (for multiple runs)
-            - 'stim-wise-multiple-runs': folds based on specific stimuli, requires the same stimuli repeated. This implementation works for multiple runs only.
+            - run-wise-multiple-runs: checking
+                        - 'stim-wise-multiple-folds': EmoC-only exact-stimulus folding. Uses
+                            config ``stim_file`` labels and their repeated ``partition`` values.
         - sigma: None or array (n_features, n_features), optional. Noise covariance for Mahalanobis. If None, it is estimated from pooled run-residuals with shrinkage.
         - shrinkage: {'ledoitwolf','oas','ridge','identity'}, optional.
         - return_rdm: bool, optional. If True return a (n_conditions x n_conditions) symmetric RDM. If False return the condensed upper-triangular vector.
@@ -3282,7 +3480,9 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
 
         
     '''
+    # mah_fold == 'run-wise-multiple-runs':
     # if mah_fold is stim-wise, get categories
+    # stim-wise or 'run-wise-multiple-runs'
     if mah_fold == 'stim-wise':
         if categories is None:
             categories = set()
@@ -3297,29 +3497,24 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                     category = stim[:-1]
                     categories.add(category)
     elif mah_fold == 'stim-wise-multiple-folds':
-        # raise
-        raise(ValueError("mah_fold option 'stim-wise-multiple-folds' is currently not implemented"))
         if dataset == 'EmoC':
+            categories, _ = _get_emoc_multiple_fold_stim_files(session_and_run_dict, model_dict)
+        else:
+            raise ValueError(f"mah_fold option 'stim-wise-multiple-folds' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
+    elif mah_fold == 'stim-wise-all-runs': #
+        if dataset == 'EmoC': # category-wise pairs for each run
             categories = set()
             for stim in stim_types:
                 # remove the last character
                 category = stim[:-1]
                 categories.add(category)
-        else: # throw error
-            raise ValueError(f"mah_fold option 'stim-wise-multiple-folds' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
-    elif mah_fold == 'stim-wise-all-runs':
-        if dataset == 'EmoC':
-            run_dict = model_dict[f"run{run_N:02d}"]
-            # for each run_dict.keys() get 'stim_file'
-            categories = [run_dict[stim]['stim_file'] for stim in run_dict.keys()]
+
     # if none, ignore
     elif mah_fold is None:
         pass
     
-    # throw error
-
     else:
-        raise ValueError(f"Invalid mah_fold option: {mah_fold}. Must be 'stim-wise' for multiple runs. Or 'stim-wise-multiple-folds' for single run.")
+        raise ValueError(f"Invalid mah_fold option: {mah_fold}. Tested on 'stim-wise'.")
 
     print(f"Calculating pairwise similarity maps for {specie}-sub-{sub_N:02d} using dissimilarity method: {dis_method} ")
     
@@ -3328,124 +3523,8 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
         all_exist = False  # force calculation
     else: # check if output files already exist (only for non-Mahalanobis methods, as Mahalanobis with stim-wise folding has a different file structure)
         # if method is not mahalanobis
-        if dis_method != 'mahalanobis':
-            ## check if output files already exist
-            print(f"Checking for existing similarity map files {specie}-sub-{sub_N:02d}...")
-            all_exist = True
+        all_exist = check_existing_similarity_maps(datafolder, dataset, session_and_run_dict, specie, sub_N, model, task, radius, dis_method, stim_types, categories=categories, mah_fold=mah_fold, model_dict=model_dict, verbose=verbose)
 
-            for indx, entry in enumerate(session_and_run_dict):
-                session = entry['session']
-                run_N = entry['run_N']
-                # correct session to 2 digits
-                session = f"{session:02d}"
-                for i, stim_i in enumerate(stim_types):
-                    for j, stim_j in enumerate(stim_types):
-                        if i >= j:
-                            continue  # avoid duplicates and self-comparison
-                        output_file = os.path.join(
-                            datafolder, dataset, 'results', 'RSA', model,
-                            f"{specie}-sub-{sub_N:02d}",
-                            f"ses-{session}_task-{task}_run-{run_N:02d}",
-                            f"r-{radius}_{dis_method}_{stim_i}_{stim_j}.nii.gz"
-                        )
-                        # check if output_file exists
-                        if not os.path.exists(output_file):
-                            if verbose:
-                                print(f"Not found {output_file}.")
-                            all_exist = False
-                        else:
-                            if verbose:
-                                print(f"Found {output_file} exists.")
-        else: # dis_method is mahalanobis
-            # dis_method is mahalanobis, check if mah_fold is stim-wise, if so check for output files accordingly
-            if mah_fold == 'stim-wise' or mah_fold == 'stim-wise-all-runs':
-                print("Checking for existing Mahalanobis similarity map files with stim-wise folding...")
-                all_exist = True
-                # go over all pairs of categories
-                for i, cat1 in enumerate(categories):
-                    for j, cat2 in enumerate(categories):
-                        if i >= j:
-                            continue  # avoid duplicates and self-comparison
-                        output_file = os.path.join(
-                            datafolder, dataset, 'results', 'RSA', model,
-                            f"{specie}-sub-{sub_N:02d}",
-                            f"r-{radius}_{dis_method}_{cat1}_{cat2}.nii.gz"
-                        )
-                        # check if file exists
-                        if not os.path.exists(output_file):
-                            if verbose:
-                                print(f"Not found {output_file}.")
-                            all_exist = False
-                        else:
-                            if verbose:
-                                print(f"Found {output_file} exists.")
-            elif mah_fold == 'stim-wise-multiple-folds':
-                print("Checking for existing Mahalanobis similarity map files with run-wise folding for multiple runs...")
-                all_exist = True
-                for entry in session_and_run_dict:
-                    session = entry['session']
-                    run_N = entry['run_N']
-                    # correct session to 2 digits
-                    session = f"{session:02d}"
-                    # go over all pairs of stim types
-                    for i, cat1 in enumerate(categories):
-                        for j, cat2 in enumerate(categories):
-                            if i >= j:
-                                continue  # avoid duplicates and self-comparison
-                            output_file = os.path.join(
-                                datafolder, dataset, 'results', 'RSA', model,
-                                f"{specie}-sub-{sub_N:02d}",
-                                f"ses-{session}_task-{task}_run-{run_N:02d}",
-                                f"r-{radius}_{dis_method}_{cat1}_{cat2}.nii.gz"
-                            )
-                            # check if file exists
-                            if not os.path.exists(output_file):
-                                if verbose:
-                                    print(f"Not found {output_file}.")
-                                all_exist = False
-                            else:
-                                if verbose:
-                                    print(f"Found {output_file} exists.")
-            elif mah_fold == 'stim-wise-all-runs':
-                # if dataset is not EmoC, throw error as this option is only implemented for EmoC
-                if dataset != 'EmoC':
-                    raise ValueError(f"mah_fold option 'stim-wise-all-runs' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
-                print("Checking for existing Mahalanobis similarity map files with stim-wise folding for all runs...")
-                all_exist = True
-                for entry in session_and_run_dict:
-                    session = entry['session']
-                    run_N = entry['run_N']
-                    # correct session to 2 digits
-                    session = f"{session:02d}"
-                    # stims available depends on the run, get stims available for this run
-                    # for each stim_list, get the video_file
-                    stims_available = []
-                    for stim in model_dict[f'run{run_N:02d}'].keys():
-                        stim_file = model_dict[f'run{run_N:02d}'][stim]['video_file']
-                        stims_available.append(stim_file)
-                    
-                    # go over all pairs of stim types
-                    for i, cat1 in enumerate(stims_available):
-                        for j, cat2 in enumerate(stims_available):
-                            if i >= j:
-                                continue  # avoid duplicates and self-comparison
-                            output_file = os.path.join(
-                                datafolder, dataset, 'results', 'RSA', model,
-                                f"{specie}-sub-{sub_N:02d}",
-                                f"ses-{session}_task-{task}_run-{run_N:02d}",
-                                f"r-{radius}_{dis_method}_{cat1}_{cat2}.nii.gz"
-                            )
-                            # check if file exists
-                            if not os.path.exists(output_file):
-                                if verbose:
-                                    print(f"Not found {output_file}.")
-                                all_exist = False
-                            else:
-                                if verbose:
-                                    print(f"Found {output_file} exists.")
-                    
-                    
-                    
 
     
     ## check if there is any output file missing
@@ -3601,8 +3680,10 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             - run-wise: labels are all stimuli types on one run, across runs. 
                 Output: single map for each pair of stimuli types listed in stim_types 
             - stim-wise: labels are stimulus types (category instead of specific stimulus)
-            strips stim_type to determine category, then uses category as label
-                Output: single map for each pair of stimulus categories (e.g. faces vs bodies) instead of specific stimulus types (e.g. face-1 vs face-2)
+                        - stim-wise-multiple-folds: EmoC-only. Uses exact ``stim_file`` IDs
+                            as labels and config ``partition`` values as cross-validation folds.
+                            One direct-subject map is created for each repeatable stimulus pair.
+            
                 
     
     Inputs:
@@ -3625,13 +3706,15 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     Output:
         - similarity_map for each pairwise condition comparison
     '''
+    # missing: stim-wise-all-runs
+
     # verbose = True
     # print(verbose)
     # load mask
     mask_img_obj = nib.load(mask)
     mask_img = mask_img_obj.get_fdata().astype(bool)
-    # if mah_fold is 'stim-wise' or 'stim-wise-multiple-folds', make sure stim_types can be stripped to determine categories
-    if mah_fold == 'stim-wise' or mah_fold == 'stim-wise-multiple-folds':
+    # For stim-wise folding, collapse individual stimulus IDs to categories.
+    if mah_fold == 'stim-wise':
         # check if each stim in stim_types can be stripped to determine category (e.g. face-1 -> face, body-2 -> body)
         categories = set()
         for stim in stim_types:
@@ -3647,6 +3730,12 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             else:
                 raise ValueError(f"Dataset {dataset} not recognized for determining categories from stimulus types.")
         # if dataset == 'EmoC'
+    elif mah_fold == 'stim-wise-multiple-folds':
+        if dataset != 'EmoC':
+            raise ValueError("mah_fold option 'stim-wise-multiple-folds' is only implemented for EmoC.")
+        categories, fold_partitions = _get_emoc_multiple_fold_stim_files(
+            session_and_run_dict, model_dict
+        )
     elif mah_fold == 'stim-wise-all-runs':
         # do nothing
         run_dict = model_dict[f"run{run_N:02d}"]
@@ -3658,6 +3747,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
 
     else: # if not stim-wise folding, categories are just stim_types
         categories = stim_types
+    category_set = set(categories)
     # print categories found
     print(f"Categories for Mahalanobis folding: {categories}")
     #### --- loading beta maps --- ####
@@ -3671,8 +3761,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
         session = f"{session:02d}"
         if verbose:
             print(f"Loading beta maps for session {session}, run {run_N} for sub-{sub_N:02d}...")
-        ## CORRECT HERE FOR STIM'stim-wise-multiple-folds'
-        ## Replace stim_types for the name of the file. maybe a function that chooses the correct file based on stim and run ##
+
         # initialize maps dict
         session_and_run_dict[indx]['maps'] = {}
         for i, stim in enumerate(stim_types):
@@ -3739,13 +3828,6 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                 key = (cat1, cat2)
                 similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
     elif mah_fold == 'stim-wise-multiple-folds': 
-        categories = list()
-        for run_key in model_dict.keys():    
-            run_dict = model_dict[run_key]
-            # for each run_dict.keys() get 'stim_file'
-            categories.append([run_dict[stim]['stim_file'] for stim in run_dict.keys()])
-        # flatten categories list
-        categories = [item for sublist in categories for item in sublist]
         # build similarity maps
         for indx1, cat1 in enumerate(categories):
             for indx2, cat2 in enumerate(categories):
@@ -3753,8 +3835,18 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                     continue  # avoid duplicates and self-comparison
                 key = (cat1, cat2)
                 similarity_maps[key] = np.full(mask_img.shape, np.nan, dtype=float)
-
-        
+    elif mah_fold == 'stim-wise-all-runs':
+        # build similarity maps for each available run
+        for run_idx, entry in enumerate(session_and_run_dict):
+            run_N = entry['run_N']
+            similarity_maps[run_N] = {}
+            for indx1, cat1 in enumerate(categories):
+                for indx2, cat2 in enumerate(categories):
+                    if indx1 >= indx2:
+                        continue  # avoid duplicates and self-comparison
+                    key = (cat1, cat2)
+                    similarity_maps[run_N][key] = np.full(mask_img.shape, np.nan, dtype=float)
+    
 
     # iterate over all voxels in mask
     it = np.argwhere(mask_img)
@@ -3812,19 +3904,20 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                     labels.append(category)
                     partitions.append(run_N)  # still use runs as partitions for cross-validation
             Y = np.vstack(Y_list)
-        elif mah_fold == 'stim-wise-multiple-folds': #receives a single run, but folds based on the stimuli repetitions within the same run, assumes a single run 
+        elif mah_fold == 'stim-wise-multiple-folds':
             # prepare data matrix Y (stim_types x voxels)
             Y_list, labels, partitions = [], [], []
             # print contents of session_and_run_dict
             # print(f"session_and_run_dict={session_and_run_dict}")
             for run_idx, entry in enumerate(session_and_run_dict):
-                # get run_N and run_dict for this entry
-                run_N = entry['run_N']
                 run_dict = model_dict[f"run{entry['run_N']:02d}"]
-                # go over all stims in run_dict, get stim_file for each stim, and use stim_file as label (stimulus repetition) 
-                for stim in run_dict.keys():
-                    stim_file = run_dict[stim]['stim_file']
-                    partition = run_dict[stim]['partition'] # get partition for this stimulus repetition
+                # stim_file identifies the repeated stimulus; partition identifies
+                # its independent presentation fold across runs.
+                for stim, metadata in run_dict.items():
+                    stim_file = metadata['stim_file']
+                    partition = metadata['partition']
+                    if stim_file not in category_set or partition not in fold_partitions:
+                        continue
                     map_data = entry['maps'][stim]
                     voxel_values = map_data[indices]
                     Y_list.append(voxel_values)
@@ -3832,6 +3925,14 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                     partitions.append(partition)  # use stimulus repetition as partition for cross-validation
                     # print(f"partition: {partition}, label: {stim_file}")
                 Y = np.vstack(Y_list)
+        elif mah_fold == 'stim-wise-all-runs':
+            # go over each run and prepare Y, labels, partitions
+            for run_idx, entry in enumerate(session_and_run_dict):
+                run_N = entry['run_N']
+                # prepare data matrix Y (stim_types x voxels)
+                Y_list, labels, partitions = [], [], []
+                
+
     
         else:
             raise ValueError(f"Unknown mah_fold strategy for multiple runs: {mah_fold}")
@@ -3854,13 +3955,15 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
         elif mah_fold == 'stim-wise' or mah_fold == 'stim-wise-multiple-folds':
             # output for both is a similarity map for each pair of categories, in the case of stim-wise, a single map represents all runs, in the case of stim-wise-multiple-folds, a single map represents a single run, but the distance is calculated based on the stimulus repetitions within that run
             # store distances in similarity_maps category-wise
+            condition_indices = {condition: index for index, condition in enumerate(np.unique(labels))}
             for indx1, cat1 in enumerate(categories):
                 for indx2, cat2 in enumerate(categories):
                     if indx1 >= indx2:
                         continue  # avoid duplicates and self-comparison
-                    # find indices of stim_types that belong to these categories
                     key = (cat1, cat2)
-                    similarity_maps[key][tuple(neigh.T)] = D[indx1, indx2]
+                    similarity_maps[key][tuple(neigh.T)] = D[
+                        condition_indices[cat1], condition_indices[cat2]
+                    ]
     print("Searchlight calculation completed.")
     print("Saving similarity maps...")
     
@@ -3884,11 +3987,10 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                     f"{specie}-sub-{sub_N:02d}",
                     f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
                 )
-            elif mah_fold == 'stim-wise-multiple-folds': # save one map for each pair of categories, for each run
+            elif mah_fold == 'stim-wise-multiple-folds':
                 output_file = os.path.join(
                     datafolder, dataset, 'results', 'RSA', model,
                     f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}",
                     f"r-{radius}_mahalanobis_{cat1}_{cat2}.nii.gz"
                 )
             

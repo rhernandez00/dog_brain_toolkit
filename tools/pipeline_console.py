@@ -101,6 +101,12 @@ MISSING = "MISSING"  # nothing present
 NA = "N/A"           # step not applicable (e.g. beta maps for humans)
 UNKNOWN = "UNKNOWN"  # could not determine (missing inputs to probe)
 
+# Per-file status used only inside verbose ``detail`` entries (see ``_result``).
+# DONE/MISSING there mean "this exact file was found/not found"; PATTERN marks a
+# glob pattern that was searched (for steps whose exact filenames can't be
+# predicted in advance, e.g. GLM ``pe*.nii.gz`` or permutation-indexed files).
+PATTERN = "PATTERN"
+
 _VERDICT_STYLE = {
     DONE: lambda t: green(t),
     PARTIAL: lambda t: yellow(t),
@@ -185,17 +191,12 @@ class Ctx:
 
     @property
     def mah_direct(self):
-        """Whether this mahalanobis fold writes the per-pair pairwise maps
-        *directly* under the subject folder (True) or inside per-run
-        ``ses-*_run-*`` subfolders (False).
+        """Mahalanobis pairwise maps are written directly under subject folders.
 
-        Mirrors ``rsa_utils.calculate_pairwise_similarity_maps2``:
-        ``stim-wise`` / ``stim-wise-all-runs`` / ``run-wise`` collapse across
-        runs and save one map per pair directly under the subject folder;
-        ``stim-wise-multiple-folds`` keeps one map per pair *per run* in the
-        run subfolders.
+        ``stim-wise-multiple-folds`` pools repeated EmoC stimuli across their
+        metadata-defined partitions before writing one map per exact pair.
         """
-        return self.mah_fold != 'stim-wise-multiple-folds'
+        return True
 
 
 def build_ctx(args, datafolder):
@@ -321,7 +322,7 @@ def _listdir_set(folder):
         return set()
 
 
-def probe_step0(ctx):
+def probe_step0(ctx, verbose=False):
     """Beta maps (dogs only) — GLM pe files per participant/session/run."""
     if ctx.specie == 'H':
         return _result(NA, "humans use pre-existing beta maps")
@@ -329,10 +330,16 @@ def probe_step0(ctx):
     if not ctx.participants:
         return _result(UNKNOWN, "participant list unavailable")
     per_sub, done, partial = [], 0, 0
+    detail = [] if verbose else None
     for sub in ctx.participants:
         sess = _sessions_for(ctx, sub)
         sub_glob = os.path.join(glm_dir, ctx.sub_folder(sub), '*', 'stats', 'pe*.nii.gz')
-        n = _count(sub_glob)
+        matches = sorted(glob.glob(sub_glob))
+        n = len(matches)
+        if verbose:
+            detail.append({'sub': sub, 'path': sub_glob, 'status': PATTERN})
+            for m in matches:
+                detail.append({'sub': sub, 'path': m, 'status': DONE})
         if sess is None:
             per_sub.append((sub, UNKNOWN if n == 0 else PARTIAL, f"{n} pe files"))
             continue
@@ -345,7 +352,7 @@ def probe_step0(ctx):
             partial += 1
         else:
             per_sub.append((sub, MISSING, f"0 / {n_runs} runs"))
-    return _summarize(per_sub, done, partial, "beta maps")
+    return _summarize(per_sub, done, partial, "beta maps", detail=detail)
 
 
 def _pairs(labels):
@@ -382,10 +389,10 @@ def _step1_expected(ctx, sub):
 
     Two things this gets right that a flat ``C(n,2)`` or a wildcard glob did not:
 
-    * **Per-participant runs.** ``searchlight.py`` loops the participant's own
-      ``get_session_and_run_dict`` list, so run-dependent folds/methods expect a
-      *different* number of files for a participant with 6 runs than one with 7.
-      The per-run folds sum over *this* participant's runs (via ``_sessions_for``).
+        * **Per-participant runs.** ``searchlight.py`` loops the participant's own
+            ``get_session_and_run_dict`` list. For ``stim-wise-multiple-folds``, that
+            list selects the exact repeated ``stim_file`` conditions that have common
+            cross-validation partitions for this participant.
     * **Model + fold specific names/locations.** ``categories`` come from the RSA
       model CSV (``searchlight.py`` passes ``categories=rsa_model_dict['categories']``),
       and ``mah_fold`` decides where the maps land. Counting only these exact
@@ -397,8 +404,9 @@ def _step1_expected(ctx, sub):
                                       under the subject folder. Run-independent.
       * ``run-wise``                — one map per *stim-type* pair, directly under
                                       the subject folder. Run-independent.
-      * ``stim-wise-multiple-folds``— one map per model-category pair **per run**,
-                                      in each ``ses-*_run-*`` subfolder → ``× n_runs``.
+    * ``stim-wise-multiple-folds``— one direct-subject map per pair of exact,
+                          repeatable ``config['model_dict']``
+                          ``stim_file`` conditions.
       * ``stim-wise-all-runs``      — one map per pair of *that run's* stimuli
                                       (from ``config['model_dict']``) per run.
     Non-mahalanobis: one map per stim-type pair **per run**, in the run subfolders.
@@ -415,11 +423,16 @@ def _step1_expected(ctx, sub):
             return {sub_dir: _pairs(labels)}
         if fold == 'stim-wise-multiple-folds':
             runs = _sessions_for(ctx, sub)
-            if not ctx.categories or runs is None:
+            if runs is None or not isinstance(ctx.model_dict, dict):
                 return None
-            pairs = _pairs(ctx.categories)
-            return {os.path.join(sub_dir, _run_folder(ctx, e['session'], e['run_N'])): pairs
-                    for e in runs}
+            try:
+                import rsa_utils
+                labels, _ = rsa_utils._get_emoc_multiple_fold_stim_files(
+                    runs, ctx.model_dict
+                )
+            except Exception:
+                return None
+            return {sub_dir: _pairs(labels)}
         if fold == 'stim-wise-all-runs':
             runs = _sessions_for(ctx, sub)
             md = ctx.model_dict
@@ -451,7 +464,7 @@ def _step1_expected(ctx, sub):
             for e in runs}
 
 
-def probe_step1(ctx):
+def probe_step1(ctx, verbose=False):
     """Pairwise similarity maps per participant.
 
     Expected files follow the creation rules (see ``_step1_expected``) and are
@@ -462,6 +475,8 @@ def probe_step1(ctx):
     if not ctx.participants:
         return _result(UNKNOWN, "participant list unavailable")
     per_sub, done, partial = [], 0, 0
+    detail = [] if verbose else None
+    pre = f"r-{ctx.radius}_{ctx.method}_"
     for sub in ctx.participants:
         exp_map = _step1_expected(ctx, sub)
         if exp_map is None:
@@ -471,7 +486,12 @@ def probe_step1(ctx):
             pat = f"r-{ctx.radius}_{ctx.method}_*.nii.gz"
             glob_pat = (os.path.join(sub_dir, pat) if ctx.mah_direct
                         else os.path.join(sub_dir, 'ses-*run-*', pat))
-            per_sub.append(_grade_count(sub, _count(glob_pat), None))
+            matches = sorted(glob.glob(glob_pat))
+            if verbose:
+                detail.append({'sub': sub, 'path': glob_pat, 'status': PATTERN})
+                for m in matches:
+                    detail.append({'sub': sub, 'path': m, 'status': DONE})
+            per_sub.append(_grade_count(sub, len(matches), None))
         else:
             exp_total = sum(len(pairs) for pairs in exp_map.values())
             # One directory read per expected folder; a pair counts if the map
@@ -479,19 +499,25 @@ def probe_step1(ctx):
             present = 0
             for folder, pairs in exp_map.items():
                 files = _listdir_set(folder)
-                present += sum(1 for a, b in pairs if _pair_present(ctx, files, a, b))
+                for a, b in pairs:
+                    ok = _pair_present(ctx, files, a, b)
+                    present += ok
+                    if verbose:
+                        p = os.path.join(folder, f"{pre}{a}_{b}.nii.gz")
+                        detail.append({'sub': sub, 'path': p, 'status': DONE if ok else MISSING})
             per_sub.append(_grade_count(sub, present, exp_total))
         done += per_sub[-1][1] == DONE
         partial += per_sub[-1][1] == PARTIAL
-    return _summarize(per_sub, done, partial, "pairwise maps")
+    return _summarize(per_sub, done, partial, "pairwise maps", detail=detail)
 
 
-def probe_step2(ctx):
+def probe_step2(ctx, verbose=False):
     """Model similarity maps (real) per participant."""
     if not ctx.participants:
         return _result(UNKNOWN, "participant list unavailable")
     is_mah = ctx.method == 'mahalanobis'
     per_sub, done, partial = [], 0, 0
+    detail = [] if verbose else None
     fname = f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}.nii.gz"
     masked = f"{ctx.mask_type}-{fname}" if ctx.mask_type else fname
     for sub in ctx.participants:
@@ -499,120 +525,171 @@ def probe_step2(ctx):
         if is_mah:
             # mahalanobis: single file directly under the subject folder,
             # no per-session/run subfolder (see rsa_utils.compare_with_model)
-            n = _count(os.path.join(sub_dir, masked))
+            p_masked = os.path.join(sub_dir, masked)
+            checked = [p_masked]
+            n = _count(p_masked)
             if n == 0 and ctx.mask_type:
-                n = _count(os.path.join(sub_dir, fname))
+                p_unmasked = os.path.join(sub_dir, fname)
+                checked.append(p_unmasked)
+                n = _count(p_unmasked)
             exp = 1
+            if verbose:
+                for p in checked:
+                    detail.append({'sub': sub, 'path': p, 'status': DONE if _exists(p) else MISSING})
         else:
             # tolerate both masked and unmasked names, across run subfolders
-            n = _count(os.path.join(sub_dir, 'ses-*run-*', masked))
-            if n == 0 and ctx.mask_type:
-                n = _count(os.path.join(sub_dir, 'ses-*run-*', fname))
+            pat_masked = os.path.join(sub_dir, 'ses-*run-*', masked)
+            matches = sorted(glob.glob(pat_masked))
+            checked_pats = [pat_masked]
+            if not matches and ctx.mask_type:
+                pat_unmasked = os.path.join(sub_dir, 'ses-*run-*', fname)
+                matches = sorted(glob.glob(pat_unmasked))
+                checked_pats.append(pat_unmasked)
+            n = len(matches)
             sess = _sessions_for(ctx, sub)
             exp = len(sess) if sess is not None else None
+            if verbose:
+                for pat in checked_pats:
+                    detail.append({'sub': sub, 'path': pat, 'status': PATTERN})
+                for m in matches:
+                    detail.append({'sub': sub, 'path': m, 'status': DONE})
         per_sub.append(_grade_count(sub, n, exp))
         done += per_sub[-1][1] == DONE
         partial += per_sub[-1][1] == PARTIAL
-    return _summarize(per_sub, done, partial, "model-similarity maps")
+    return _summarize(per_sub, done, partial, "model-similarity maps", detail=detail)
 
 
-def probe_step4(ctx):
+def probe_step4(ctx, verbose=False):
     """RND permuted model similarity (per participant)."""
     if not ctx.participants:
         return _result(UNKNOWN, "participant list unavailable")
     per_sub, done, partial = [], 0, 0
+    detail = [] if verbose else None
     for sub in ctx.participants:
         sub_rnd = os.path.join(ctx.rsa_rnd_dir, ctx.rsa_model, ctx.sub_folder(sub))
-        n = _count(os.path.join(sub_rnd, '**', f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_*.nii.gz"))
-        if n == 0:
-            n = _count(os.path.join(sub_rnd, f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_*.nii.gz"))
+        pat1 = os.path.join(sub_rnd, '**', f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_*.nii.gz")
+        matches = sorted(glob.glob(pat1))
+        pat_used = pat1
+        if not matches:
+            pat2 = os.path.join(sub_rnd, f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_*.nii.gz")
+            matches = sorted(glob.glob(pat2))
+            pat_used = pat2
+        n = len(matches)
+        if verbose:
+            detail.append({'sub': sub, 'path': pat_used, 'status': PATTERN})
+            for m in matches:
+                detail.append({'sub': sub, 'path': m, 'status': DONE})
         if n >= ctx.reps:
             per_sub.append((sub, DONE, f"{n} perms (>= {ctx.reps})")); done += 1
         elif n > 0:
             per_sub.append((sub, PARTIAL, f"{n} / {ctx.reps} perms")); partial += 1
         else:
             per_sub.append((sub, MISSING, f"0 / {ctx.reps} perms"))
-    return _summarize(per_sub, done, partial, "permutations")
+    return _summarize(per_sub, done, partial, "permutations", detail=detail)
 
 
-def probe_step3(ctx):
+def probe_step3(ctx, verbose=False):
     """Group model similarity map (single file)."""
     p = os.path.join(ctx.model_mean_dir, f"{ctx.core(with_mask=True)}_mean.nii.gz")
-    if _exists(p):
-        return _result(DONE, "group mean map present", found=[p])
-    # fall back to the no-mask name in case it was run with mask_type=None
     p2 = os.path.join(ctx.model_mean_dir, f"{ctx.core(with_mask=False)}_mean.nii.gz")
+    detail = None
+    if verbose:
+        detail = [{'sub': None, 'path': x, 'status': DONE if _exists(x) else MISSING}
+                  for x in (p, p2)]
+    if _exists(p):
+        return _result(DONE, "group mean map present", found=[p], detail=detail)
+    # fall back to the no-mask name in case it was run with mask_type=None
     if _exists(p2):
-        return _result(DONE, "group mean map present (no-mask name)", found=[p2])
-    return _result(MISSING, "group mean map not found", expected=[p])
+        return _result(DONE, "group mean map present (no-mask name)", found=[p2], detail=detail)
+    return _result(MISSING, "group mean map not found", expected=[p], detail=detail)
 
 
-def probe_step5(ctx):
+def probe_step5(ctx, verbose=False):
     """RND group permutation maps — one per group permutation (0..reps_group-1)."""
     mean_dir = os.path.join(ctx.rsa_rnd_dir, ctx.rsa_model, 'mean')
     pattern = os.path.join(
         mean_dir, f"{ctx.specie}-r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_mean_*.nii.gz"
     )
-    n = _count(pattern)
+    matches = sorted(glob.glob(pattern))
+    n = len(matches)
     exp = ctx.reps_group
+    detail = None
+    if verbose:
+        detail = [{'sub': None, 'path': pattern, 'status': PATTERN}]
+        detail += [{'sub': None, 'path': m, 'status': DONE} for m in matches]
     if n >= exp:
-        return _result(DONE, f"{n} group-perm maps (>= {exp})", expected=[f"{exp} maps"], found=[f"{n} maps"])
+        return _result(DONE, f"{n} group-perm maps (>= {exp})", expected=[f"{exp} maps"],
+                       found=[f"{n} maps"], detail=detail)
     if n > 0:
-        return _result(PARTIAL, f"{n} / {exp} group-perm maps", expected=[f"{exp} maps"], found=[f"{n} maps"])
-    return _result(MISSING, f"0 / {exp} group-perm maps", expected=[pattern])
+        return _result(PARTIAL, f"{n} / {exp} group-perm maps", expected=[f"{exp} maps"],
+                       found=[f"{n} maps"], detail=detail)
+    return _result(MISSING, f"0 / {exp} group-perm maps", expected=[pattern], detail=detail)
 
 
-def probe_step6(ctx):
+def probe_step6(ctx, verbose=False):
     """Voxelwise RND distribution (mean + std, no mask prefix)."""
     base = os.path.join(ctx.rsa_rnd_dir, f"{ctx.specie}-{ctx.rsa_model}")
     mean_p, std_p = f"{base}_mean.nii.gz", f"{base}_std.nii.gz"
     have = [p for p in (mean_p, std_p) if _exists(p)]
+    detail = None
+    if verbose:
+        detail = [{'sub': None, 'path': x, 'status': DONE if _exists(x) else MISSING}
+                  for x in (mean_p, std_p)]
     if len(have) == 2:
-        return _result(DONE, "null mean+std present", found=have)
+        return _result(DONE, "null mean+std present", found=have, detail=detail)
     if have:
         return _result(PARTIAL, "only one of mean/std present", found=have,
-                       expected=[mean_p, std_p])
-    return _result(MISSING, "null distribution not found", expected=[mean_p, std_p])
+                       expected=[mean_p, std_p], detail=detail)
+    return _result(MISSING, "null distribution not found", expected=[mean_p, std_p], detail=detail)
 
 
-def probe_step7(ctx):
+def probe_step7(ctx, verbose=False):
     """Group z-map (single file)."""
     p = os.path.join(ctx.model_mean_dir, f"{ctx.core(with_mask=True)}_z.nii.gz")
-    if _exists(p):
-        return _result(DONE, "z-map present", found=[p])
     p2 = os.path.join(ctx.model_mean_dir, f"{ctx.core(with_mask=False)}_z.nii.gz")
+    detail = None
+    if verbose:
+        detail = [{'sub': None, 'path': x, 'status': DONE if _exists(x) else MISSING}
+                  for x in (p, p2)]
+    if _exists(p):
+        return _result(DONE, "z-map present", found=[p], detail=detail)
     if _exists(p2):
-        return _result(DONE, "z-map present (no-mask name)", found=[p2])
-    return _result(MISSING, "z-map not found", expected=[p])
+        return _result(DONE, "z-map present (no-mask name)", found=[p2], detail=detail)
+    return _result(MISSING, "z-map not found", expected=[p], detail=detail)
 
 
-def probe_step8(ctx):
+def probe_step8(ctx, verbose=False):
     """Cluster-size distribution (.npy, no mask prefix)."""
     p = os.path.join(
         ctx.model_dist_dir,
         f"{ctx.specie}-r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_dist.npy",
     )
+    detail = [{'sub': None, 'path': p, 'status': DONE if _exists(p) else MISSING}] if verbose else None
     if _exists(p):
-        return _result(DONE, "cluster-size distribution present", found=[p])
-    return _result(MISSING, "cluster-size distribution not found", expected=[p])
+        return _result(DONE, "cluster-size distribution present", found=[p], detail=detail)
+    return _result(MISSING, "cluster-size distribution not found", expected=[p], detail=detail)
 
 
-def probe_step9(ctx):
+def probe_step9(ctx, verbose=False):
     """Cluster-corrected z-map (z_threshold in name)."""
     name = f"{ctx.core(with_mask=True)}_zt{ctx.z_threshold}_corrected.nii.gz"
     p = os.path.join(ctx.model_mean_dir, name)
-    if _exists(p):
-        return _result(DONE, "corrected map present", found=[p])
     p2 = os.path.join(
         ctx.model_mean_dir,
         f"{ctx.core(with_mask=False)}_zt{ctx.z_threshold}_corrected.nii.gz",
     )
+    detail = None
+    if verbose:
+        detail = [{'sub': None, 'path': x, 'status': DONE if _exists(x) else MISSING}
+                  for x in (p, p2)]
+    if _exists(p):
+        return _result(DONE, "corrected map present", found=[p], detail=detail)
     if _exists(p2):
-        return _result(DONE, "corrected map present (no-mask name)", found=[p2])
-    return _result(MISSING, "corrected map not found", expected=[p])
+        return _result(DONE, "corrected map present (no-mask name)", found=[p2], detail=detail)
+    return _result(MISSING, "corrected map not found", expected=[p], detail=detail)
 
 
-def probe_step10(ctx):
+def probe_step10(ctx, verbose=False):
     """Results table (.csv or .xlsx, z_threshold in name)."""
     stem_m = f"{ctx.core(with_mask=True)}_zt{ctx.z_threshold}"
     stem_n = f"{ctx.core(with_mask=False)}_zt{ctx.z_threshold}"
@@ -621,9 +698,13 @@ def probe_step10(ctx):
         for ext in ('.xlsx', '.csv'):
             candidates.append(os.path.join(ctx.model_mean_dir, stem + ext))
     found = [p for p in candidates if _exists(p)]
+    detail = None
+    if verbose:
+        detail = [{'sub': None, 'path': x, 'status': DONE if _exists(x) else MISSING}
+                  for x in candidates]
     if found:
-        return _result(DONE, "results table present", found=found)
-    return _result(MISSING, "results table not found", expected=candidates[:2])
+        return _result(DONE, "results table present", found=found, detail=detail)
+    return _result(MISSING, "results table not found", expected=candidates[:2], detail=detail)
 
 
 PROBES = {
@@ -646,18 +727,18 @@ def _grade_count(sub, n, expected):
     return (sub, MISSING, f"0/{expected}")
 
 
-def _summarize(per_sub, done, partial, noun):
+def _summarize(per_sub, done, partial, noun, detail=None):
     total = len(per_sub)
     if total == 0:
-        return _result(UNKNOWN, f"no participants to check for {noun}", per_sub=per_sub)
+        return _result(UNKNOWN, f"no participants to check for {noun}", per_sub=per_sub, detail=detail)
     if done == total:
-        return _result(DONE, f"all {total} participants have {noun}", per_sub=per_sub)
+        return _result(DONE, f"all {total} participants have {noun}", per_sub=per_sub, detail=detail)
     if done == 0 and partial == 0:
-        return _result(MISSING, f"no participant has {noun}", per_sub=per_sub)
+        return _result(MISSING, f"no participant has {noun}", per_sub=per_sub, detail=detail)
     return _result(
         PARTIAL,
         f"{done}/{total} done, {partial} partial, {total - done - partial} missing",
-        per_sub=per_sub,
+        per_sub=per_sub, detail=detail,
     )
 
 

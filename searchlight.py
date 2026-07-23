@@ -56,6 +56,10 @@ Input arguments:
 --z_threshold: Z threshold for z maps (default: 3.1)
 --cluster_threshold: Cluster threshold for cluster correction (default: 0.05)
 --peak_id: peak_id for running step 12, if not provided, it will calculate based on roi_database.csv
+--mah_fold: Folding method for Mahalanobis distance for pairwise similarity maps, options:
+    'stim-wise': default, pairwise using each stimuli category, returns a similarity map for each category pair even when multiple runs.
+    'stim-wise-multiple-folds': pairwise using each stimuli, returns a similarity map for each stimuli pair. Same stimuli is expected to be in multiple runs.
+    'stim-wise-all-runs': pairwise using each category, returns a similarity map for each category pair for each run. Same repeated stimuli of the same category is expected on each run.
 
 --reps: Number of repetitions for permutations in individual run (default: 100)
 --reps_group: Number of repetitions for permutations in group analysis (default: 1000)
@@ -138,7 +142,7 @@ def parse_arguments():
     parser.add_argument('--coords', type=str, default=None,
                         help='Coordinates for similarity files in voxel space, format: x,y,z')
     parser.add_argument('--mah_fold', type=str, default='stim-wise',
-                        help='Folding method for Mahalanobis distance, either "stim-wise" or "run-wise"')
+                        help='Mahalanobis folding: stim-wise, stim-wise-multiple-folds, stim-wise-all-runs, or run-wise')
     parser.add_argument('--job_marker_dir', type=str, default=None,
                         help='Directory where step completion markers are written (used by the scheduler)')
     

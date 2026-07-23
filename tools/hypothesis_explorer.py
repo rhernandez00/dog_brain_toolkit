@@ -2,41 +2,47 @@
 """
 hypothesis_explorer.py — EmoC RSA hypothesis-tree explorer (standalone Dash app).
 
-Two linked halves on one page:
+The tree is **auto-generated** from the dataset's ``rsa_models`` folder — you no
+longer author it. On start-up the app scans that folder for model CSVs and builds
+a read-only tree with one node per model *stem* (the part before ``__{grouping}``,
+e.g. emo-id, val3, all-categories_bipolar) under a single root. The
+``_MODEL_BATTERY_MANIFEST.csv`` (when present) only supplies curated ordering and
+per-model descriptions; models absent from it still appear, driven by the files on
+disk. Two linked halves on one page:
 
-  1. A **hypothesis tree** you author yourself. Each node is one you name, give
-     categories + notes, and link to an RSA *hypothesis* (e.g. emo-id); the
-     connector (link) into each node can be named too. The **Grouping** toggle in
-     the top bar is the main branching axis (collapse / within / cross / dog / hum):
-     it decides which concrete "{hypothesis}__{grouping}" model each node loads, so
-     flipping it re-colours the whole tree and re-loads every un-pinned panel at
-     once. The tree is drawn top-down and each node is coloured by whether its
-     resolved model has results (dog / human / both / none / unlinked). Click a node
-     to select it. Add / delete / reorder nodes and Save the tree to disk.
+  1. The **hypothesis tree** (read-only). Each node is one hypothesis; the
+     **Grouping** toggle in the top bar is the main branching axis
+     (collapse / within / cross / dog / hum): it decides which concrete
+     "{hypothesis}__{grouping}" model each node resolves to, so flipping it
+     re-colours the whole tree and re-loads every un-pinned panel at once. Each
+     node is coloured by whether its resolved model has results (dog / human /
+     both / none). Click a node to select it — the **Selected node** panel then
+     shows its label, grouping, resolved model, the manifest **description** as
+     notes, and the model's dissimilarity matrix rendered with the RSA Model
+     Builder's viewer.
 
   2. A row of **comparison panels**. Selecting a node loads its model's maps into
-     every un-pinned panel; pin a panel to freeze it while you browse other nodes,
-     so you can lay maps side by side. Each panel independently shows the Dog brain,
-     the Human brain, or Both, and picks the map type (group average / z-map /
-     cluster-corrected) — all drawn as 2D atlas slices.
+     every un-pinned panel; pin a panel to freeze it while you browse other
+     nodes, so you can lay maps side by side. Each panel independently shows the
+     Dog brain, the Human brain, or Both, and picks the map type (group average /
+     z-map / cluster-corrected) — all drawn as 2D atlas slices.
 
 Standalone only (own port, default 8055):
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py --port 8056
 
-Reuses viz/datasource.py (result resolution), viz/niftiutil.py (atlas + 2D slices),
-viz/stimuli.py (stimulus categories) and viz/hypothesis_tree.py (tree model).
+Reuses viz/datasource.py (result resolution), viz/niftiutil.py (atlas + 2D slices)
+and viz/hypothesis_tree.py (tree model / traversal / status).
 """
 
 import argparse
-import glob
 import os
 import sys
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, dcc, html, dash_table, no_update, callback_context
+from dash import Dash, dcc, html, no_update
 from dash.dependencies import Input, Output, State
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -44,7 +50,8 @@ _REPO_ROOT = os.path.dirname(_THIS_DIR)  # tools/ lives one level below the repo
 for _p in (_REPO_ROOT, _THIS_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
-from viz import datasource, niftiutil, stimuli, hypothesis_tree as ht
+from viz import datasource, niftiutil, hypothesis_tree as ht
+from scheduler.paths import get_paths   # canonical model home (pipeline data disk)
 # Reuse the RSA Model Builder's polished rounded-cell matrix renderer so a linked
 # model is shown here exactly as it looks in the builder (with its saved style).
 import rsa_model_builder as rmb
@@ -129,32 +136,17 @@ def _load_map(datafolder, dataset, modality, roi, specie, model, maptype, zt):
     return result
 
 
-def available_models(datafolder, dataset, modality, roi):
-    """Union of runnable model CSVs and any model that already has results."""
-    models = set()
-    folder = os.path.join(datafolder or "", dataset or "", "rsa_models")
-    for p in glob.glob(os.path.join(folder, "*.csv")):
-        stem = os.path.splitext(os.path.basename(p))[0]
-        if not stem.startswith("_"):          # skip _MODEL_BATTERY_MANIFEST etc.
-            models.add(stem)
-    if roi:
-        for sp in ("D", "H"):
-            try:
-                models |= set(datasource.scan_models(datafolder, dataset, modality, sp, roi))
-            except Exception:
-                pass
-    return sorted(models)
-
-
 # ---------------------------------------------------------------------------
-# Grouping — the main branching axis
+# The model battery — grouping is the main branching axis
 # ---------------------------------------------------------------------------
-# Every battery model is named "{hypothesis}__{grouping}.csv"; the trailing token
-# after "__" is one of GROUPINGS. A tree node links to a *hypothesis* (e.g.
-# "emo-id"); the global Grouping toggle decides which concrete
-# "{hypothesis}__{grouping}" model is loaded into the tree colouring and panels.
+# Battery models are named "{hypothesis}__{grouping}.csv"; the trailing token
+# after "__" is one of GROUPINGS. A tree node links to a *stem* (e.g. "emo-id" or
+# "all-categories_bipolar"); the global Grouping toggle decides which concrete
+# "{stem}__{grouping}" model is loaded into the tree colouring and panels.
 # Suffix-less models (e.g. "agent-species-id") are grouping-agnostic and resolve
-# to themselves under every grouping.
+# to themselves under every grouping. The set of models is discovered by scanning
+# the dataset's rsa_models folder; the manifest CSV, when present, only enriches
+# them with curated ordering and descriptions.
 
 GROUPINGS = ["collapse", "within", "cross", "dog", "hum"]
 GROUPING_DESC = {
@@ -171,24 +163,111 @@ _MANIFEST_CACHE = {}
 
 def _manifest(datafolder, dataset):
     """{model_name: {'hypothesis','grouping','description'}} from the battery
-    manifest CSV, if present. Cached per (datafolder, dataset); empty if absent."""
+    manifest CSV, if present. Cached per (datafolder, dataset); empty if absent.
+    Insertion order follows the CSV rows, so hypotheses stay in manifest order."""
     key = (datafolder, dataset)
     if key not in _MANIFEST_CACHE:
         out = {}
-        path = os.path.join(datafolder or "", dataset or "", "rsa_models",
-                            "_MODEL_BATTERY_MANIFEST.csv")
-        try:
-            df = pd.read_csv(path)
+        for folder in _model_dirs(datafolder, dataset):    # first manifest found wins
+            path = os.path.join(folder, "_MODEL_BATTERY_MANIFEST.csv")
+            try:
+                df = pd.read_csv(path)
+            except Exception:
+                continue
             for _, row in df.iterrows():
                 out[str(row["model"])] = {
                     "hypothesis": str(row.get("hypothesis", "") or ""),
                     "grouping": str(row.get("grouping", "") or ""),
                     "description": str(row.get("description", "") or ""),
                 }
-        except Exception:
-            out = {}
+            break
         _MANIFEST_CACHE[key] = out
     return _MANIFEST_CACHE[key]
+
+
+# Non-model CSVs that live in the rsa_models folder but aren't RSA matrices.
+_NON_MODEL_CSVS = {"_MODEL_BATTERY_MANIFEST.csv"}
+
+
+def _model_dirs(datafolder, dataset):
+    """``rsa_models`` folders to search for model CSVs / the manifest: the active
+    results root first, then the canonical pipeline data disk where
+    ``build_rsa_models.py`` writes (``P:\\userdata\\raulh87\\data`` on Windows /
+    the network mount on Linux), de-duplicated. The pipeline-disk entry is what
+    lets models authored there (e.g. the ``all-categories_*`` battery) show up in
+    the explorer even when results are being viewed from the Google Drive mirror,
+    which may not have those CSVs synced yet."""
+    dirs = []
+    if datafolder:
+        dirs.append(os.path.join(datafolder, dataset or "", "rsa_models"))
+    try:
+        dirs.append(os.path.join(get_paths()[0], dataset or "", "rsa_models"))
+    except Exception:
+        pass
+    seen, out = set(), []
+    for d in dirs:
+        key = os.path.normcase(os.path.abspath(d))
+        if key not in seen:
+            seen.add(key)
+            out.append(d)
+    return out
+
+
+def _find_model_csv(datafolder, dataset, model):
+    """Absolute path to ``{model}.csv`` in the first model dir that has it, else
+    None. Lets the matrix renderer read a CSV that only exists on the pipeline
+    disk while results are viewed from the Drive mirror."""
+    if not model:
+        return None
+    for folder in _model_dirs(datafolder, dataset):
+        path = os.path.join(folder, f"{model}.csv")
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def scan_model_csvs(datafolder, dataset):
+    """Every RSA model name (``.csv`` stem) physically present at the top level of
+    any of the dataset's ``rsa_models`` folders (results root + pipeline disk),
+    sorted and de-duplicated. Skips the manifest, any file whose name starts with
+    ``_``, and subfolders (e.g. ``by_class/``)."""
+    names = set()
+    for folder in _model_dirs(datafolder, dataset):
+        try:
+            entries = os.listdir(folder)
+        except Exception:
+            continue
+        for fn in entries:
+            if not fn.lower().endswith(".csv") or fn.startswith("_") or fn in _NON_MODEL_CSVS:
+                continue
+            if os.path.isfile(os.path.join(folder, fn)):
+                names.add(fn[:-4])   # strip ".csv"
+    return sorted(names)
+
+
+def battery_models(datafolder, dataset):
+    """Every RSA model available for the dataset: the union of the model CSVs found
+    in the ``rsa_models`` folder and any listed in the battery manifest, sorted.
+    Folder-driven, so hand-built models (e.g. ``all-categories_*``) auto-populate
+    even when they are absent from the manifest."""
+    names = set(scan_model_csvs(datafolder, dataset))
+    names.update(_manifest(datafolder, dataset).keys())
+    return sorted(names)
+
+
+def model_description(datafolder, dataset, model):
+    """Description for a concrete model. Prefers the manifest 'description' (incl.
+    its grouping clause); for folder-only models with a ``__{grouping}`` suffix,
+    synthesises ``"{stem} | {grouping description}"`` so the notes stay useful."""
+    if not model:
+        return ""
+    desc = _manifest(datafolder, dataset).get(model, {}).get("description", "")
+    if desc:
+        return desc
+    stem, grp = split_model(model)
+    if grp:
+        return f"{stem} | {GROUPING_DESC.get(grp, grp)}"
+    return ""
 
 
 def split_model(name):
@@ -227,15 +306,44 @@ def resolve_model(stored, grouping, idx):
     return f"{hyp}__{grouping}"                     # no such variant — canonical name
 
 
-def hypothesis_descriptions(datafolder, dataset):
-    """{hypothesis: short description} from the manifest (grouping clause stripped)."""
-    out = {}
-    for meta in _manifest(datafolder, dataset).values():
-        hyp = meta.get("hypothesis") or ""
-        desc = (meta.get("description") or "").split(" | ")[0].strip()
-        if hyp and desc:
-            out.setdefault(hyp, desc)
-    return out
+def ordered_hypotheses(datafolder, dataset):
+    """Unique model stems to show as tree nodes: manifest hypotheses first (in CSV
+    row order, keeping the battery's curated order), then any other stems
+    discovered by scanning the folder, sorted. A stem is ``split_model(name)[0]``."""
+    hyps, seen = [], set()
+    for meta in _manifest(datafolder, dataset).values():        # 1. curated battery order
+        h = meta.get("hypothesis") or ""
+        if h and h not in seen:
+            seen.add(h)
+            hyps.append(h)
+    extra = set()                                               # 2. folder-only stems
+    for name in scan_model_csvs(datafolder, dataset):
+        stem = split_model(name)[0]
+        if stem and stem not in seen:
+            extra.add(stem)
+    hyps.extend(sorted(extra))
+    return hyps
+
+
+def build_auto_tree(datafolder, dataset):
+    """Read-only tree auto-generated by scanning the dataset's rsa_models folder: a
+    single root with one child per model stem (manifest hypotheses first, in CSV
+    order, then any other stems found on disk). Each child stores the *bare* stem in
+    ``model``; the global Grouping toggle resolves the concrete "{stem}__{grouping}"
+    model. Empty (root only) if the folder holds no model CSVs."""
+    tree = ht.new_tree(f"{dataset} RSA battery", dataset,
+                       notes="auto-generated by scanning the rsa_models folder")
+    tree["root"]["label"] = f"{dataset} RSA battery"
+    tree["root"]["model"] = None
+    hyps = ordered_hypotheses(datafolder, dataset)
+    short = {h: (model_description(datafolder, dataset,
+                 next((m for m in battery_models(datafolder, dataset)
+                       if split_model(m)[0] == h), h)).split(" | ")[0].strip())
+             for h in hyps}
+    for h in hyps:
+        tree["root"]["children"].append(
+            ht.new_node(label=h, model=h, notes=short.get(h, "")))
+    return tree
 
 
 # --- RSA model matrix, drawn with the RSA Model Builder's renderer ---------
@@ -245,9 +353,9 @@ def _model_heatmap(datafolder, dataset, model):
     with rsa_model_builder.build_cell_heatmap and the model's saved _style.json
     (falls back to a compact default so a 40x40 matrix stays readable)."""
     if not model:
-        return niftiutil.empty_fig("Link a model to load its matrix.", height=300)
-    path = os.path.join(datafolder or "", dataset or "", "rsa_models", f"{model}.csv")
-    if not os.path.exists(path):
+        return niftiutil.empty_fig("Select a hypothesis node to load its matrix.", height=300)
+    path = _find_model_csv(datafolder, dataset, model)
+    if not path:
         return niftiutil.empty_fig(f"No matrix CSV for '{model}'.", height=300)
     try:
         df = pd.read_csv(path, index_col=0)
@@ -265,42 +373,47 @@ def _model_heatmap(datafolder, dataset, model):
 
 
 # ---------------------------------------------------------------------------
-# Tree diagram
+# Tree diagram (drawn left-to-right: root at the left, hypotheses stacked down)
 # ---------------------------------------------------------------------------
 
-def _short(label, n=20):
+def _short(label, n=28):
     label = label or ""
     return label if len(label) <= n else label[: n - 1] + "…"
 
 
 def tree_figure(tree, selected_id, result_sets, grouping, idx):
     root = tree["root"]
-    pos = ht.compute_layout(root)
+    pos = ht.compute_layout(root)                 # {id: (leaf_x, depth)}
+    leaves = [lx for (lx, _d) in pos.values()]
+    leaf_span = (max(leaves) - min(leaves)) if leaves else 0
     max_depth = max(d for _n, d, _p in ht.iter_nodes(root))
 
+    def XY(node_id):                              # x = depth (L->R), y = -leaf position
+        lx, d = pos[node_id]
+        return float(d), -float(lx)
+
     edge_x, edge_y = [], []
-    link_x, link_y, link_t = [], [], []          # named connectors (links)
+    link_x, link_y, link_t = [], [], []           # named connectors (links)
     for node, _d, parent in ht.iter_nodes(root):
         if parent is not None:
-            x0, y0 = pos[parent["id"]]; x1, y1 = pos[node["id"]]
-            edge_x += [x0, x1, None]; edge_y += [-y0, -y1, None]
+            x0, y0 = XY(parent["id"]); x1, y1 = XY(node["id"])
+            edge_x += [x0, x1, None]; edge_y += [y0, y1, None]
             if node.get("link"):
-                link_x.append((x0 + x1) / 2); link_y.append((-y0 - y1) / 2)
+                link_x.append((x0 + x1) / 2); link_y.append((y0 + y1) / 2)
                 link_t.append(node["link"])
 
     node_x, node_y, colors, texts, hovers, line_w, line_c, custom = [], [], [], [], [], [], [], []
     for node, _d, _p in ht.iter_nodes(root):
-        x, y = pos[node["id"]]
+        x, y = XY(node["id"])
         hyp, _g = split_model(node.get("model") or "")
         resolved = resolve_model(node.get("model"), grouping, idx)
         st = ht.node_status(resolved, result_sets)
         color, st_label = STATUS_STYLE[st]
-        node_x.append(x); node_y.append(-y); colors.append(color)
+        node_x.append(x); node_y.append(y); colors.append(color)
         texts.append(_short(node.get("label")))
         hovers.append(f"<b>{node.get('label','')}</b><br>hypothesis: {hyp or '—'}"
                       f"<br>grouping: {grouping}<br>model: {resolved or '—'}"
-                      f"<br>status: {st_label}"
-                      f"<br>categories: {', '.join(node.get('categories') or []) or '—'}")
+                      f"<br>status: {st_label}")
         sel = node["id"] == selected_id
         line_w.append(3 if sel else 1)
         line_c.append("#111" if sel else "#ffffff")
@@ -315,14 +428,14 @@ def tree_figure(tree, selected_id, result_sets, grouping, idx):
             textfont=dict(size=10, color="#5a6474"), hoverinfo="skip", showlegend=False))
     fig.add_trace(go.Scatter(
         x=node_x, y=node_y, mode="markers+text", text=texts, textposition="middle right",
-        textfont=dict(size=11, color=INK), customdata=custom,
+        textfont=dict(size=12, color=INK), customdata=custom,
         marker=dict(size=20, color=colors, line=dict(width=line_w, color=line_c)),
         hovertext=hovers, hoverinfo="text", showlegend=False))
     fig.update_layout(
         margin=dict(l=10, r=10, t=10, b=10), paper_bgcolor=PANEL, plot_bgcolor=PANEL,
-        height=max(320, 150 + max_depth * 120),
-        xaxis=dict(visible=False, range=[-0.6, max(node_x) + 2.2]),
-        yaxis=dict(visible=False))
+        height=max(360, 90 + int(round(leaf_span)) * 46),
+        xaxis=dict(visible=False, range=[-0.4, max_depth + 2.4]),
+        yaxis=dict(visible=False, range=[-leaf_span - 0.6, 0.6]))
     return fig
 
 
@@ -336,6 +449,13 @@ def status_legend():
             html.Span(label, style={"fontSize": "11px", "color": MUTED, "marginRight": "14px"}),
         ]))
     return html.Div(items, style={"marginTop": "4px"})
+
+
+def status_dot(color):
+    return html.Span(style={"display": "inline-block", "width": "10px", "height": "10px",
+                            "background": color, "borderRadius": "50%",
+                            "border": f"1px solid {LINE}", "marginRight": "5px",
+                            "verticalAlign": "middle"})
 
 
 # ---------------------------------------------------------------------------
@@ -364,59 +484,34 @@ def top_bar():
         _labeled("Modality", dcc.Dropdown(id="ex-modality", options=[{"label": m, "value": m} for m in MODALITIES],
                  value="RSA", clearable=False, style={"width": "90px"})),
         _labeled("ROI / mask", dcc.Dropdown(id="ex-roi", options=[], value=None, style={"width": "190px"})),
-        html.Button("Load data", id="ex-load", n_clicks=0, style=BTN),
+        html.Button("Reload results", id="ex-reload", n_clicks=0, style=BTN2),
         html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
         _labeled("Grouping (main branch)", dcc.Dropdown(id="ex-grouping",
                  options=[{"label": g, "value": g, "title": GROUPING_DESC[g]} for g in GROUPINGS],
                  value=DEFAULT_GROUPING, clearable=False, style={"width": "150px"})),
-        html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
-        _labeled("Tree", dcc.Dropdown(id="ex-tree-select", options=[], value=None, style={"width": "200px"})),
-        _labeled("New / Save as name", dcc.Input(id="ex-tree-name", value="my-tree", type="text",
-                 style={**INPUT_STYLE, "width": "150px"})),
-        html.Button("New", id="ex-tree-new", n_clicks=0, style=BTN2),
-        html.Button("Save", id="ex-tree-save", n_clicks=0, style=BTN),
-        html.Button("Delete", id="ex-tree-delete", n_clicks=0, style=BTN2),
         html.Span(id="ex-source", style={"fontSize": "11px", "color": MUTED, "marginLeft": "auto"}),
-        html.Span(id="ex-tree-msg", style={"fontSize": "11px", "color": "#1a7f37", "width": "100%"}),
     ])
 
 
-def node_editor():
+def node_readout():
+    """Read-only panel: everything is derived from the selected node's model."""
     return html.Div(style={"backgroundColor": PANEL, "borderRadius": "8px", "padding": "10px 12px",
                     "border": f"1px solid {LINE}"}, children=[
         html.H4("Selected node", style={"margin": "0 0 8px", "color": INK}),
-        _labeled("Label", dcc.Input(id="ed-label", type="text", debounce=True,
-                 style={**INPUT_STYLE, "width": "100%"})),
-        _labeled("Link label (line from parent)", dcc.Input(id="ed-link", type="text", debounce=True,
-                 placeholder="e.g. split by species", style={**INPUT_STYLE, "width": "100%"})),
-        _labeled("Categories (comma-separated)", dcc.Input(id="ed-categories", type="text", debounce=True,
-                 style={**INPUT_STYLE, "width": "100%"})),
-        html.Div(f"stimulus codes: {', '.join(stimuli.condition_code(s, l) for s, l in stimuli.stimulus_conditions())}",
-                 style={"fontSize": "10px", "color": MUTED, "margin": "2px 0 6px"}),
-        _labeled("Notes", dcc.Textarea(id="ed-notes", style={"width": "100%", "height": "48px", **INPUT_STYLE})),
-        _labeled("Filter hypotheses", dcc.Input(id="ed-model-filter", type="text", debounce=True,
-                 placeholder="e.g. val · threat · emo", style={**INPUT_STYLE, "width": "100%"})),
-        _labeled("Linked hypothesis (grouping set globally above)",
-                 dcc.Dropdown(id="ed-model", options=[], value=None, style={"width": "100%"})),
+        html.Div(id="ed-title", style={"fontSize": "15px", "fontWeight": "bold", "color": INK,
+                 "marginBottom": "3px"}),
+        html.Div(id="ed-status", style={"fontSize": "12px", "color": MUTED, "marginBottom": "8px"}),
+        html.Div("Notes", style={"fontSize": "11px", "color": MUTED}),
+        html.Div(id="ed-notes-text", style={"fontSize": "12px", "color": INK, "whiteSpace": "pre-wrap",
+                 "background": "#ffffff", "border": f"1px solid {LINE}", "borderRadius": "6px",
+                 "padding": "6px 8px", "margin": "2px 0 10px", "minHeight": "42px"}),
         html.Div([
-            html.Button("Apply", id="ed-apply", n_clicks=0, style={**BTN, "marginRight": "6px"}),
-            html.Button("+ Child", id="ed-add-child", n_clicks=0, style={**BTN2, "marginRight": "6px"}),
-            html.Button("+ Sibling", id="ed-add-sibling", n_clicks=0, style={**BTN2, "marginRight": "6px"}),
-            html.Button("Delete", id="ed-delete", n_clicks=0, style={**BTN2, "marginRight": "6px"}),
-            html.Button("↑", id="ed-up", n_clicks=0, style={**BTN2, "padding": "0 10px", "marginRight": "6px"}),
-            html.Button("↓", id="ed-down", n_clicks=0, style={**BTN2, "padding": "0 10px"}),
-        ], style={"margin": "8px 0"}),
-        html.Div(id="ed-status", style={"fontSize": "11px", "color": MUTED, "marginBottom": "6px"}),
-        html.Details([
-            html.Summary("Model matrix (builder view)", style={"cursor": "pointer", "fontSize": "12px"}),
-            html.Div([
-                html.Button("Load model", id="ed-load-model", n_clicks=0, style={**BTN, "marginRight": "8px"}),
-                html.Span(id="ed-matrix-note", style={"fontSize": "11px", "color": MUTED}),
-            ], style={"margin": "6px 0"}),
-            html.Div(dcc.Graph(id="ed-matrix-graph", figure=niftiutil.empty_fig(height=260),
-                     config={"displayModeBar": False}),
-                     style={"maxHeight": "540px", "overflowY": "auto"}),
-        ], open=False),
+            html.Span("Model matrix (builder view)", style={"fontSize": "12px", "color": MUTED}),
+            html.Span(id="ed-matrix-note", style={"fontSize": "11px", "color": ACCENT, "marginLeft": "8px"}),
+        ], style={"margin": "2px 0 6px"}),
+        html.Div(dcc.Graph(id="ed-matrix-graph", figure=niftiutil.empty_fig(height=260),
+                 config={"displayModeBar": False}),
+                 style={"maxHeight": "540px", "overflowY": "auto"}),
     ])
 
 
@@ -473,7 +568,7 @@ app.layout = html.Div(style={"backgroundColor": BG, "color": INK, "minHeight": "
             status_legend(),
             dcc.Graph(id="ex-tree-graph", config={"displayModeBar": False}),
         ]),
-        html.Div(style={"flex": "1 1 300px", "maxWidth": "360px"}, children=[node_editor()]),
+        html.Div(style={"flex": "1 1 300px", "maxWidth": "360px"}, children=[node_readout()]),
     ]),
     html.Div(style={"display": "flex", "gap": "10px", "flexWrap": "wrap"},
              children=[panel(i) for i in range(N_PANELS)]),
@@ -503,155 +598,37 @@ def cb_rois(modality, datafolder, dataset):
             datasource.describe_source(dataset))
 
 
-@app.callback(Output("ex-dataver", "data"), Output("ex-models", "data"),
-              Input("ex-load", "n_clicks"),
-              State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              State("ex-modality", "value"), State("ex-roi", "value"), State("ex-dataver", "data"))
-def cb_load(_n, datafolder, dataset, modality, roi, ver):
+@app.callback(Output("ex-tree-store", "data"), Output("ex-selected", "data"), Output("ex-models", "data"),
+              Input("ex-datafolder", "value"), Input("ex-dataset", "value"))
+def cb_build_tree(datafolder, dataset):
+    """Auto-build the read-only tree from the battery manifest (fires on load)."""
+    _MANIFEST_CACHE.pop((datafolder, dataset), None)   # re-read fresh from disk
+    tree = build_auto_tree(datafolder, dataset)
+    return tree, tree["root"]["id"], battery_models(datafolder, dataset)
+
+
+@app.callback(Output("ex-dataver", "data"), Input("ex-reload", "n_clicks"),
+              State("ex-dataver", "data"), prevent_initial_call=True)
+def cb_reload(_n, ver):
+    """Drop cached maps so freshly-synced results are re-read; re-renders panels/tree."""
     _MAP_CACHE.clear()
-    models = available_models(datafolder, dataset, modality, roi)
-    return (ver or 0) + 1, models
+    return (ver or 0) + 1
 
 
-@app.callback(Output("ed-model", "options"), Output("pl-0-model", "options"),
-              Output("pl-1-model", "options"), Output("pl-2-model", "options"),
-              Input("ex-models", "data"), Input("ed-model-filter", "value"),
-              State("ex-datafolder", "value"), State("ex-dataset", "value"))
-def cb_model_options(models, filt, datafolder, dataset):
-    models = models or []
-    idx = hypothesis_index(models)
-    descs = hypothesis_descriptions(datafolder, dataset)
-    # Node editor: one option per hypothesis (grouping is chosen globally).
-    ed_opts = []
-    for h in sorted(idx.keys()):
-        groups = sorted(g for g in idx[h] if g)
-        note = f"  [{', '.join(groups)}]" if groups else ""
-        opt = {"label": f"{h}{note}", "value": h}
-        if descs.get(h):
-            opt["title"] = descs[h]
-        ed_opts.append(opt)
-    if filt:
-        f = filt.lower()
-        ed_opts = [o for o in ed_opts if f in o["value"].lower()]
-    # Panels keep the full model list (manual per-panel override), grouping-labelled.
-    panel_opts = []
-    for m in models:
+@app.callback(Output("pl-0-model", "options"), Output("pl-1-model", "options"), Output("pl-2-model", "options"),
+              Input("ex-models", "data"))
+def cb_panel_options(models):
+    # Panels keep the full battery model list (manual per-panel override), grouping-labelled.
+    opts = []
+    for m in (models or []):
         hyp, grp = split_model(m)
-        panel_opts.append({"label": (f"{hyp} · {grp}" if grp else hyp), "value": m})
-    return ed_opts, panel_opts, panel_opts, panel_opts
+        opts.append({"label": (f"{hyp} · {grp}" if grp else hyp), "value": m})
+    return opts, opts, opts
 
 
 # ---------------------------------------------------------------------------
-# Callbacks — tree management (dropdown + persistence)
+# Callbacks — node selection (tree click)
 # ---------------------------------------------------------------------------
-
-@app.callback(Output("ex-tree-select", "options"),
-              Input("ex-datafolder", "value"), Input("ex-dataset", "value"), Input("ex-tree-msg", "children"))
-def cb_tree_list(datafolder, dataset, _msg):
-    names = ht.list_trees(ht.trees_dir(datafolder, dataset))
-    return [{"label": n, "value": n} for n in names]
-
-
-@app.callback(Output("ex-tree-store", "data", allow_duplicate=True),
-              Output("ex-selected", "data", allow_duplicate=True),
-              Output("ex-tree-msg", "children", allow_duplicate=True),
-              Input("ex-tree-select", "value"),
-              State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              prevent_initial_call=True)
-def cb_tree_open(name, datafolder, dataset):
-    if not name:
-        return no_update, no_update, no_update
-    try:
-        tree = ht.load_tree(ht.trees_dir(datafolder, dataset), name)
-    except Exception as e:
-        return no_update, no_update, f"⚠ could not open '{name}': {e}"
-    return tree, tree["root"]["id"], f"opened '{name}'"
-
-
-@app.callback(Output("ex-tree-store", "data", allow_duplicate=True),
-              Output("ex-selected", "data", allow_duplicate=True),
-              Output("ex-tree-msg", "children", allow_duplicate=True),
-              Input("ex-tree-new", "n_clicks"),
-              State("ex-tree-name", "value"), State("ex-dataset", "value"),
-              prevent_initial_call=True)
-def cb_tree_new(_n, name, dataset):
-    root_cats = [stimuli.condition_code(s, l) for s, l in stimuli.stimulus_conditions()]
-    tree = ht.new_tree(name or "my-tree", dataset or DEFAULT_DATASET, root_categories=root_cats)
-    return tree, tree["root"]["id"], f"new tree '{tree['name']}' (unsaved — press Save)"
-
-
-@app.callback(Output("ex-tree-msg", "children", allow_duplicate=True),
-              Input("ex-tree-save", "n_clicks"),
-              State("ex-tree-store", "data"), State("ex-tree-name", "value"),
-              State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              prevent_initial_call=True)
-def cb_tree_save(_n, tree, name, datafolder, dataset):
-    if not tree:
-        return "⚠ nothing to save — create or open a tree first"
-    if name:
-        tree = dict(tree, name=name)
-    try:
-        path = ht.save_tree(ht.trees_dir(datafolder, dataset), tree)
-    except Exception as e:
-        return f"⚠ save failed: {e}"
-    return f"saved → {path}"
-
-
-@app.callback(Output("ex-tree-msg", "children", allow_duplicate=True),
-              Input("ex-tree-delete", "n_clicks"),
-              State("ex-tree-select", "value"),
-              State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              prevent_initial_call=True)
-def cb_tree_delete(_n, name, datafolder, dataset):
-    if not name:
-        return "⚠ pick a saved tree to delete"
-    ht.delete_tree(ht.trees_dir(datafolder, dataset), name)
-    return f"deleted '{name}'"
-
-
-# ---------------------------------------------------------------------------
-# Callbacks — node edits + structure (single writer of tree-store)
-# ---------------------------------------------------------------------------
-
-@app.callback(Output("ex-tree-store", "data", allow_duplicate=True),
-              Output("ex-selected", "data", allow_duplicate=True),
-              Input("ed-apply", "n_clicks"), Input("ed-add-child", "n_clicks"),
-              Input("ed-add-sibling", "n_clicks"), Input("ed-delete", "n_clicks"),
-              Input("ed-up", "n_clicks"), Input("ed-down", "n_clicks"),
-              State("ex-tree-store", "data"), State("ex-selected", "data"),
-              State("ed-label", "value"), State("ed-link", "value"),
-              State("ed-categories", "value"),
-              State("ed-notes", "value"), State("ed-model", "value"),
-              prevent_initial_call=True)
-def cb_node_action(_a, _c, _s, _d, _u, _dn, tree, sel_id, label, link, categories, notes, model):
-    if not tree or not sel_id:
-        return no_update, no_update
-    trig = callback_context.triggered[0]["prop_id"].split(".")[0]
-    root = tree["root"]
-    node = ht.find_node(root, sel_id)
-    if node is None:
-        return no_update, no_update
-    new_sel = no_update
-    if trig == "ed-apply":
-        node["label"] = (label or "").strip() or node["label"]
-        node["link"] = (link or "").strip()
-        node["categories"] = [c.strip() for c in (categories or "").split(",") if c.strip()]
-        node["notes"] = notes or ""
-        node["model"] = model or None
-    elif trig == "ed-add-child":
-        child = ht.add_child(root, sel_id, ht.new_node("New node"))
-        new_sel = child["id"] if child else no_update
-    elif trig == "ed-add-sibling":
-        sib = ht.add_sibling(root, sel_id, ht.new_node("New node"))
-        new_sel = sib["id"] if sib else no_update
-    elif trig == "ed-delete":
-        parent = ht.find_parent(root, sel_id)
-        if parent is not None and ht.delete_node(root, sel_id):
-            new_sel = parent["id"]
-    elif trig in ("ed-up", "ed-down"):
-        ht.move_node(root, sel_id, -1 if trig == "ed-up" else 1)
-    return tree, new_sel
-
 
 @app.callback(Output("ex-selected", "data", allow_duplicate=True),
               Input("ex-tree-graph", "clickData"), prevent_initial_call=True)
@@ -664,67 +641,71 @@ def cb_node_click(click):
 
 
 # ---------------------------------------------------------------------------
-# Callbacks — render tree + editor form
+# Callbacks — render tree + read-only node panel
 # ---------------------------------------------------------------------------
 
 @app.callback(Output("ex-tree-graph", "figure"), Output("ex-tree-title", "children"),
-              Input("ex-tree-store", "data"), Input("ex-selected", "data"), Input("ex-dataver", "data"),
-              Input("ex-grouping", "value"),
+              Input("ex-tree-store", "data"), Input("ex-selected", "data"), Input("ex-grouping", "value"),
+              Input("ex-roi", "value"), Input("ex-dataver", "data"),
               State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              State("ex-modality", "value"), State("ex-roi", "value"), State("ex-models", "data"))
-def cb_render_tree(tree, sel_id, _ver, grouping, datafolder, dataset, modality, roi, models):
-    if not tree:
-        fig = niftiutil.empty_fig("Create or open a tree", height=320)
+              State("ex-modality", "value"), State("ex-models", "data"))
+def cb_render_tree(tree, sel_id, grouping, roi, _ver, datafolder, dataset, modality, models):
+    if not tree or not tree.get("root", {}).get("children"):
+        fig = niftiutil.empty_fig("No RSA model CSVs found in this dataset's rsa_models folder.", height=320)
         fig.update_layout(paper_bgcolor=PANEL, plot_bgcolor=PANEL)
         return fig, ""
     result_sets = ht.models_with_results(datafolder, dataset, modality, roi) if roi else {"D": set(), "H": set()}
     idx = hypothesis_index(models)
-    title = (f"{tree.get('name', '')} · grouping = {grouping} · "
-             f"{sum(1 for _ in ht.iter_nodes(tree['root']))} nodes")
-    if tree.get("notes"):
-        title += f" · {tree['notes']}"
+    n_hyp = sum(1 for _ in ht.iter_nodes(tree["root"])) - 1
+    title = f"{tree.get('name', '')} · grouping = {grouping} · {n_hyp} hypotheses"
     return tree_figure(tree, sel_id, result_sets, grouping, idx), title
 
 
-@app.callback(Output("ed-label", "value"), Output("ed-link", "value"),
-              Output("ed-categories", "value"), Output("ed-notes", "value"),
-              Output("ed-model", "value"), Output("ed-status", "children"),
-              Input("ex-selected", "data"), Input("ex-tree-store", "data"), Input("ex-dataver", "data"),
-              Input("ex-grouping", "value"),
+@app.callback(Output("ed-title", "children"), Output("ed-status", "children"),
+              Output("ed-notes-text", "children"),
+              Input("ex-selected", "data"), Input("ex-tree-store", "data"), Input("ex-grouping", "value"),
+              Input("ex-roi", "value"), Input("ex-dataver", "data"),
               State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              State("ex-modality", "value"), State("ex-roi", "value"), State("ex-models", "data"))
-def cb_editor_fill(sel_id, tree, _ver, grouping, datafolder, dataset, modality, roi, models):
+              State("ex-modality", "value"), State("ex-models", "data"))
+def cb_node_readout(sel_id, tree, grouping, roi, _ver, datafolder, dataset, modality, models):
     if not tree or not sel_id:
-        return "", "", "", "", None, "Select a node in the tree."
+        return "—", "Select a node in the tree.", ""
     node = ht.find_node(tree["root"], sel_id)
     if node is None:
-        return "", "", "", "", None, "Node not found."
-    hyp, _g = split_model(node.get("model") or "")
+        return "—", "Node not found.", ""
+    stored = node.get("model")
+    if not stored:                                    # the root
+        n_hyp = sum(1 for _ in ht.iter_nodes(tree["root"])) - 1
+        return (node.get("label", ""),
+                f"{n_hyp} hypotheses · grouping = {grouping}",
+                node.get("notes", "") or "Pick a hypothesis node to load its model.")
     idx = hypothesis_index(models)
-    resolved = resolve_model(node.get("model"), grouping, idx)
+    resolved = resolve_model(stored, grouping, idx)
     result_sets = ht.models_with_results(datafolder, dataset, modality, roi) if roi else {"D": set(), "H": set()}
     st = ht.node_status(resolved, result_sets)
-    _color, st_label = STATUS_STYLE[st]
-    status = f"grouping: {grouping}  ·  status: {st_label}" + (f"  ·  model: {resolved}" if resolved else "")
-    return (node.get("label", ""), node.get("link", ""), ", ".join(node.get("categories") or []),
-            node.get("notes", ""), (hyp or None), status)
+    color, st_label = STATUS_STYLE[st]
+    title = f"{node.get('label', '')}  ·  {grouping}"
+    status = [f"model: {resolved or '—'}   ", status_dot(color), html.Span(st_label)]
+    desc = model_description(datafolder, dataset, resolved) or "(no description in manifest)"
+    parts = [p.strip() for p in desc.split(" | ")]
+    notes = [html.Div(p, style={"marginBottom": "3px"}) for p in parts]
+    return title, status, notes
 
 
 @app.callback(Output("ed-matrix-graph", "figure"), Output("ed-matrix-note", "children"),
-              Input("ed-load-model", "n_clicks"),
-              State("ex-selected", "data"), State("ex-tree-store", "data"),
-              State("ex-datafolder", "value"), State("ex-dataset", "value"),
-              State("ex-grouping", "value"), State("ex-models", "data"),
-              prevent_initial_call=True)
-def cb_load_model_matrix(_n, sel_id, tree, datafolder, dataset, grouping, models):
+              Input("ex-selected", "data"), Input("ex-tree-store", "data"), Input("ex-grouping", "value"),
+              State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-models", "data"))
+def cb_node_matrix(sel_id, tree, grouping, datafolder, dataset, models):
     if not tree or not sel_id:
-        return no_update, "select a node first"
+        return niftiutil.empty_fig("Select a node", height=260), ""
     node = ht.find_node(tree["root"], sel_id)
     stored = node.get("model") if node else None
+    if not stored:
+        return niftiutil.empty_fig("Pick a hypothesis node to see its matrix.", height=260), ""
     model = resolve_model(stored, grouping, hypothesis_index(models))
     if not model:
-        return niftiutil.empty_fig("no hypothesis linked", height=260), "link a hypothesis to this node first"
-    return _model_heatmap(datafolder, dataset, model), f"loaded {model}"
+        return niftiutil.empty_fig("no model for this grouping", height=260), ""
+    return _model_heatmap(datafolder, dataset, model), model
 
 
 # ---------------------------------------------------------------------------
@@ -781,11 +762,10 @@ def _register_panel(i):
         Input(f"pl-{i}-enable", "value"), Input(f"pl-{i}-species", "value"),
         Input(f"pl-{i}-model", "value"), Input(f"pl-{i}-maptype", "value"),
         Input(f"pl-{i}-axis", "value"), Input(f"pl-{i}-frac", "value"), Input(f"pl-{i}-zt", "value"),
-        Input("ex-dataver", "data"),
-        State("ex-datafolder", "value"), State("ex-dataset", "value"),
-        State("ex-modality", "value"), State("ex-roi", "value"))
-    def _cb(enable, species, model, maptype, axis, frac, zt, _ver,
-            datafolder, dataset, modality, roi):
+        Input("ex-roi", "value"), Input("ex-dataver", "data"),
+        State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-modality", "value"))
+    def _cb(enable, species, model, maptype, axis, frac, zt, roi, _ver,
+            datafolder, dataset, modality):
         base = {"flex": "1 1 340px", "minWidth": "320px", "backgroundColor": PANEL,
                 "borderRadius": "8px", "padding": "8px 10px", "border": f"1px solid {LINE}"}
         gshow = {"height": "230px"}
@@ -819,7 +799,8 @@ for _i in range(N_PANELS):
 # ---------------------------------------------------------------------------
 def main():
     ap = argparse.ArgumentParser(description="EmoC RSA hypothesis-tree explorer")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("EXPLORER_PORT", "8055")))
+    ap.add_argument("--port", type=int,
+                    default=int(os.environ.get("EXPLORER_PORT", os.environ.get("PORT", "8055"))))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--debug", action="store_true")
     args = ap.parse_args()

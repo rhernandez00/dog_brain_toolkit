@@ -63,16 +63,17 @@ from scheduler.jobs import create_job  # noqa: E402
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "1.2.0"
-LAST_CHANGE = ("Step 1's expected pairwise-map count now follows the creation "
-               "rules per participant: it uses each participant's own run list "
-               "(get_session_and_run_dict) and the selected mah_fold's layout, so "
-               "per-run folds (stim-wise-multiple-folds / -all-runs) and the "
-               "correlation method expect C(n,2)×n_runs in the run subfolders "
-               "instead of a flat, run-blind total. Only the exact expected names "
-               "are counted, so garbage/leftover files no longer inflate the "
-               "verdict. (Prior 1.1.0 change: mah_fold became a first-class "
-               "parameter and step 1 counts per-model exact pairs.)")
+VERSION = "1.3.0"
+LAST_CHANGE = ("Added a 'Full verbose mode' toggle next to Check all/Clear all: "
+               "when on, every Check / Check all / Sched missing prints each "
+               "filename (or glob pattern, for steps whose exact names can't be "
+               "predicted) the probe checked to the launching console, tagged "
+               "FOUND/MISSING/PATTERN per participant, plus a found/missing "
+               "total per step — for diagnosing file-detection mismatches. "
+               "PROBES functions in pipeline_console.py now take an optional "
+               "verbose= kwarg (default False, so plain `pipeline_console.py` "
+               "usage is unaffected). (Prior 1.2.0 change: step 1's expected "
+               "pairwise-map count follows the creation rules per participant.)")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10
@@ -187,15 +188,48 @@ def make_ctx(params):
     return pc.build_ctx(ns, DATAFOLDER)
 
 
-def run_probe(params, step):
+def _log_verbose_detail(step, label, r):
+    """Print every filename the probe checked for this step, marked found/missing.
+
+    Called only when the "Full verbose mode" toggle is on. ``detail`` is built
+    by the probe functions in pipeline_console.py (populated only when they're
+    called with verbose=True) as a list of
+    ``{'sub': int_or_None, 'path': str, 'status': DONE|MISSING|PATTERN}``.
+    PATTERN entries are glob patterns searched for steps whose exact filenames
+    can't be predicted in advance (e.g. GLM pe*.nii.gz, permutation-indexed
+    files) — the FOUND lines right after them are what that pattern matched.
+    """
+    detail = r.get('detail') or []
+    if not detail:
+        _log(f"  [verbose] step {step} ({label}): no per-file detail for this step "
+             f"(N/A or inputs unavailable)")
+        return
+    _log(f"  [verbose] step {step} ({label}): {len(detail)} file(s)/pattern(s) checked")
+    for d in detail:
+        sub = f"sub-{d['sub']:02d}  " if d.get('sub') is not None else ""
+        if d['status'] == pc.DONE:
+            mark = 'FOUND  '
+        elif d['status'] == pc.MISSING:
+            mark = 'MISSING'
+        else:
+            mark = 'PATTERN'
+        _log(f"    [{mark}] {sub}{d['path']}")
+    n_found = sum(1 for d in detail if d['status'] == pc.DONE)
+    n_missing = sum(1 for d in detail if d['status'] == pc.MISSING)
+    _log(f"  [verbose] step {step} totals: {n_found} found, {n_missing} missing")
+
+
+def run_probe(params, step, verbose=False):
     """Run one step's disk probe and return a JSON-serialisable result dict."""
     label = pc.STEP_LABELS.get(step, f'Step {step}')
     t0 = datetime.now()
     _log(f"  scanning step {step} ({label}) ...")
     ctx = make_ctx(params)
-    r = pc.PROBES[step](ctx)
+    r = pc.PROBES[step](ctx, verbose=verbose)
     failures = pc.find_failure_info(ctx, step)
     elapsed = (datetime.now() - t0).total_seconds()
+    if verbose:
+        _log_verbose_detail(step, label, r)
     _log(f"  step {step} ({label}) -> {r['verdict']} — {r['summary']}  [{elapsed:.1f}s]")
     return {
         'verdict': r['verdict'],
@@ -405,6 +439,14 @@ app.layout = html.Div([
                     style={'marginRight': '10px', 'fontWeight': 'bold'}),
         html.Button('🗑 Clear all (this parameter set)', id='clear-all', n_clicks=0,
                     style={'marginRight': '10px'}),
+        dcc.Checklist(
+            id='verbose-mode',
+            options=[{'label': ' 🔍 Full verbose mode (print every filename checked, '
+                               'found or missing, to the console)',
+                      'value': 'v'}],
+            value=[],
+            style={'display': 'inline-block', 'color': '#57606a', 'marginRight': '10px'},
+        ),
         html.Span(id='sig-label', style={'color': '#57606a', 'marginLeft': '10px'}),
     ], style={'margin': '14px 0'}),
     html.Div(id='schedule-msg', style={'margin': '8px 0', 'minHeight': '20px'}),
@@ -509,6 +551,7 @@ def populate_models(dataset, model, _n, current):
     Input({'type': 'detail-schedule-group', 'index': ALL}, 'n_clicks'),
     State('cache-version', 'data'),
     State('detail-overwrite', 'value'),
+    State('verbose-mode', 'value'),
     State('p-dataset', 'value'), State('p-model', 'value'), State('p-rsa_model', 'value'),
     State('p-specie', 'value'), State('p-method', 'value'), State('p-mah_fold', 'value'),
     State('p-rsa_method', 'value'),
@@ -517,6 +560,7 @@ def populate_models(dataset, model, _n, current):
     prevent_initial_call=True,
 )
 def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite_val,
+              verbose_val,
               dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
               radius, z_threshold, mask_type, reps, reps_group):
     trig = callback_context.triggered
@@ -534,6 +578,7 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     idd = _id_from_prop(prop) or {}
     ttype = idd.get('type')
     overwrite = 'ow' in (overwrite_val or [])
+    verbose = 'v' in (verbose_val or [])
 
     params = params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold,
                                 rsa_method, radius, z_threshold, mask_type, reps, reps_group)
@@ -548,10 +593,10 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     msg = no_update
 
     if prop.startswith('check-all'):
-        _log(f"'Check all steps' pressed — {sig}")
+        _log(f"'Check all steps' pressed (verbose={verbose}) — {sig}")
         t0 = datetime.now()
         for step in pc.STEPS:
-            entry['steps'][str(step)] = run_probe(params, step)
+            entry['steps'][str(step)] = run_probe(params, step, verbose=verbose)
         elapsed = (datetime.now() - t0).total_seconds()
         _log(f"'Check all steps' done in {elapsed:.1f}s")
         # focus the first incomplete step
@@ -569,8 +614,8 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     elif ttype == 'step-check':
         step = idd.get('index')
         if step is not None:
-            _log(f"'Check' pressed for step {step} — {sig}")
-            entry['steps'][str(step)] = run_probe(params, step)
+            _log(f"'Check' pressed for step {step} (verbose={verbose}) — {sig}")
+            entry['steps'][str(step)] = run_probe(params, step, verbose=verbose)
             selected = step
     elif ttype == 'step-clear':
         step = idd.get('index')
@@ -585,10 +630,11 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     elif ttype == 'step-schedule-missing':
         step = idd.get('index')
         if step is not None:
-            _log(f"'Sched missing' pressed for step {step} (overwrite={overwrite}) — {sig}")
+            _log(f"'Sched missing' pressed for step {step} "
+                 f"(overwrite={overwrite}, verbose={verbose}) — {sig}")
             # probe fresh so we schedule exactly what is missing right now, and
             # remember the result so the table/detail reflect it.
-            result = run_probe(params, step)
+            result = run_probe(params, step, verbose=verbose)
             entry['steps'][str(step)] = result
             selected = step
             msg = _schedule_missing(params, step, result, overwrite)

@@ -128,7 +128,7 @@ upstream outputs already exist.
 |---|---|---|
 | `--method` | `mahalanobis` | Pairwise similarity method (step 1). Also `pearson`, `correlation`, `euclidean`, `kendall`. |
 | `--rsa_method` | `kendall` | Method comparing similarity maps to the model (step 2). |
-| `--mah_fold` | `stim-wise` | Mahalanobis folding: `stim-wise`, `run-wise`, or `run-wise-multiple-runs`. |
+| `--mah_fold` | `stim-wise` | Mahalanobis folding: `stim-wise`, `stim-wise-multiple-folds`, `stim-wise-all-runs`, or `run-wise`. `stim-wise-multiple-folds` uses EmoC `stim_file` labels and repeated metadata partitions, producing direct-subject maps for exact repeatable stimulus pairs. |
 
 ### Searchlight / masking
 

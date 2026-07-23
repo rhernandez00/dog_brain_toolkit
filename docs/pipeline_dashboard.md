@@ -49,6 +49,26 @@ Then open **http://127.0.0.1:8060** in a browser.
    (which `sub-NN` passed/failed) and, when a scheduler job failed, the recorded
    error message and log path — the "why" a participant couldn't pass.
 
+## Full verbose mode — diagnosing file-detection mismatches
+
+If a step's verdict looks wrong (e.g. files you know exist show as MISSING, or
+vice versa), tick **🔍 Full verbose mode** next to **▶ Check all steps**. With it
+on, every subsequent **Check** / **Check all steps** / **Sched missing** prints
+each file the probe actually checked to the terminal the app was launched from
+(not the browser), tagged:
+
+- `FOUND` — this exact file exists on disk.
+- `MISSING` — this exact file was expected but doesn't exist.
+- `PATTERN` — a glob pattern that was searched instead of an exact name, for
+  steps whose filenames can't be predicted in advance (step 0's `pe*.nii.gz`,
+  and steps 1/2/4's permutation-indexed fallbacks). The `FOUND` lines right
+  after a `PATTERN` line are what that pattern matched.
+
+Each step's block ends with a found/missing total. This is a diagnostic aid —
+it doesn't change any verdict, cache entry, or scheduling behaviour; it only
+adds console output. Leave it off for routine checks, since it can print
+hundreds of lines for a step with many participants/pairs (step 1 especially).
+
 ## Memory
 
 Results are remembered per **parameter set** in a per-user cache file:
@@ -92,28 +112,28 @@ lot for the status check:
     subject folder. `C(n_categories, 2)`, run-independent.
   - `run-wise` — one map per *stim-type* pair, directly under the subject
     folder. Run-independent.
-  - `stim-wise-multiple-folds` — one map per model-category pair **per run**, in
-    each `ses-*_run-*` subfolder → `C(n_categories, 2) × n_runs`.
+  - `stim-wise-multiple-folds` — one map per pair of exact repeatable EmoC
+    `config['model_dict']` `stim_file` conditions, directly under the subject
+    folder. Stimuli without two common metadata partitions are excluded.
   - `stim-wise-all-runs` — one map per pair of *that run's* stimuli (from
     `config['model_dict']`) per run.
 
   The probe follows the selected fold's layout and counts only the exact
   expected filenames, so leftover/garbage files from other runs are ignored.
-- **Expected counts are per participant.** The number of runs is read from
+- **Expected counts are per participant.** The participant run list is read from
   `{dataset}/BIDS/{specie}_database-details.csv` (`get_session_and_run_dict`) —
-  the same source `searchlight.py` loops over to create the files — so a
-  participant with 6 runs and one with 7 get different expected totals for the
-  per-run folds and the correlation method, instead of one run-blind number for
-  everyone.
+  the same source `searchlight.py` loops over to create the files. For
+  `stim-wise-multiple-folds`, the probe derives the exact repeatable stimuli and
+  their common partitions from that run list; correlation remains per-run.
 - `mah_fold` is part of the **cache signature**, so checking the same model under
   two different folds keeps two independent verdicts instead of overwriting one.
 
-**Worked example.** `agent-species-id` was run `stim-wise` (40 categories →
-`C(40,2)=780` maps directly under each subject, run-independent).
-`all-categories_bipolar` was run `stim-wise-multiple-folds` (10 categories →
-`C(10,2)=45` maps per run): a 6-run dog expects `45×6=270` maps across its run
-subfolders, a 7-run dog expects `45×7=315`. Select the matching `mah_fold` for
-each model or its status will look wrong.
+**Worked example.** `agent-species-id` run with `stim-wise` (40 categories →
+`C(40,2)=780` maps) writes directly under each subject. For EmoC
+`stim-wise-multiple-folds`, `R1DogP1` and `R1DogP2` each occur in partitions 1
+and 2, so their direct-subject map is
+`r-{radius}_mahalanobis_R1DogP1_R1DogP2.nii.gz`. Select the matching
+`mah_fold` for each model or its status will look wrong.
 
 Scheduling (**Sched missing** / **Sched from here** / per-map **Schedule**) also
 threads the selected `mah_fold` through to `searchlight.py`, replacing the old
