@@ -128,7 +128,7 @@ upstream outputs already exist.
 |---|---|---|
 | `--method` | `mahalanobis` | Pairwise similarity method (step 1). Also `pearson`, `correlation`, `euclidean`, `kendall`. |
 | `--rsa_method` | `kendall` | Method comparing similarity maps to the model (step 2). |
-| `--mah_fold` | `stim-wise` | Mahalanobis folding: `stim-wise`, `stim-wise-multiple-folds`, `stim-wise-all-runs`, or `run-wise`. `stim-wise-multiple-folds` uses EmoC `stim_file` labels and repeated metadata partitions, producing direct-subject maps for exact repeatable stimulus pairs. |
+| `--mah_fold` | `stim-wise` | Mahalanobis folding: `stim-wise`, `stim-wise-multiple-folds`, `stim-wise-all-runs`, or `run-wise`. `stim-wise-multiple-folds` uses EmoC `stim_file` labels and repeated metadata partitions, producing direct-subject maps for exact repeatable stimulus pairs. EmoC-only `stim-wise-all-runs` computes each run independently, collapses exemplars such as `DogA1`--`DogA4` to `DogA`, and uses their exemplar IDs as within-run cross-validation folds. Steps 2/4 retain the legacy direct model-output path for `stim-wise`; other folds use a fold-specific result directory (with run folders for `stim-wise-all-runs`) before steps 3/5 aggregate to the usual group paths. |
 
 ### Searchlight / masking
 

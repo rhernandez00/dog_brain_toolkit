@@ -63,17 +63,10 @@ from scheduler.jobs import create_job  # noqa: E402
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "1.3.0"
-LAST_CHANGE = ("Added a 'Full verbose mode' toggle next to Check all/Clear all: "
-               "when on, every Check / Check all / Sched missing prints each "
-               "filename (or glob pattern, for steps whose exact names can't be "
-               "predicted) the probe checked to the launching console, tagged "
-               "FOUND/MISSING/PATTERN per participant, plus a found/missing "
-               "total per step — for diagnosing file-detection mismatches. "
-               "PROBES functions in pipeline_console.py now take an optional "
-               "verbose= kwarg (default False, so plain `pipeline_console.py` "
-               "usage is unaffected). (Prior 1.2.0 change: step 1's expected "
-               "pairwise-map count follows the creation rules per participant.)")
+VERSION = "1.4.0"
+LAST_CHANGE = ("Status checks now follow Mahalanobis fold-specific step-2 and "
+               "step-4 paths: direct results for stim-wise and multiple-folds, "
+               "and one result/permutation set per run for stim-wise-all-runs.")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10

@@ -59,7 +59,9 @@ Input arguments:
 --mah_fold: Folding method for Mahalanobis distance for pairwise similarity maps, options:
     'stim-wise': default, pairwise using each stimuli category, returns a similarity map for each category pair even when multiple runs.
     'stim-wise-multiple-folds': pairwise using each stimuli, returns a similarity map for each stimuli pair. Same stimuli is expected to be in multiple runs.
-    'stim-wise-all-runs': pairwise using each category, returns a similarity map for each category pair for each run. Same repeated stimuli of the same category is expected on each run.
+    'stim-wise-all-runs': EmoC-only within-run class crossnobis. Collapses
+    exemplars such as DogA1--DogA4 to DogA, uses their exemplar IDs as folds,
+    and writes one class-pair map per run.
 
 --reps: Number of repetitions for permutations in individual run (default: 100)
 --reps_group: Number of repetitions for permutations in group analysis (default: 1000)
@@ -142,7 +144,7 @@ def parse_arguments():
     parser.add_argument('--coords', type=str, default=None,
                         help='Coordinates for similarity files in voxel space, format: x,y,z')
     parser.add_argument('--mah_fold', type=str, default='stim-wise',
-                        help='Mahalanobis folding: stim-wise, stim-wise-multiple-folds, stim-wise-all-runs, or run-wise')
+                        help='Mahalanobis folding: stim-wise, stim-wise-multiple-folds, stim-wise-all-runs (EmoC within-run classes), or run-wise')
     parser.add_argument('--job_marker_dir', type=str, default=None,
                         help='Directory where step completion markers are written (used by the scheduler)')
     
@@ -392,7 +394,8 @@ def main():
                 # print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
-                if mah_fold == 'run-wise-multiple-runs': # for each run, run once calculate_pairwise_similarity_maps2
+                if mah_fold == 'run-wise-multiple-runs': # for each run, run
+                    #once calculate_pairwise_similarity_maps2
                     print("Calculating pairwise similarity maps with run-wise folding for multiple runs...")
                     for entry in session_and_run_dict:
                         session = entry['session']
@@ -432,7 +435,8 @@ def main():
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
                                     dis_method=dis_method, rsa_method=rsa_method, replace_file=replace_file, 
                                     verbose=verbose, wait_time=wait_time, rnd=False,
-                                    create_subject_mean=False, mask_type=mask_type)
+                                    create_subject_mean=False, mask_type=mask_type,
+                                    mah_fold=mah_fold, model_dict=model_dict)
                 
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"#### Done computing similarity between pairwise maps and model ####")
@@ -450,7 +454,8 @@ def main():
                                                 task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
                                                 dis_method=dis_method, replace_file=True, verbose=verbose,
-                                                min_percentage_available=min_percentage_available, mask_type=mask_type
+                                                min_percentage_available=min_percentage_available, mask_type=mask_type,
+                                                mah_fold=mah_fold
                                                 )
             print("### Done computing group model similarity map ###")
             if result:
@@ -467,7 +472,9 @@ def main():
                                     specie, model, stim_types,  mask, task, radius, rsa_model=rsa_model,
                                     dis_method=dis_method, rsa_method=rsa_method, replace_file=replace_file, 
                                     verbose=verbose, wait_time=wait_time, rnd=True, reps=reps,
-                                    create_subject_mean=False, replace_rnd_files=False, skip_prefile_check=skip_prefile_check)
+                                    create_subject_mean=False, replace_rnd_files=replace_rnd_files,
+                                    skip_prefile_check=skip_prefile_check, mask_type=mask_type,
+                                    mah_fold=mah_fold, model_dict=model_dict)
                 
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"### Done computing rnd similarity between pairwise maps and model ###")
@@ -485,7 +492,8 @@ def main():
                                                 rsa_method=rsa_method,
                                                 dis_method=dis_method, verbose=verbose,
                                                 min_percentage_available=min_percentage_available,
-                                                reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300, reps_group=reps_group)
+                                                reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300,
+                                                reps_group=reps_group, mah_fold=mah_fold, mask_type=mask_type)
             print("### Done computing group rnd mean model similarity maps ###")
             if result:
                 _write_marker(job_marker_dir, 5)

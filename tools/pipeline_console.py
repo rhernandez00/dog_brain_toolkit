@@ -149,8 +149,8 @@ class Ctx:
         self.participants = []
         self.stim_types = []
         self.categories = []
-        # config['model_dict'] — per-run stim mapping, only needed to count the
-        # 'stim-wise-all-runs' fold's per-run stimuli (None if absent).
+        # config['model_dict'] — per-run stimulus mapping, used to derive the
+        # 'stim-wise-all-runs' fold's class labels and exemplar folds.
         self.model_dict = None
         # Per-participant run lists, cached lazily by _runs_for(); the number of
         # runs varies by participant (read from the BIDS database), which is why
@@ -196,7 +196,8 @@ class Ctx:
         ``stim-wise-multiple-folds`` pools repeated EmoC stimuli across their
         metadata-defined partitions before writing one map per exact pair.
         """
-        return True
+        return (self.method == 'mahalanobis' and
+            self.mah_fold != 'stim-wise-all-runs')
 
 
 def build_ctx(args, datafolder):
@@ -378,6 +379,57 @@ def _run_folder(ctx, session, run_N):
     return f"ses-{int(session):02d}_task-{ctx.task}_run-{int(run_N):02d}"
 
 
+def _model_result_root(ctx, rnd=False):
+    root = ctx.rsa_rnd_dir if rnd else ctx.rsa_dir
+    root = os.path.join(root, ctx.rsa_model)
+    if (ctx.method == 'mahalanobis' and
+            ctx.mah_fold not in (None, 'stim-wise')):
+        root = os.path.join(root, ctx.mah_fold)
+    return root
+
+
+def _model_result_is_per_run(ctx):
+    return ctx.method != 'mahalanobis' or ctx.mah_fold == 'stim-wise-all-runs'
+
+
+def _model_result_folders(ctx, sub, rnd=False):
+    sub_dir = os.path.join(_model_result_root(ctx, rnd), ctx.sub_folder(sub))
+    if not _model_result_is_per_run(ctx):
+        return [sub_dir]
+    runs = _sessions_for(ctx, sub)
+    if runs is None:
+        return None
+    return [os.path.join(sub_dir, _run_folder(ctx, e['session'], e['run_N']))
+            for e in runs]
+
+
+def _model_result_candidates(ctx, folder):
+    filename = f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}.nii.gz"
+    if not ctx.mask_type:
+        return [os.path.join(folder, filename)]
+    return [
+        os.path.join(folder, f"{ctx.mask_type}-{filename}"),
+        os.path.join(folder, filename),
+    ]
+
+
+def _permutation_files(ctx, folder):
+    """Return permutation paths and their unique numeric indices in one folder."""
+    files = set()
+    indices = set()
+    patterns = []
+    for candidate in _model_result_candidates(ctx, folder):
+        prefix = f"{candidate[:-7]}_"
+        pattern = f"{prefix}*.nii.gz"
+        patterns.append(pattern)
+        for path in glob.glob(pattern):
+            files.add(path)
+            suffix = os.path.basename(path)[:-7].rsplit('_', 1)[-1]
+            if suffix.isdigit():
+                indices.add(int(suffix))
+    return patterns, files, indices
+
+
 def _step1_expected(ctx, sub):
     """Expected step-1 pairwise maps for one participant as
     ``{folder_abs_path: [(a, b), ...]}`` (unordered label pairs per folder),
@@ -407,8 +459,9 @@ def _step1_expected(ctx, sub):
     * ``stim-wise-multiple-folds``— one direct-subject map per pair of exact,
                           repeatable ``config['model_dict']``
                           ``stim_file`` conditions.
-      * ``stim-wise-all-runs``      — one map per pair of *that run's* stimuli
-                                      (from ``config['model_dict']``) per run.
+    * ``stim-wise-all-runs``      — one map per pair of *that run's* classes,
+                          using the final exemplar IDs in condition keys
+                          as within-run cross-validation folds.
     Non-mahalanobis: one map per stim-type pair **per run**, in the run subfolders.
     """
     sub_dir = os.path.join(ctx.rsa_dir, ctx.sub_folder(sub))
@@ -444,12 +497,13 @@ def _step1_expected(ctx, sub):
                 run_map = md.get(run_key)
                 if not isinstance(run_map, dict):
                     return None
-                # per-run stimuli: video_file (fallback stim_file), as in rsa_utils
-                stims = []
-                for s in run_map:
-                    info = run_map[s]
-                    stims.append(info.get('video_file', info.get('stim_file', s))
-                                 if isinstance(info, dict) else s)
+                try:
+                    import rsa_utils
+                    stims, _, _ = rsa_utils._get_emoc_within_run_class_folds(
+                        run_map, ctx.stim_types
+                    )
+                except Exception:
+                    return None
                 folder = os.path.join(sub_dir, _run_folder(ctx, e['session'], e['run_N']))
                 exp[folder] = _pairs(stims)
             return exp
@@ -515,45 +569,35 @@ def probe_step2(ctx, verbose=False):
     """Model similarity maps (real) per participant."""
     if not ctx.participants:
         return _result(UNKNOWN, "participant list unavailable")
-    is_mah = ctx.method == 'mahalanobis'
     per_sub, done, partial = [], 0, 0
     detail = [] if verbose else None
-    fname = f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}.nii.gz"
-    masked = f"{ctx.mask_type}-{fname}" if ctx.mask_type else fname
     for sub in ctx.participants:
-        sub_dir = os.path.join(ctx.rsa_dir, ctx.rsa_model, ctx.sub_folder(sub))
-        if is_mah:
-            # mahalanobis: single file directly under the subject folder,
-            # no per-session/run subfolder (see rsa_utils.compare_with_model)
-            p_masked = os.path.join(sub_dir, masked)
-            checked = [p_masked]
-            n = _count(p_masked)
-            if n == 0 and ctx.mask_type:
-                p_unmasked = os.path.join(sub_dir, fname)
-                checked.append(p_unmasked)
-                n = _count(p_unmasked)
-            exp = 1
+        folders = _model_result_folders(ctx, sub)
+        if folders is None:
+            sub_dir = os.path.join(_model_result_root(ctx), ctx.sub_folder(sub))
+            folder_glob = 'ses-*run-*' if _model_result_is_per_run(ctx) else ''
+            matches = set()
+            for candidate in _model_result_candidates(ctx, os.path.join(sub_dir, folder_glob)):
+                matches.update(glob.glob(candidate))
+                if verbose:
+                    detail.append({'sub': sub, 'path': candidate, 'status': PATTERN})
             if verbose:
-                for p in checked:
-                    detail.append({'sub': sub, 'path': p, 'status': DONE if _exists(p) else MISSING})
+                for found in sorted(matches):
+                    detail.append({'sub': sub, 'path': found, 'status': DONE})
+            per_sub.append(_grade_count(sub, len(matches), None))
         else:
-            # tolerate both masked and unmasked names, across run subfolders
-            pat_masked = os.path.join(sub_dir, 'ses-*run-*', masked)
-            matches = sorted(glob.glob(pat_masked))
-            checked_pats = [pat_masked]
-            if not matches and ctx.mask_type:
-                pat_unmasked = os.path.join(sub_dir, 'ses-*run-*', fname)
-                matches = sorted(glob.glob(pat_unmasked))
-                checked_pats.append(pat_unmasked)
-            n = len(matches)
-            sess = _sessions_for(ctx, sub)
-            exp = len(sess) if sess is not None else None
-            if verbose:
-                for pat in checked_pats:
-                    detail.append({'sub': sub, 'path': pat, 'status': PATTERN})
-                for m in matches:
-                    detail.append({'sub': sub, 'path': m, 'status': DONE})
-        per_sub.append(_grade_count(sub, n, exp))
+            present = 0
+            for folder in folders:
+                candidates = _model_result_candidates(ctx, folder)
+                found = any(_exists(candidate) for candidate in candidates)
+                present += found
+                if verbose:
+                    for candidate in candidates:
+                        detail.append({
+                            'sub': sub, 'path': candidate,
+                            'status': DONE if _exists(candidate) else MISSING,
+                        })
+            per_sub.append(_grade_count(sub, present, len(folders)))
         done += per_sub[-1][1] == DONE
         partial += per_sub[-1][1] == PARTIAL
     return _summarize(per_sub, done, partial, "model-similarity maps", detail=detail)
@@ -566,25 +610,40 @@ def probe_step4(ctx, verbose=False):
     per_sub, done, partial = [], 0, 0
     detail = [] if verbose else None
     for sub in ctx.participants:
-        sub_rnd = os.path.join(ctx.rsa_rnd_dir, ctx.rsa_model, ctx.sub_folder(sub))
-        pat1 = os.path.join(sub_rnd, '**', f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_*.nii.gz")
-        matches = sorted(glob.glob(pat1))
-        pat_used = pat1
-        if not matches:
-            pat2 = os.path.join(sub_rnd, f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_*.nii.gz")
-            matches = sorted(glob.glob(pat2))
-            pat_used = pat2
-        n = len(matches)
-        if verbose:
-            detail.append({'sub': sub, 'path': pat_used, 'status': PATTERN})
-            for m in matches:
-                detail.append({'sub': sub, 'path': m, 'status': DONE})
-        if n >= ctx.reps:
-            per_sub.append((sub, DONE, f"{n} perms (>= {ctx.reps})")); done += 1
+        folders = _model_result_folders(ctx, sub, rnd=True)
+        if folders is None:
+            sub_dir = os.path.join(_model_result_root(ctx, rnd=True), ctx.sub_folder(sub))
+            folder_glob = 'ses-*run-*' if _model_result_is_per_run(ctx) else ''
+            patterns, matches, indices = _permutation_files(
+                ctx, os.path.join(sub_dir, folder_glob)
+            )
+            for pattern in patterns:
+                if verbose:
+                    detail.append({'sub': sub, 'path': pattern, 'status': PATTERN})
+            if verbose:
+                for found in sorted(matches):
+                    detail.append({'sub': sub, 'path': found, 'status': DONE})
+            per_sub.append(_grade_count(sub, len(indices), None))
+            continue
+
+        n = 0
+        for folder in folders:
+            patterns, matches, indices = _permutation_files(ctx, folder)
+            for pattern in patterns:
+                if verbose:
+                    detail.append({'sub': sub, 'path': pattern, 'status': PATTERN})
+            n += len(indices)
+            if verbose:
+                for found in sorted(matches):
+                    detail.append({'sub': sub, 'path': found, 'status': DONE})
+
+        expected = len(folders) * ctx.reps
+        if n >= expected:
+            per_sub.append((sub, DONE, f"{n} perms (>= {expected})")); done += 1
         elif n > 0:
-            per_sub.append((sub, PARTIAL, f"{n} / {ctx.reps} perms")); partial += 1
+            per_sub.append((sub, PARTIAL, f"{n} / {expected} perms")); partial += 1
         else:
-            per_sub.append((sub, MISSING, f"0 / {ctx.reps} perms"))
+            per_sub.append((sub, MISSING, f"0 / {expected} perms"))
     return _summarize(per_sub, done, partial, "permutations", detail=detail)
 
 

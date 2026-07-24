@@ -99,14 +99,12 @@ Results are remembered per **parameter set** in a per-user cache file:
 `run-wise`. It only matters when `method = mahalanobis`, but there it matters a
 lot for the status check:
 
-- **Step 1 (pairwise similarity) is model-independent and shared** — every
-  mahalanobis model drops its per-pair maps (`r-{radius}_mahalanobis_{catA}_{catB}.nii.gz`)
-  into the *same* `{specie}-sub-NN/` folder. A model with few categories
-  (`agent-species-id`) and one with many (`all-categories_bipolar`) sit side by
-  side. The dashboard now counts **only the pairs the selected model's own
-  categories imply**, instead of globbing `r-{radius}_mahalanobis_*` — so one
-  model's (or one fold's) files are never credited to another. This is what
-  stopped step 1 falsely reading DONE for every model.
+- **Step 1 (pairwise similarity) is model-independent and shared** — most
+  mahalanobis folds write per-pair maps (`r-{radius}_mahalanobis_{catA}_{catB}.nii.gz`)
+  directly into `{specie}-sub-NN/`; `stim-wise-all-runs` instead writes into
+  each run folder. The dashboard counts **only the pairs the selected model and
+  fold imply**, instead of globbing `r-{radius}_mahalanobis_*`, so one model's
+  (or one fold's) files are never credited to another.
 - `mah_fold` also decides *where* those maps live and *how many* there are:
   - `stim-wise` — one map per model-category pair, **directly** under the
     subject folder. `C(n_categories, 2)`, run-independent.
@@ -115,16 +113,28 @@ lot for the status check:
   - `stim-wise-multiple-folds` — one map per pair of exact repeatable EmoC
     `config['model_dict']` `stim_file` conditions, directly under the subject
     folder. Stimuli without two common metadata partitions are excluded.
-  - `stim-wise-all-runs` — one map per pair of *that run's* stimuli (from
-    `config['model_dict']`) per run.
+  - `stim-wise-all-runs` — EmoC-only; one map per pair of *that run's* classes.
+    It collapses exemplars such as `DogA1`--`DogA4` to `DogA`, uses the final
+    exemplar IDs as within-run cross-validation folds, and writes maps in the
+    run folder (for example, `r-{radius}_mahalanobis_DogA_DogH.nii.gz`).
 
   The probe follows the selected fold's layout and counts only the exact
   expected filenames, so leftover/garbage files from other runs are ignored.
+- **Steps 2 and 4 (model comparison and its randomized versions) are also
+  fold-specific.** `stim-wise` retains its legacy direct-subject location under
+  `{rsa_model}/{specie}-sub-NN/`. To prevent a run with another fold from
+  overwriting it, `stim-wise-multiple-folds` writes under
+  `{rsa_model}/stim-wise-multiple-folds/{specie}-sub-NN/`; `stim-wise-all-runs`
+  uses its corresponding fold directory and then each run folder. The
+  dashboard expects one real map and `--reps` randomized maps for each of those
+  folders. Steps 3 and 5 aggregate these inputs into the unchanged canonical
+  group `mean/` paths consumed by steps 6--10.
 - **Expected counts are per participant.** The participant run list is read from
   `{dataset}/BIDS/{specie}_database-details.csv` (`get_session_and_run_dict`) —
   the same source `searchlight.py` loops over to create the files. For
   `stim-wise-multiple-folds`, the probe derives the exact repeatable stimuli and
-  their common partitions from that run list; correlation remains per-run.
+  their common partitions from that run list. For `stim-wise-all-runs`, it
+  derives each run's class labels from those same condition keys.
 - `mah_fold` is part of the **cache signature**, so checking the same model under
   two different folds keeps two independent verdicts instead of overwriting one.
 

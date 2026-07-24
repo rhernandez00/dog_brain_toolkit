@@ -65,9 +65,9 @@ python tools/pipeline_console.py --dataset EmoC --rsa_model test-model --specie 
 |---|---|
 | 0 Beta maps (D only) | GLM `pe*.nii.gz` per participant/run |
 | 1 Pairwise similarity | per-participant maps (`r-{radius}_{method}_*`) |
-| 2 Model similarity | per-participant, per-run model-similarity maps |
+| 2 Model similarity | one map per direct-subject fold result, or one per run for `stim-wise-all-runs` |
 | 3 Group similarity map | `mean/{...}_mean.nii.gz` |
-| 4 RND permuted model | per-participant permutation maps vs `--reps` |
+| 4 RND permuted model | `--reps` permutations per direct result, or per run for `stim-wise-all-runs` |
 | 5 RND group permutations | count of `RSA_rnd/.../mean_{NNNNN}.nii.gz` vs `--reps_group` |
 | 6 Voxelwise RND distribution | `RSA_rnd/{model}/{specie}-{rsa_model}_mean/_std.nii.gz` |
 | 7 Z-maps | `mean/{...}_z.nii.gz` |
