@@ -2174,10 +2174,6 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
 
     ###- Pending: Implement logic to check for existing output files, remove manually for now ###
 
-    # if calculating permutations, create_subject_mean should be False
-    if rnd:
-        create_subject_mean = False
-
     print(f"Pairwise vs model for: {specie}-sub-{sub_N:02d}, model {model}, rsa_model {rsa_model}...")
     # load the mask to use as reference
     print(f"loading {mask}")
@@ -3720,11 +3716,10 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                 When multiple runs are available, calculate distance across runs 
                 (cross-validated across runs).
                 Folding strategies:
-                                        - stim-wise-all-runs: EmoC-only. Computes a separate class-level
-                                            crossnobis analysis inside each run, using final exemplar IDs
+                    - stim-wise-all-runs: EmoC-only. Computes a separate class-level                                            crossnobis analysis inside each run, using final exemplar IDs
                                             (for example, DogA1--DogA4) as the cross-validation folds.
                     - stim-wise: collapse all stimuli of the same type across runs, use runs as folds. Output is a dsm that compares each possible stimuli type vs each possible stimuli type
-                    - run-wise-multiple-runs: for each run, run once stim-wise. Collapse multiple repetitions of the same type of stimuli. Output is a dsm for each run type, the dsm compares stimuli types vs stimuli types.
+                    
     Inputs:
         - datafolder: str. Path to data folder
         - dataset: str. Dataset name

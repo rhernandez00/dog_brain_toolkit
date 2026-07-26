@@ -130,52 +130,53 @@ def sync(datafolder, dataset, model, drive_root, models=None, z_threshold=3.1,
         if models and rsa_model not in models:
             continue
         mask_type = m.group("mask")
-        specie = m.group("specie")
-        stem = m.group(0)[: -len("_z.nii.gz")]  # technical name minus _z.nii.gz
+        
+        # go ober each specie separately and copy the artifacts for that specie
+        for specie in ['D', 'H']:
+            stem = m.group(0)[: -len("_z.nii.gz")]  # technical name minus _z.nii.gz
+            # (source filename, destination filename, kind, enabled)
+            artifacts = [
+                (f"{stem}_z.nii.gz",
+                drive_dest_name(specie, rsa_model, 'z', z_threshold), 'z', True),
+                (f"{stem}_z_corrected.nii.gz",
+                drive_dest_name(specie, rsa_model, 'z_corrected', z_threshold),
+                'z_corrected', include_corrected),
+                (f"{stem}_mean.nii.gz",
+                drive_dest_name(specie, rsa_model, 'mean', z_threshold),
+                'mean', True),
+                (f"{stem}_zt{z_threshold}.csv",
+                drive_dest_name(specie, rsa_model, 'table', z_threshold), 'table',
+                include_table),
+            ]
 
-        # (source filename, destination filename, kind, enabled)
-        artifacts = [
-            (f"{stem}_z.nii.gz",
-             drive_dest_name(specie, rsa_model, 'z', z_threshold), 'z', True),
-            (f"{stem}_z_corrected.nii.gz",
-             drive_dest_name(specie, rsa_model, 'z_corrected', z_threshold),
-             'z_corrected', include_corrected),
-            (f"{stem}_mean.nii.gz",
-             drive_dest_name(specie, rsa_model, 'mean', z_threshold),
-             'mean', True),
-            (f"{stem}_zt{z_threshold}.csv",
-             drive_dest_name(specie, rsa_model, 'table', z_threshold), 'table',
-             include_table),
-        ]
+            dest_dir = drive_dest_dir(drive_root, dataset, specie, mask_type)
+            printed_header = False
 
-        dest_dir = drive_dest_dir(drive_root, dataset, specie, mask_type)
-        printed_header = False
+            for src_name, dst_name, kind, enabled in artifacts:
+                if not enabled:
+                    continue
+                src = os.path.join(mean_dir, src_name)
+                dst = os.path.join(dest_dir, dst_name)
 
-        for src_name, dst_name, kind, enabled in artifacts:
-            if not enabled:
-                continue
-            src = os.path.join(mean_dir, src_name)
-            dst = os.path.join(dest_dir, dst_name)
+                if not os.path.exists(src):
+                    if kind == 'z':  # the required artifact really should exist
+                        missing_src += 1
+                    continue
 
-            if not os.path.exists(src):
-                if kind == 'z':  # the required artifact really should exist
-                    missing_src += 1
-                continue
+                if not _needs_copy(src, dst, force):
+                    skipped += 1
+                    continue
 
-            if not _needs_copy(src, dst, force):
-                skipped += 1
-                continue
+                if not printed_header:
+                    print(f"[{rsa_model}]  specie={specie}  mask={mask_type or '-'}")
+                    printed_header = True
 
-            if not printed_header:
-                print(f"[{rsa_model}]  specie={specie}  mask={mask_type or '-'}")
-                printed_header = True
-
-            action = "WOULD COPY" if dry_run else "COPY"
-            print(f"  {action:10s} {kind:12s} -> {dst}")
-            if not dry_run:
-                os.makedirs(dest_dir, exist_ok=True)
-                shutil.copyfile(src, dst)
-            copied += 1
+                action = "WOULD COPY" if dry_run else "COPY"
+                print(f"  {action:10s} {kind:12s} -> {dst}")
+                if not dry_run:
+                    os.makedirs(dest_dir, exist_ok=True)
+                    shutil.copyfile(src, dst)
+                copied += 1
 
     print(f"\nDone. {'(dry-run) ' if dry_run else ''}"
           f"copied={copied} up_to_date={skipped} missing_z_src={missing_src}")

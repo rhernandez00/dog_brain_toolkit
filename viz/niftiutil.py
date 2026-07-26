@@ -149,8 +149,14 @@ def _threshold(ov, z_threshold):
 
 
 def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
-                   vmin, vmax, show_crosshair=False, cross=None, title="", height=360):
-    """One orthogonal slice: grayscale atlas + thresholded hot overlay."""
+                   vmin, vmax, show_crosshair=False, cross=None, title="", height=360,
+                   colorscale=None):
+    """One orthogonal slice: grayscale atlas + thresholded overlay.
+
+    ``colorscale`` names the overlay colour map (any Plotly colorscale, e.g.
+    ``"Hot"``); ``None`` falls back to the module default. Sub-threshold voxels
+    are NaN'd (``_threshold``) so they render fully transparent — i.e. alpha=0
+    below ``z_threshold`` — and everything at/above uses the chosen scale."""
     if atlas is None:
         return empty_fig(title, height)
     idx = int(np.clip(slice_idx, 0, atlas.shape[axis] - 1))
@@ -168,9 +174,9 @@ def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
     ov_t = _threshold(ov, z_threshold)
     if ov_t is not None and not np.all(np.isnan(ov_t)):
         fig.add_trace(go.Heatmap(
-            z=ov_t, colorscale=OVERLAY_COLORSCALE, opacity=opacity, showscale=True,
-            zmin=vmin, zmax=vmax, colorbar=dict(title="z", len=0.6, thickness=10),
-            hoverinfo="skip"))
+            z=ov_t, colorscale=(colorscale or OVERLAY_COLORSCALE), opacity=opacity,
+            showscale=True, zmin=vmin, zmax=vmax,
+            colorbar=dict(title="z", len=0.6, thickness=10), hoverinfo="skip"))
     if show_crosshair and cross:
         cx, cy = cross
         fig.add_shape(type="line", x0=cx, x1=cx, y0=0, y1=bg.shape[0] - 1,

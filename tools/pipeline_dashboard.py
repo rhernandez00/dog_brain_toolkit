@@ -55,6 +55,7 @@ for _p in (_REPO_ROOT, _THIS_DIR):
         sys.path.insert(0, _p)
 
 import pipeline_console as pc  # noqa: E402  (reuse the probe logic; sibling in tools/)
+import models_manifest as mm  # noqa: E402  (central _models.csv reader; sibling in tools/)
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
 from scheduler.dag import build_single_job, build_job_graph  # noqa: E402
 from scheduler.jobs import create_job  # noqa: E402
@@ -63,10 +64,13 @@ from scheduler.jobs import create_job  # noqa: E402
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "1.4.0"
-LAST_CHANGE = ("Status checks now follow Mahalanobis fold-specific step-2 and "
-               "step-4 paths: direct results for stim-wise and multiple-folds, "
-               "and one result/permutation set per run for stim-wise-all-runs.")
+VERSION = "1.6.0"
+LAST_CHANGE = ("dis_method is now a dropdown (pearson/kendall/euclidean/mahalanobis/"
+               "correlation). The rsa_model menu shows ONLY _models.csv models: for "
+               "mahalanobis it is filtered to the selected mah_fold's models (and the "
+               "mah_fold dropdown is enabled); for any other method the fold filter is "
+               "dropped, the mah_fold dropdown is disabled, and every manifest model is "
+               "offered. The selected model's 'why' note is shown; PORT env var honoured.")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10
@@ -100,6 +104,10 @@ DEFAULTS = {
     'reps': 100,
     'reps_group': 1000,
 }
+
+# Pairwise dissimilarity methods (searchlight.py --method / dis_method). Only
+# 'mahalanobis' uses mah_fold — see MAH_FOLD_OPTIONS and populate_models below.
+DIS_METHODS = ['pearson', 'kendall', 'euclidean', 'mahalanobis', 'correlation']
 
 # Mahalanobis folding strategies (searchlight.py --mah_fold). Only meaningful when
 # method == 'mahalanobis'; it decides where/which pairwise maps land on disk, so it
@@ -389,6 +397,8 @@ def param_panel():
                          style={'width': '220px', 'display': 'inline-block',
                                 'verticalAlign': 'middle', 'marginRight': '10px'}),
             html.Button('⟳ reload models', id='reload-models', n_clicks=0),
+            html.Span(id='model-why', style={'color': '#57606a', 'fontStyle': 'italic',
+                      'fontSize': '12px', 'marginLeft': '12px'}),
         ], style={'marginBottom': '10px'}),
         html.Div([
             html.Label('specie'),
@@ -397,7 +407,12 @@ def param_panel():
                          value=DEFAULTS['specie'],
                          style={'width': '120px', 'display': 'inline-block',
                                 'verticalAlign': 'middle', 'marginRight': '10px'}),
-            html.Label('method'), _input('p-method', DEFAULTS['method'], '120px'),
+            html.Label('dis_method'),
+            dcc.Dropdown(id='p-method',
+                         options=[{'label': m, 'value': m} for m in DIS_METHODS],
+                         value=DEFAULTS['method'], clearable=False,
+                         style={'width': '150px', 'display': 'inline-block',
+                                'verticalAlign': 'middle', 'marginRight': '10px'}),
             html.Label('mah_fold'),
             dcc.Dropdown(id='p-mah_fold',
                          options=[{'label': m, 'value': m} for m in MAH_FOLD_OPTIONS],
@@ -507,23 +522,94 @@ app.layout = html.Div([
 
 
 # ---------------------------------------------------------------------------
-# Callback: populate rsa_model dropdown from the dataset folder
+# Callback: populate the mah_fold dropdown from the central _models.csv manifest
 # ---------------------------------------------------------------------------
+# The manifest's folds (e.g. stim-wise, run-wise) lead the list; the remaining
+# searchlight folding strategies (which _models.csv may not classify) are still
+# offered afterwards so any run parameter set can be checked.
+@app.callback(
+    Output('p-mah_fold', 'options'),
+    Output('p-mah_fold', 'value'),
+    Input('p-dataset', 'value'),
+    Input('reload-models', 'n_clicks'),
+    State('p-mah_fold', 'value'),
+)
+def populate_mah_folds(dataset, _n, current):
+    mm.clear_cache()  # re-read _models.csv so manifest edits show up on reload
+    dirs = mm.rsa_models_dirs(DATAFOLDER, (dataset or '').strip())
+    manifest_folds = mm.folds(dirs)
+    ordered = manifest_folds + [m for m in MAH_FOLD_OPTIONS if m not in manifest_folds]
+    if not ordered:
+        ordered = list(MAH_FOLD_OPTIONS)
+    options = [{'label': f + (' — in _models.csv' if f in manifest_folds else ''),
+                'value': f} for f in ordered]
+    value = current if current in ordered else (ordered[0] if ordered else None)
+    return options, value
+
+
+# ---------------------------------------------------------------------------
+# Callback: populate rsa_model dropdown from _models.csv, keyed to dis_method
+# ---------------------------------------------------------------------------
+# The menu lists ONLY models classified in _models.csv (never the loose folder
+# scan). mah_fold applies to 'mahalanobis' alone: with that method the list is
+# filtered to the selected fold's models; with any other distance method the fold
+# is meaningless, so the filter is dropped and every manifest model (all folds) is
+# offered. Only models whose CSV exists on disk are kept.
 @app.callback(
     Output('p-rsa_model', 'options'),
     Output('p-rsa_model', 'value'),
     Input('p-dataset', 'value'),
-    Input('p-model', 'value'),
+    Input('p-method', 'value'),
+    Input('p-mah_fold', 'value'),
     Input('reload-models', 'n_clicks'),
     State('p-rsa_model', 'value'),
 )
-def populate_models(dataset, model, _n, current):
-    _log(f"reloading rsa_model list for dataset={dataset!r} model={model!r} ...")
-    models, _folder = pc.list_rsa_models(DATAFOLDER, (dataset or '').strip())
-    _log(f"  found {len(models)} rsa_model(s)")
+def populate_models(dataset, method, mah_fold, _n, current):
+    dataset = (dataset or '').strip()
+    method = (method or '').strip().lower()
+    _log(f"reloading rsa_model list dataset={dataset!r} dis_method={method!r} "
+         f"mah_fold={mah_fold!r} ...")
+    mm.clear_cache()
+    dirs = mm.rsa_models_dirs(DATAFOLDER, dataset)
+    on_disk = {m for m in pc.list_rsa_models(DATAFOLDER, dataset)[0] if not m.startswith('_')}
+    if method == 'mahalanobis':
+        candidates = mm.concrete_models_for_fold(dirs, mah_fold or '')   # fold-filtered
+        note = f"mahalanobis / {mah_fold}"
+    else:
+        candidates = mm.all_concrete_models(dirs)                        # fold ignored
+        note = f"{method or 'non-mahalanobis'} (fold ignored)"
+    models = [m for m in candidates if m in on_disk]
+    _log(f"  {len(models)} model(s) from _models.csv — {note}")
     options = [{'label': m, 'value': m} for m in models]
     value = current if current in models else (models[0] if models else None)
     return options, value
+
+
+# ---------------------------------------------------------------------------
+# Callback: mah_fold only applies to mahalanobis — grey it out for other methods
+# ---------------------------------------------------------------------------
+@app.callback(
+    Output('p-mah_fold', 'disabled'),
+    Input('p-method', 'value'),
+)
+def toggle_mah_fold(method):
+    return (method or '').strip().lower() != 'mahalanobis'
+
+
+# ---------------------------------------------------------------------------
+# Callback: show the selected model's "why" note from _models.csv
+# ---------------------------------------------------------------------------
+@app.callback(
+    Output('model-why', 'children'),
+    Input('p-rsa_model', 'value'),
+    Input('p-dataset', 'value'),
+)
+def show_model_why(rsa_model, dataset):
+    if not rsa_model:
+        return ''
+    dirs = mm.rsa_models_dirs(DATAFOLDER, (dataset or '').strip())
+    why = mm.why_for(dirs, rsa_model)
+    return f'“{why}”' if why else ''
 
 
 # ---------------------------------------------------------------------------
@@ -852,8 +938,10 @@ def render_detail(step, _v, dataset, model, rsa_model, specie, method, mah_fold,
 def main():
     parser = argparse.ArgumentParser(description='RSA pipeline status dashboard (Dash)')
     parser.add_argument('--port', type=int,
-                        default=int(os.environ.get('RSA_DASHBOARD_PORT', '8060')),
-                        help='Port to serve on (default 8060; distinct from 8050/8051)')
+                        default=int(os.environ.get('RSA_DASHBOARD_PORT',
+                                                   os.environ.get('PORT', '8060'))),
+                        help='Port to serve on (default 8060; distinct from 8050/8051). '
+                             'RSA_DASHBOARD_PORT or PORT env vars override the default.')
     parser.add_argument('--host', default='127.0.0.1',
                         help='Host to bind (default 127.0.0.1 — local only)')
     args = parser.parse_args()

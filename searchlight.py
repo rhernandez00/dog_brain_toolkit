@@ -1,6 +1,8 @@
 # Executable version of RSA pipeline
 # 7/Nov/2025
 
+import ast
+import glob
 import os
 import time
 import numpy as np
@@ -21,6 +23,109 @@ def _write_marker(job_marker_dir, step):
     marker_path = os.path.join(job_marker_dir, f"{step}.done")
     with open(marker_path, 'w') as f:
         f.write(datetime.now(timezone.utc).isoformat())
+
+
+def _check_log_params(
+    log_file_path, *, z_threshold, reps_group, expected_z_map_paths
+):
+    """Return whether a cluster-distribution log matches the current Step 7 maps.
+
+    ``calculate_cluster_size_distribution`` records the z threshold and the
+    full list of z maps it consumed. The log path already encodes the dataset,
+    model, RSA model, species, radius, pairwise method, and RSA method, so the
+    threshold, requested permutation count, and source-map list complete the
+    parameter check.
+    """
+    try:
+        with open(log_file_path, 'r', encoding='utf-8') as handle:
+            log_lines = handle.readlines()
+    except OSError as error:
+        print(f"Could not read cluster-size log {log_file_path}: {error}")
+        return False
+
+    expected_files = {
+        os.path.normcase(os.path.normpath(os.path.abspath(path)))
+        for path in expected_z_map_paths
+    }
+    if not expected_files:
+        print("No current z maps found; cluster-size log cannot be reused.")
+        return False
+
+    blocks = []
+    current_block = []
+    for raw_line in log_lines:
+        line = raw_line.strip()
+        if line.startswith('Log date and time:') and current_block:
+            blocks.append(current_block)
+            current_block = []
+        current_block.append(line)
+    if current_block:
+        blocks.append(current_block)
+
+    for block in reversed(blocks):
+        logged_threshold = None
+        logged_files = None
+        logged_counts = set()
+        for line in block:
+            if line.startswith('Z threshold:'):
+                try:
+                    logged_threshold = float(line.partition(':')[2].strip())
+                except ValueError:
+                    return False
+            elif (
+                line.startswith('Processed ')
+                and line.endswith(' z map files for cluster size distribution.')
+            ):
+                count_text = line.removeprefix('Processed ').removesuffix(
+                    ' z map files for cluster size distribution.'
+                )
+                try:
+                    logged_counts.add(int(count_text))
+                except ValueError:
+                    return False
+            elif line.startswith('Processed files:'):
+                try:
+                    parsed_files = ast.literal_eval(line.partition(':')[2].strip())
+                except (SyntaxError, ValueError):
+                    return False
+                if not isinstance(parsed_files, list) or not all(
+                    isinstance(path, str) for path in parsed_files
+                ):
+                    return False
+                logged_files = {
+                    os.path.normcase(os.path.normpath(os.path.abspath(path)))
+                    for path in parsed_files
+                }
+
+        if logged_threshold is None:
+            continue
+        if not np.isclose(logged_threshold, z_threshold, rtol=0, atol=1e-12):
+            continue
+        if logged_counts != {reps_group}:
+            print(
+                "Cluster-size log does not contain the requested number of "
+                f"group permutations ({reps_group})."
+            )
+            return False
+        if logged_files is None:
+            print("Matching cluster-size log block has no processed-file list.")
+            return False
+        if len(logged_files) != reps_group or len(expected_files) != reps_group:
+            print(
+                "Cluster-size z-map count does not match the requested number "
+                f"of group permutations ({reps_group})."
+            )
+            return False
+        if logged_files != expected_files:
+            print(
+                "Cluster-size log z-map inputs differ from the current Step 7 "
+                f"outputs ({len(logged_files)} logged, {len(expected_files)} current)."
+            )
+            return False
+        return True
+
+    print(f"No completed cluster-size log block matches z threshold {z_threshold}.")
+    return False
 
 '''
 Steps possible:
@@ -71,7 +176,7 @@ Input arguments:
 --replace_file: Overwrite existing output files (default: False)
 --replace_rnd_files: Overwrite existing rnd output files (default: False)
 --shuffle_participants: shuffle participants order in permutations (default: False)
-
+--skip_if_done: from step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100% of the participants where available)
 
 --participants_forced: List of participants to include (default: [])
 --verbose: Verbose output (default: False)
@@ -127,6 +232,8 @@ def parse_arguments():
                         help='Overwrite existing output files')
     parser.add_argument('--shuffle_participants', action='store_true',
                         help='Shuffle participants order in permutations')
+    parser.add_argument('--skip_if_done', action='store_true',
+                        help='From step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100 percent of the participants where available)')
     parser.add_argument('--shuffle_runs', action='store_true',
                         help='Shuffle runs order in permutations (only for step 1)')
     parser.add_argument('--participants_forced', type=int, nargs='+', default=[],
@@ -181,6 +288,7 @@ def main():
     peak_id = args.peak_id
     dataset = args.dataset
     shuffle_runs = args.shuffle_runs
+    skip_if_done = args.skip_if_done
     mah_fold = args.mah_fold # this is the default, but it can be changed to 'run-wise' if needed
     job_marker_dir = args.job_marker_dir
     # if task is not provided use the same as dataset
@@ -356,6 +464,36 @@ def main():
     print(f"label_nii_data shape: {label_nii_data.shape}")
 
     for step in steps_to_run:
+        if skip_if_done:
+            # check if this is running step 2 - 8.
+            if step in [4,5,6,7,8]:
+                # check if cluster_sizes_dict exists, if it does, load the log and check if it was calculated with the same parameters and if 100% of the participants were available
+                print("skip if done is True, checking if step 8 is complete...")
+                cluster_sizes_dict_path = (datafolder + os.sep + dataset + os.sep +
+                                    'results' + os.sep + 'RSA' + os.sep +
+                                    model + os.sep + rsa_model + os.sep + 'dist' + os.sep +
+                                    f"{specie}-r-{radius}_{dis_method}_{rsa_method}_dist.npy")
+                # check if file exists
+                if os.path.exists(cluster_sizes_dict_path):
+                    log_file_path = cluster_sizes_dict_path.replace('.npy', '_log.txt')
+                    if os.path.exists(log_file_path):
+                        print(f"Loaded log from {log_file_path}")
+                        z_map_pattern = os.path.join(
+                            datafolder, dataset, 'results', 'RSA_rnd', model,
+                            rsa_model, 'mean',
+                            f"{specie}-r-{radius}_{dis_method}_{rsa_method}_z_*.nii.gz",
+                        )
+                        all_params_match = _check_log_params(
+                            log_file_path,
+                            z_threshold=z_threshold,
+                            reps_group=reps_group,
+                            expected_z_map_paths=glob.glob(z_map_pattern),
+                        )
+                        # if all_params_match is True
+                        if all_params_match:
+                            print("Dictionary parameters match, skipping steps 4-8...")
+                            continue
+
         if step == 0: # compute beta maps by participant/session/run
             print("### Step 0: Computing beta maps ###")
             # if shuffle_participants is true, shuffle participants order
