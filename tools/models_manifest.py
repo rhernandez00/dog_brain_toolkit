@@ -134,6 +134,7 @@ def load_rows(dirs, use_cache=True):
                 if not model or not fold:
                     continue
                 rows.append({
+                    "dis_method": str(r.get("dis_method", "") or "").strip() or "mahalanobis",
                     "mah_fold": fold,
                     "model": model,
                     "groupings": order_groupings(_parse_groupings(r.get("groupings_possible"))),
@@ -219,6 +220,23 @@ def concrete_models_for_fold(dirs, mah_fold):
     for model, groupings, _why in models_for_fold(dirs, mah_fold):
         for g in groupings:
             name = concrete_model_name(dirs, model, g)
+            if name not in seen:
+                seen.add(name)
+                out.append(name)
+    return out
+
+
+def concrete_models_for_dis_method(dirs, dis_method):
+    """Flat, ordered, de-duplicated concrete model names for a ``dis_method``
+    (e.g. 'mahalanobis' or 'correlation'), each family expanded over its groupings.
+    Reads the manifest's ``dis_method`` column; rows without it default to
+    'mahalanobis'."""
+    seen, out = set(), []
+    for r in load_rows(dirs):
+        if r["dis_method"] != dis_method:
+            continue
+        for g in r["groupings"]:
+            name = concrete_model_name(dirs, r["model"], g)
             if name not in seen:
                 seen.add(name)
                 out.append(name)

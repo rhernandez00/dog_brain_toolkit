@@ -3699,11 +3699,11 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
     
 
     Dissimilarity methods:
-        - Pearson correlation
-        - Kendall correlation
-        - Euclidean distance
-        - Mahalanobis distance
-        - Correlation distance
+        - Pearson correlation (default, 'pearson')
+        - Kendall correlation ('kendall')
+        - Euclidean distance ('euclidean')
+        - Mahalanobis distance ('mahalanobis')
+        - Correlation distance ('correlation')
     Mahalanobis:
         mah_fold: folding strategy for Mahalanobis distance with cross-validation
             Single run (---untested maybe unimplemented---):
@@ -3754,37 +3754,40 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
     # mah_fold == 'run-wise-multiple-runs':
     # if mah_fold is stim-wise, get categories
     # stim-wise or 'run-wise-multiple-runs'
-    if mah_fold == 'stim-wise':
-        if categories is None:
-            categories = set()
-            if dataset == 'EmoB':
-                for stim in stim_types:
-                    if '-' in stim:
-                        category = stim.split('-')[0]
-                        categories.add(category)
-            elif dataset == 'EmoC':
-                for stim in stim_types:
-                    # remove the last character
-                    category = stim[:-1]
-                    categories.add(category)
-    elif mah_fold == 'stim-wise-multiple-folds':
-        if dataset == 'EmoC':
-            categories, _ = _get_emoc_multiple_fold_stim_files(session_and_run_dict, model_dict)
-        else:
-            raise ValueError(f"mah_fold option 'stim-wise-multiple-folds' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
-    elif mah_fold == 'stim-wise-all-runs':
-        if dataset != 'EmoC':
-            raise ValueError(
-                "mah_fold option 'stim-wise-all-runs' is only implemented for dataset 'EmoC'."
-            )
-        categories = None
-
-    # if none, ignore
-    elif mah_fold is None:
-        pass
     
-    else:
-        raise ValueError(f"Invalid mah_fold option: {mah_fold}. Tested on 'stim-wise'.")
+    # check what dis_method is being calculated
+    if dis_method == 'mahalanobis':
+        if mah_fold == 'stim-wise':
+            if categories is None:
+                categories = set()
+                if dataset == 'EmoB':
+                    for stim in stim_types:
+                        if '-' in stim:
+                            category = stim.split('-')[0]
+                            categories.add(category)
+                elif dataset == 'EmoC':
+                    for stim in stim_types:
+                        # remove the last character
+                        category = stim[:-1]
+                        categories.add(category)
+        elif mah_fold == 'stim-wise-multiple-folds':
+            if dataset == 'EmoC':
+                categories, _ = _get_emoc_multiple_fold_stim_files(session_and_run_dict, model_dict)
+            else:
+                raise ValueError(f"mah_fold option 'stim-wise-multiple-folds' is only implemented for dataset 'EmoC'. For dataset 'EmoB', use 'stim-wise'.")
+        elif mah_fold == 'stim-wise-all-runs':
+            if dataset != 'EmoC':
+                raise ValueError(
+                    "mah_fold option 'stim-wise-all-runs' is only implemented for dataset 'EmoC'."
+                )
+            categories = None
+
+        # if none, ignore
+        elif mah_fold is None:
+            pass
+        
+        else:
+            raise ValueError(f"Invalid mah_fold option: {mah_fold}. Tested on 'stim-wise'.")
 
     print(f"Calculating pairwise similarity maps for {specie}-sub-{sub_N:02d} using dissimilarity method: {dis_method} ")
     
@@ -3921,10 +3924,7 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
             #     print(f"Skipping session {session}, run {run_N} due to missing input files.")
             #     continue
             # If we reach this point, it means all input files are available
-            calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, 
-                                       run_N, specie, model, stim_types, mask, 
-                                       task, radius=radius, dis_method=dis_method, 
-                                       replace_file=replace_file, verbose=verbose)
+            calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session, run_N, specie, model, stim_types, mask, task, radius=radius, dis_method=dis_method, replace_file=replace_file, verbose=verbose)
     return None  # no missing files
 
 
@@ -4400,7 +4400,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                     if i >= j:
                         continue  # avoid duplicates and self-comparison
                     key = (stim_i, stim_j)
-                    similarity_maps[key][tuple(neigh.T)] = D[i, j]
+                    similarity_maps[key][tuple(center)] = D[i, j]
         elif mah_fold == 'stim-wise' or mah_fold == 'stim-wise-multiple-folds':
             # output for both is a similarity map for each pair of categories, in the case of stim-wise, a single map represents all runs, in the case of stim-wise-multiple-folds, a single map represents a single run, but the distance is calculated based on the stimulus repetitions within that run
             # store distances in similarity_maps category-wise
@@ -4410,7 +4410,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
                     if indx1 >= indx2:
                         continue  # avoid duplicates and self-comparison
                     key = (cat1, cat2)
-                    similarity_maps[key][tuple(neigh.T)] = D[
+                    similarity_maps[key][tuple(center)] = D[
                         condition_indices[cat1], condition_indices[cat2]
                     ]
     print("Searchlight calculation completed.")
