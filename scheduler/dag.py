@@ -45,9 +45,10 @@ def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps
 def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
                     start_step=2,
                     z_threshold=3.1, reps=100, reps_group=1000, rsa_method="kendall",
-                    dis_method="mahalanobis", 
+                    dis_method="mahalanobis",
                     mah_fold="stim-wise",
-                    replace_rnd_files=False):
+                    replace_rnd_files=False,
+                    verbose=True):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.  Steps below start_step are never
@@ -116,6 +117,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "reps": reps,
             "reps_group": reps_group,
             "replace_rnd_files": replace_rnd_files,
+            "verbose": verbose,
             "created_at": None,
             "started_at": None,
             "completed_at": None,
@@ -130,7 +132,8 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                      rsa_method="kendall", dis_method="mahalanobis",
                      mah_fold="stim-wise", participant=None,
                      radius=None, mask_type=None,
-                     replace_file=False, replace_rnd_files=False):
+                     replace_file=False, replace_rnd_files=False,
+                     verbose=True):
     """Build a single, *independent* job dict (no dependencies, status=pending).
 
     Used by the dashboard's "schedule missing" / per-map buttons: the user has
@@ -171,6 +174,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
         "mask_type": mask_type,
         "replace_file": replace_file,
         "replace_rnd_files": replace_rnd_files,
+        "verbose": verbose,
         "created_at": None,
         "started_at": None,
         "completed_at": None,

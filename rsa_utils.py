@@ -5224,9 +5224,14 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     log_json['perc_available'] = available_percentage
     log_json['output_mean_file'] = mean_model_map_path
     log_json['output_std_file'] = std_model_map_path
+    
+    # get mask
+    mask = os.path.join(datafolder, dataset, 'ROI', specie, mask_type)
+    mask_img = nib.load(mask).get_fdata().astype(bool)
+
     # calculate mean model similarity map by averaging all files in files_list
-    # nifti_mean(files_list, mean_model_map_path, std_model_map_path, mask_img=mask_img)
-    nifti_mean(files_list, mean_model_map_path, std_model_map_path)
+    nifti_mean(files_list, mean_model_map_path, std_model_map_path, mask_img=mask_img)
+    # nifti_mean(files_list, mean_model_map_path, std_model_map_path)
     #mask_img
 
     print("Done computing mean and std model similarity maps.")

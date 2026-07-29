@@ -60,6 +60,10 @@ def build_command(job, git_folder, python_exe, marker_dir):
         # in a different order rather than racing the other instance
         # file-by-file.
         cmd.append("--shuffle_participants")
+    if job.get("verbose", True):
+        # verbose defaults to True on jobs built via scheduler/dag.py; older
+        # queued job files without the field also get --verbose via this default.
+        cmd.append("--verbose")
     return cmd
 
 

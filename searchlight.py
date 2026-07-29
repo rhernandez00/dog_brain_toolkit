@@ -316,16 +316,7 @@ def main():
         task = dataset
     else:
         task = args.task
-
-    # # if user provided rsa_model
-    # if rsa_model is not None:
-    #     # check if rsa_model ends with -basic if it does, model is basic
-    #     if rsa_model.endswith('-basic'):
-    #         model = 'basic'
-    #     else:
-    #         model = 'basic-block'
     
-
     if os.name == 'nt':  # Windows
         datafolder = os.path.join(
             "P:\\userdata", 'raulh87', 'data'

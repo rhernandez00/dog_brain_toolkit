@@ -56,7 +56,7 @@ DEFAULT_SOURCE = {
     # NOT Atlas/Hum/MNI/b_greyMatter2mmB.nii.gz -- despite the name, that file
     # holds {-1, 0, 1} (145312 voxels > 0), not a clean binary mask. This one is
     # {0, 1} only (171094 voxels) and sits on the identical grid.
-    'H': os.path.join('Atlas', 'Hum', 'greyMatter2mm.nii.gz'),
+    'H': os.path.join('Atlas', 'Hum', 'GreyMatter2mm.nii.gz'),
     'D': os.path.join('Atlas', 'Dog', 'Nitzsche', 'b_GreyMatter2mmB.nii.gz'),
 }
 
@@ -187,10 +187,10 @@ def main():
                 print(f"\nNOTE: {dest_dir} contains {name}, which differs from\n"
                       f"      {want} only by case. searchlight.py --mask_type "
                       f"{args.mask_type} expects {want} exactly.\n"
-                      "      On a case-insensitive filesystem (Windows) this run will "
-                      "correct the on-disk name.\n"
-                      "      On a case-sensitive one (Linux) it will not touch this "
-                      "file -- delete it manually once step 1 has been re-run.")
+                      "      This tool will not rename it -- on a case-insensitive "
+                      "filesystem (Windows) the write below will land in that same "
+                      "file and this note will repeat as an error; on a case-sensitive "
+                      "one (Linux) rename or delete it by hand.")
 
     if args.dry_run:
         print("\n--dry_run: nothing written.")
@@ -210,18 +210,17 @@ def main():
     # On a case-insensitive filesystem, writing 'b_GreyMatter2mmB.nii.gz' over an
     # existing 'b_greyMatter2mmB.nii.gz' updates that file's *content* but leaves
     # its *name* however it was on disk -- Windows folds the two into one entry,
-    # so nib.save silently keeps the old casing. Detect that (the literal name we
-    # asked for is absent from the directory listing) and force it via a
-    # throwaway rename, so the shared disk is also correct for the Linux mount.
-    # On a genuinely case-sensitive filesystem `want` is already present after
-    # nib.save, so this never touches an unrelated stray file left over there.
+    # so nib.save silently keeps the old casing. Report that rather than fixing
+    # it: renaming on a shared network disk is the kind of thing to do by hand,
+    # not something a script should do silently on your behalf.
     entries = os.listdir(dest_dir)
     if want not in entries:
         actual = next(n for n in entries if n.lower() == want.lower())
-        tmp = os.path.join(dest_dir, f"_casefix_{want}")
-        os.replace(os.path.join(dest_dir, actual), tmp)
-        os.replace(tmp, dest)
-        print(f"Wrote {dest}  (corrected on-disk name from {actual})")
+        print(f"Wrote {dest}")
+        print(f"\nERROR: the file on disk is still named {actual}, not {want} -- this "
+              "filesystem folded the two into one entry, so the content is updated but "
+              f"the name is not. searchlight.py --mask_type {args.mask_type} needs the "
+              f"exact name {want}; rename {actual} to that by hand.")
     else:
         print(f"Wrote {dest}")
 
