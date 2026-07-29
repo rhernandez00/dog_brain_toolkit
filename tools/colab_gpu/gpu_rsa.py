@@ -44,6 +44,102 @@ DTYPE = torch.float64
 
 
 # ===========================================================================
+# Voxel-grid validation
+#
+# Mirror of ``rsa_utils.check_same_space`` -- duplicated rather than imported
+# because Colab packages ship only this file (see tools/create_package.py).
+# Keep the two in sync.
+#
+# Every image combined here is combined by array index: the mask selects voxels
+# by position, crossnobis folds subtract run means element-wise, and the output
+# volume is written with a single affine. All of it is only meaningful if the
+# mask and every beta map sit on the same voxel grid -- same shape AND same
+# affine. Matching shapes prove nothing: FSL first-level ``stats/pe*.nii.gz``
+# stay in scanner-native space, a different grid per run, all the same shape.
+# ===========================================================================
+SPACE_TOLERANCE_MM = 0.5
+
+
+class SpaceMismatchError(ValueError):
+    """Raised when images that must share a voxel grid do not."""
+
+
+def grid_offset_mm(affine_a, affine_b, shape):
+    """Worst-case displacement in mm between two voxel grids over a volume."""
+    shape = tuple(int(s) for s in shape[:3])
+    corners = np.array(list(itertools.product(*[(0, s - 1) for s in shape])), dtype=float)
+    centre = (np.array(shape, dtype=float) - 1.0) / 2.0
+    points = np.vstack([corners, centre])
+    hom = np.c_[points, np.ones(len(points))]
+    pos_a = (np.asarray(affine_a, dtype=float) @ hom.T).T[:, :3]
+    pos_b = (np.asarray(affine_b, dtype=float) @ hom.T).T[:, :3]
+    return float(np.linalg.norm(pos_a - pos_b, axis=1).max())
+
+
+def check_same_space(reference, images, context="", tolerance_mm=SPACE_TOLERANCE_MM,
+                     strict=True):
+    """Verify every (label, image) in `images` is on the same grid as `reference`.
+
+    `reference` is a (label, nibabel image) pair. Raises SpaceMismatchError with
+    a diagnostic listing on any mismatch; returns True otherwise. With
+    ``strict=False`` (manifest key ``allow_space_mismatch``, set by
+    ``create_package.py --allow_space_mismatch``) it warns and returns False
+    instead -- the images are then combined by array index regardless of their
+    affines.
+    """
+    ref_label, ref_img = reference
+    ref_shape, ref_affine = tuple(ref_img.shape[:3]), ref_img.affine
+
+    problems = []
+    for label, img in images:
+        shape = tuple(img.shape[:3])
+        if shape != ref_shape:
+            problems.append(f"  {label}: shape {shape} != {ref_shape}")
+            continue
+        offset = grid_offset_mm(img.affine, ref_affine, ref_shape)
+        if offset > tolerance_mm:
+            problems.append(f"  {label}: same shape but grid is {offset:.1f} mm away")
+
+    if not problems:
+        return True
+
+    shown = problems[:12]
+    if len(problems) > len(shown):
+        shown.append(f"  ... and {len(problems) - len(shown)} more")
+    message = (
+        f"Voxel-grid mismatch{' in ' + context if context else ''}.\n"
+        f"Reference grid: {ref_label}\n" + "\n".join(shown)
+        + "\n\nThese images are combined by array index (masking, crossnobis "
+          "folds), so they must share one grid. Images that merely share a "
+          "shape are NOT in the same space.\n"
+          "Most common cause: FSL first-level stats were never resampled into "
+          "template space -- FEAT with regstandard_yn=1 only estimates the "
+          "transform. Fix the dataset before packaging: run "
+          "tools/check_space.py on the pipeline machine.\n"
+          "To package and run anyway: create_package.py --allow_space_mismatch."
+    )
+    if strict:
+        raise SpaceMismatchError(message)
+    print(f"WARNING: {message}")
+    return False
+
+
+def load_reference_mask(data_root, manifest):
+    """Load the searchlight mask -- it defines THE reference voxel grid.
+
+    Returns ``(mask_img, mask_bool)``. Every beta map and every step-1 map is
+    validated against ``mask_img``, and every output volume is written with
+    ``mask_img.affine``. Taking the affine from whichever input happened to be
+    loaded first is what made GPU and CPU outputs disagree by several mm.
+    """
+    dataset, specie, mask_type = (
+        manifest["dataset"], manifest["specie"], manifest["mask_type"])
+    mask_path = os.path.join(data_root, dataset, "ROI", specie, f"{mask_type}.nii.gz")
+    mask_img = nib.load(mask_path)
+    return mask_img, np.asarray(mask_img.dataobj).astype(bool)
+
+
+# ===========================================================================
 # small helpers
 # ===========================================================================
 def pick_device(prefer_gpu=True):
@@ -194,22 +290,33 @@ def batched_crossnobis(U):
 # ===========================================================================
 # Step 1 -- crossnobis searchlight over the mask
 # ===========================================================================
-def _beta_path(data_root, dataset, model, specie, sub_N, session, run_N, task, stim_index):
-    """Path to a single GLM beta (pe) map -- pe{(i+1)*2-1}, matching the CPU code."""
+def _beta_path(data_root, dataset, model, specie, sub_N, session, run_N, task, stim):
+    """Path to one aligned beta map, matching ``rsa_utils.beta_map_path``.
+
+    Packages carry the step-0.5 layout (``beta_{stim}.nii.gz`` per run folder),
+    never the raw FEAT ``stats/pe*`` files -- those are in scanner-native space
+    for humans, one grid per run.
+    """
     return os.path.join(
         data_root, dataset, "results", "GLM", model,
         f"{specie}-sub-{sub_N:02d}",
-        f"ses-{int(session):02d}_task-{task}_run-{int(run_N):02d}.feat",
-        "stats", f"pe{(stim_index + 1) * 2 - 1}.nii.gz",
+        f"ses-{int(session):02d}_task-{task}_run-{int(run_N):02d}",
+        f"beta_{stim}.nii.gz",
     )
 
 
-def _load_category_means(data_root, manifest, mask_bool):
+def _load_category_means(data_root, manifest, mask_bool, ref_img=None):
     """Build the (M, C, V_flat) tensor of per-run, per-category mean beta patterns.
 
     Averaging over a category's exemplars commutes with the sphere gather, so we
     precompute the C category-mean volumes per partition instead of loading every
     beta per voxel. Returns (means (M, C, V), affine, categories, partitions).
+
+    ``ref_img`` is the mask image; it defines the reference voxel grid. Every beta
+    map is validated against it and the returned affine is ``ref_img.affine``, so
+    the output header does not depend on file ordering. When it is None the first
+    beta map becomes the reference, which still catches the case of one
+    participant's runs sitting on different native grids.
 
     Partitions are the unique ``run_N`` values, NOT the (session, run_N) entries:
     the CPU pipeline appends ``run_N`` as the crossnobis partition
@@ -234,20 +341,32 @@ def _load_category_means(data_root, manifest, mask_bool):
     V = int(mask_bool.size)
     sums = np.zeros((M, C, V), dtype=np.float64)
     counts = np.zeros((M, C), dtype=np.float64)
-    affine = None
+    loaded = []          # (label, img) for the voxel-grid check below
     for entry in entries:
         pi = part_index[int(entry["run_N"])]
-        for stim_i, stim in enumerate(stim_types):
+        for stim in stim_types:
             path = _beta_path(data_root, dataset, model, specie, sub_N,
-                              entry["session"], entry["run_N"], task, stim_i)
+                              entry["session"], entry["run_N"], task, stim)
             if not os.path.exists(path):
                 raise FileNotFoundError(f"Beta map file not found: {path}")
             img = nib.load(path)
-            if affine is None:
-                affine = img.affine
+            loaded.append((f"ses-{int(entry['session']):02d} "
+                           f"run-{int(entry['run_N']):02d} {stim}", img))
             ci = cat_index[stimwise_category(stim, dataset)]
             sums[pi, ci] += np.asarray(img.dataobj, dtype=np.float64).reshape(-1)
             counts[pi, ci] += 1.0
+
+    # The crossnobis folds below subtract these run means element-wise and the
+    # mask selects voxels by position, so every beta must be on one grid.
+    if ref_img is not None:
+        reference = ("mask", ref_img)
+    else:
+        reference = (f"first beta ({loaded[0][0]})", loaded[0][1])
+    check_same_space(reference, loaded,
+                     context=f"GPU step 1 for {specie}-sub-{sub_N:02d}",
+                     strict=not manifest.get("allow_space_mismatch", False))
+    affine = reference[1].affine
+
     means = sums / counts[:, :, None]
     return means, affine, categories, [{"run_N": rn} for rn in partitions]
 
@@ -323,15 +442,17 @@ def run_step1_mahalanobis(pkg_root, manifest, device=None, batch=1024, verbose=T
     """
     device = device or pick_device()
     data_root = os.path.join(pkg_root, "data")
-    dataset, model, specie, sub_N, radius, mask_type = (
+    dataset, model, specie, sub_N, radius = (
         manifest["dataset"], manifest["model"], manifest["specie"],
-        manifest["sub_N"], manifest["radius"], manifest["mask_type"])
+        manifest["sub_N"], manifest["radius"])
 
-    mask_path = os.path.join(data_root, dataset, "ROI", specie, f"{mask_type}.nii.gz")
-    mask_bool = np.asarray(nib.load(mask_path).dataobj).astype(bool)
+    mask_img, mask_bool = load_reference_mask(data_root, manifest)
 
     t0 = time.time()
-    means, affine, categories, runs = _load_category_means(data_root, manifest, mask_bool)
+    # affine comes back as the mask's -- the reference grid, not "whichever beta
+    # map was loaded first" (that made GPU and CPU headers differ by ~5 mm)
+    means, affine, categories, runs = _load_category_means(
+        data_root, manifest, mask_bool, ref_img=mask_img)
     if verbose:
         print(f"[step1] loaded {len(runs)} runs x {len(categories)} categories in "
               f"{time.time()-t0:.1f}s; mask voxels={int(mask_bool.sum())}, device={device}")
@@ -355,26 +476,39 @@ def run_step1_mahalanobis(pkg_root, manifest, device=None, batch=1024, verbose=T
 # ===========================================================================
 # Correlation path -- per-run Pearson-RDM searchlight (step 1)
 # ===========================================================================
-def _load_run_betas(data_root, manifest, entry, mask_bool):
+def _load_run_betas(data_root, manifest, entry, mask_bool, ref_img=None):
     """Load the participant's stim beta volumes for one run -> (n_stim, V) float64
-    plus the affine. Order follows ``manifest['stim_types']``."""
+    plus the affine. Order follows ``manifest['stim_types']``.
+
+    ``ref_img`` is the mask image defining the reference voxel grid; every beta is
+    validated against it and the returned affine is the mask's, so the output
+    header does not depend on which file was read first."""
     dataset, model, specie, sub_N, task = (
         manifest["dataset"], manifest["model"], manifest["specie"],
         manifest["sub_N"], manifest["task"])
     stim_types = manifest["stim_types"]
     V = int(mask_bool.size)
     betas = np.zeros((len(stim_types), V), dtype=np.float64)
-    affine = None
-    for i in range(len(stim_types)):
+    loaded = []
+    for i, stim in enumerate(stim_types):
         path = _beta_path(data_root, dataset, model, specie, sub_N,
-                          entry["session"], entry["run_N"], task, i)
+                          entry["session"], entry["run_N"], task, stim)
         if not os.path.exists(path):
             raise FileNotFoundError(f"Beta map file not found: {path}")
         img = nib.load(path)
-        if affine is None:
-            affine = img.affine
+        loaded.append((f"{stim} ({os.path.basename(path)})", img))
         betas[i] = np.asarray(img.dataobj, dtype=np.float64).reshape(-1)
-    return betas, affine
+
+    if ref_img is not None:
+        reference = ("mask", ref_img)
+    else:
+        reference = (f"first beta ({loaded[0][0]})", loaded[0][1])
+    check_same_space(
+        reference, loaded,
+        context=(f"GPU step 1 (correlation) for {specie}-sub-{sub_N:02d} "
+                 f"ses-{int(entry['session']):02d} run-{int(entry['run_N']):02d}"),
+        strict=not manifest.get("allow_space_mismatch", False))
+    return betas, reference[1].affine
 
 
 def pearson_rdm_searchlight(betas, mask_bool, radius, device=None, batch=1024,
@@ -447,14 +581,13 @@ def run_step1_correlation(pkg_root, manifest, device=None, batch=1024, verbose=T
     """
     device = device or pick_device()
     data_root = os.path.join(pkg_root, "data")
-    dataset, model, specie, sub_N, radius, task, mask_type = (
+    dataset, model, specie, sub_N, radius, task = (
         manifest["dataset"], manifest["model"], manifest["specie"], manifest["sub_N"],
-        manifest["radius"], manifest["task"], manifest["mask_type"])
+        manifest["radius"], manifest["task"])
     stim_types = manifest["stim_types"]
     pairs = canonical_pairs(stim_types)                                 # 780 for 40 stims
 
-    mask_path = os.path.join(data_root, dataset, "ROI", specie, f"{mask_type}.nii.gz")
-    mask_bool = np.asarray(nib.load(mask_path).dataobj).astype(bool)
+    mask_img, mask_bool = load_reference_mask(data_root, manifest)
     shape = mask_bool.shape
     nvox_total = int(np.prod(shape))
 
@@ -463,7 +596,8 @@ def run_step1_correlation(pkg_root, manifest, device=None, batch=1024, verbose=T
     for entry in manifest["runs"]:
         session = f"{int(entry['session']):02d}"
         run_N = int(entry["run_N"])
-        betas, affine = _load_run_betas(data_root, manifest, entry, mask_bool)
+        betas, affine = _load_run_betas(data_root, manifest, entry, mask_bool,
+                                        ref_img=mask_img)
         dist, mask_flat = pearson_rdm_searchlight(betas, mask_bool, radius,
                                                   device=device, batch=batch,
                                                   verbose=verbose)
@@ -502,7 +636,8 @@ def _load_pairwise_map(data_root, manifest, cat1, cat2):
     if path is None:
         raise FileNotFoundError(f"Missing step-1 map for {cat1} vs {cat2} under {base}")
     img = nib.load(path)
-    return np.asarray(img.dataobj, dtype=np.float64).reshape(-1), img.affine, img.shape
+    return (np.asarray(img.dataobj, dtype=np.float64).reshape(-1), img,
+            os.path.basename(path))
 
 
 def load_meta_similarity(data_root, manifest, device):
@@ -511,22 +646,25 @@ def load_meta_similarity(data_root, manifest, device):
     Returns ``(data (n_vox, 45) tensor, mask_flat_indices, shape, affine)`` in the
     canonical pair order used by every model.
     """
-    dataset, specie, mask_type = manifest["dataset"], manifest["specie"], manifest["mask_type"]
-    mask_path = os.path.join(data_root, dataset, "ROI", specie, f"{mask_type}.nii.gz")
-    mask_bool = np.asarray(nib.load(mask_path).dataobj).astype(bool)
+    mask_img, mask_bool = load_reference_mask(data_root, manifest)
     shape = mask_bool.shape
     mask_flat = np.flatnonzero(mask_bool.reshape(-1))
 
     pairs = canonical_pairs(manifest["categories"])
-    affine = None
-    cols = []
+    cols, loaded = [], []
     for (c1, c2) in pairs:
-        vol, aff, _ = _load_pairwise_map(data_root, manifest, c1, c2)
-        affine = aff if affine is None else affine
+        vol, img, name = _load_pairwise_map(data_root, manifest, c1, c2)
+        loaded.append((name, img))
         cols.append(vol[mask_flat])
+    # these are stacked into one per-voxel matrix and the result is written with
+    # the mask's affine, so they must already be on the mask's grid
+    check_same_space(("mask", mask_img), loaded,
+                     context=f"GPU step 2/4 for {manifest['specie']}-sub-"
+                             f"{manifest['sub_N']:02d}",
+                     strict=not manifest.get("allow_space_mismatch", False))
     data = np.stack(cols, axis=1)                       # (n_vox, 45)
     data_t = torch.as_tensor(data, dtype=DTYPE, device=device)
-    return data_t, mask_flat, shape, affine
+    return data_t, mask_flat, shape, mask_img.affine
 
 
 def load_meta_correlation(data_root, manifest, device, verbose=False):
@@ -536,23 +674,22 @@ def load_meta_correlation(data_root, manifest, device, verbose=False):
     'affine', 'mask_flat'}`` where each ``data`` is a CPU float32 (n_vox, 780)
     tensor (kept off the GPU; ``run_model_correlation`` moves one run at a time).
     """
-    dataset, model, specie, sub_N, radius, task, mask_type = (
+    dataset, model, specie, sub_N, radius, task = (
         manifest["dataset"], manifest["model"], manifest["specie"], manifest["sub_N"],
-        manifest["radius"], manifest["task"], manifest["mask_type"])
-    mask_path = os.path.join(data_root, dataset, "ROI", specie, f"{mask_type}.nii.gz")
-    mask_bool = np.asarray(nib.load(mask_path).dataobj).astype(bool)
+        manifest["radius"], manifest["task"])
+    mask_img, mask_bool = load_reference_mask(data_root, manifest)
     shape = mask_bool.shape
     mask_flat = np.flatnonzero(mask_bool.reshape(-1))
     pairs = canonical_pairs(manifest["categories"])                  # 780 stim pairs
 
-    runs_out, affine = [], None
+    runs_out = []
     for entry in manifest["runs"]:
         session = f"{int(entry['session']):02d}"
         run_N = int(entry["run_N"])
         base = os.path.join(data_root, dataset, "results", "RSA", model,
                             f"{specie}-sub-{sub_N:02d}",
                             f"ses-{session}_task-{task}_run-{run_N:02d}")
-        cols = []
+        cols, loaded = [], []
         for (s1, s2) in pairs:
             a = os.path.join(base, f"r-{radius}_correlation_{s1}_{s2}.nii.gz")
             b = os.path.join(base, f"r-{radius}_correlation_{s2}_{s1}.nii.gz")
@@ -560,15 +697,19 @@ def load_meta_correlation(data_root, manifest, device, verbose=False):
             if path is None:
                 raise FileNotFoundError(f"Missing step-1 correlation map {s1} vs {s2} in {base}")
             img = nib.load(path)
-            if affine is None:
-                affine = img.affine
+            loaded.append((os.path.basename(path), img))
             cols.append(np.asarray(img.dataobj, dtype=np.float64).reshape(-1)[mask_flat])
+        check_same_space(("mask", mask_img), loaded,
+                         context=(f"GPU step 2/4 (correlation) for {specie}-sub-"
+                                  f"{sub_N:02d} ses-{session} run-{run_N:02d}"),
+                         strict=not manifest.get("allow_space_mismatch", False))
         data = np.stack(cols, axis=1).astype(np.float32)             # (n_vox, 780)
         runs_out.append({"session": entry["session"], "run_N": run_N,
                          "data": torch.as_tensor(data), "mask_flat": mask_flat})
         if verbose:
             print(f"[meta-corr] loaded ses-{session} run-{run_N:02d}")
-    return {"runs": runs_out, "shape": shape, "affine": affine, "mask_flat": mask_flat}
+    return {"runs": runs_out, "shape": shape, "affine": mask_img.affine,
+            "mask_flat": mask_flat}
 
 
 def load_meta(data_root, manifest, device):

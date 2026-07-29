@@ -53,7 +53,8 @@ Before running, the following must already exist on the shared data disk:
 | Dataset config YAML | `{datafolder}/{dataset}/config_files/{specie}_{model}.yaml` |
 | RSA model CSV (steps 2+) | `{datafolder}/{dataset}/rsa_models/{rsa_model}.csv` |
 | Brain mask | see [§5 Masks](#5-masks) |
-| Beta maps | Dogs: produced by step 0. Humans: must pre-exist. |
+| Beta maps | Dogs: produced by step 0. Humans: FSL first-level output must pre-exist. |
+| Aligned beta maps | Produced by step 0.5 from the above — required by steps 1+ and by Colab packages. See [§5.1](#51-voxel-grid-invariant). |
 
 The data folder is resolved automatically from the OS:
 
@@ -77,6 +78,7 @@ upstream outputs already exist.
 | Step | Label | `rsa_utils` function | Notes |
 |---|---|---|---|
 | **0** | Beta maps | `calculate_beta_maps` | **Dogs only**; humans have pre-existing beta maps. |
+| **0.5** | Aligned beta maps | `calculate_aligned_beta_maps` | Writes `beta_{stim}.nii.gz` on the template grid. **Humans need FSL → Linux only.** Run once per dataset; see [§5.1](#51-voxel-grid-invariant). |
 | **1** | Pairwise similarity maps | `calculate_pairwise_similarity_maps2` | Most expensive step; independent of the RSA model. |
 | **2** | Model similarity (real) | `compare_with_model2(rnd=False)` | Requires `--rsa_model`. |
 | **3** | Group model similarity map | `calculate_group_model_similarity_map` | Averages step 2 across participants. |
@@ -95,13 +97,16 @@ upstream outputs already exist.
 ### Dependency graph (steps 0–10)
 
 ```
-0 → 1 → 2 → 3 ↘
-        ↓        7 → 8 → 9 → 10
-        4 → 5 → 6 ↗
+0 → 0.5 → 1 → 2 → 3 ↘
+              ↓        7 → 8 → 9 → 10
+              4 → 5 → 6 ↗
 ```
 
 - Step **7** requires step **3** (real data) **and** step **6** (null distribution).
 - Step **9** requires step **7** (z-map) **and** step **8** (cluster distribution).
+- Step **0.5** is a one-time migration per dataset, not part of the per-RSA-model
+  loop. Once it has run, steps 1+ read its output and the `.feat` directories can
+  be deleted.
 
 > **Note on step 7.5:** Passing `--steps_to_run 75` triggers the "step 7.5" block
 > (real-data z-map only). This is a naming quirk — `75` is the literal integer the
@@ -165,6 +170,7 @@ upstream outputs already exist.
 | `--coords` | `None` | Voxel-space coords `x,y,z` for similarity files. |
 | `--peak_id` | `None` | Peak id for step 12 (else derived from `roi_database.csv`). |
 | `--job_marker_dir` | `None` | Directory for step completion markers (scheduler). |
+| `--allow_space_mismatch` | off | Downgrade the voxel-grid check to a warning. See [§5.1](#51-voxel-grid-invariant). |
 
 ---
 
@@ -183,6 +189,60 @@ The `--mask_type` argument selects which voxels enter the searchlight:
 For **step 1** specifically, if the mask is not a grey-matter mask it is
 automatically swapped for `b_GreyMatter2mmB`, because the searchlight must run over
 the full grey-matter volume.
+
+### 5.1 Voxel-grid invariant
+
+The mask and **every beta map of every run of every participant must sit on the
+same voxel grid** — same shape *and* same affine. Steps 1–3 combine images by
+array index (`data[mask_bool]`, crossnobis folds across runs, group averaging)
+and never resample, so a grid mismatch yields a map that looks normal but is
+anatomically meaningless.
+
+Matching shapes are **not** sufficient. FSL first-level output is the usual
+offender: `fmri(regstandard_yn) 1` only *estimates* the transform into template
+space and stores it in `reg/`; `stats/pe*.nii.gz` remain in scanner-native space,
+a different grid per run. Dogs comply because their data is pre-normalised into
+Nitzsche space — humans generally do not.
+
+Measured on EmoC: dogs are clean (98 runs, one shape, one affine). Humans were
+not — 239 runs all 96×96×52, but **111 distinct affines**, spread up to 72 mm
+across the dataset and up to **58 mm within a single participant**.
+
+Steps 1–3 raise `rsa_utils.SpaceMismatchError` on any mismatch. Check a dataset
+before committing compute:
+
+```bash
+python tools/check_space.py --dataset EmoC --specie H --model basic-block
+```
+
+**To comply, run step 0.5, rebuild the mask, then re-run from step 1.** Step-1
+outputs produced on mismatched grids are already wrong — restarting at step 2
+does not fix them.
+
+```bash
+python searchlight.py --dataset EmoC --model basic-block --specie H --steps_to_run 0.5
+```
+
+Step 0.5 applies the transform FEAT already computed
+(`reg/example_func2standard.mat` onto `reg/standard.nii.gz`, via
+`flirt -applyxfm`) and writes `beta_{stim}.nii.gz` into a run folder beside the
+`.feat`. It needs FSL, so for humans it runs on the **Linux machine only**; the
+output lands on the shared disk, so Windows can run steps 1+ afterwards. For dogs
+it copies the pe maps unchanged, since they are already in Nitzsche space.
+
+Then put the mask on that same grid:
+
+```bash
+python tools/make_mask.py --dataset EmoC --specie H
+```
+
+Watch out for the mask filename: `ROI/D/` holds `b_GreyMatter2mmB.nii.gz` while
+`ROI/H/` holds `b_greyMatter2mmB.nii.gz`, and `--mask_type` defaults to the
+capital-G spelling. Windows resolves either; **Linux does not**. `make_mask.py`
+warns when it finds a case-variant.
+
+`--allow_space_mismatch` downgrades the error to a warning. It exists only to
+reproduce legacy runs; results produced with it are not valid.
 
 ---
 

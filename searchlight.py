@@ -130,6 +130,13 @@ def _check_log_params(
 '''
 Steps possible:
 0: Compute beta maps by participant/session/run
+0.5: Materialise the beta maps on the template grid as beta_{stim}.nii.gz, one
+    run folder per run, next to the .feat. Humans: applies the EPI->MNI transform
+    FEAT already estimated (reg/example_func2standard.mat) -- FEAT leaves
+    stats/pe*.nii.gz in scanner-native space, one grid per run, so this is what
+    makes the human data satisfy the one-voxel-grid invariant. Dogs: copies the
+    pe maps, which are already in Nitzsche space. Needs FSL, so humans are
+    Linux-only. Run it once per dataset; afterwards the .feat can be deleted.
 1: Compute pairwise similarity maps between beta maps by participant
 2: Compute similarity between pairwise similarity maps and a model by participant
 3: Calculate group model similarity map
@@ -149,7 +156,10 @@ std across maps. Save as nifti.
 
 
 Input arguments:
---steps_to_run: List of steps to run (default: [1,2,3,4,5,6,7,8,9,10])
+--steps_to_run: List of steps to run (default: [1,2,3,4,5,6,7,8,9,10]). Accepts
+    fractional steps, e.g. --steps_to_run 0.5
+--beta_interp: Step 0.5 only, flirt interpolation for resampling beta maps into
+    template space (default: 'trilinear')
 --model: GLM model to use (default: 'basic')
 --dis_method: Method for pairwise similarity calculation (default: 'mahalanobis')
 --rsa_model: RSA model to use
@@ -210,6 +220,10 @@ def parse_arguments():
                         help="'D' for Dog, 'H' for Human")
     parser.add_argument('--mask_type', type=str, default='b_GreyMatter2mmB',
                         help='Type of brain mask to use')
+    parser.add_argument('--beta_interp', type=str, default='trilinear',
+                        choices=['trilinear', 'nearestneighbour', 'sinc', 'spline'],
+                        help='Step 0.5 only: flirt interpolation used to resample beta '
+                             'maps into template space (default: trilinear)')
     parser.add_argument('--radius', type=int, default=None,
                         help='Radius for searchlight')
     parser.add_argument('--z_threshold', type=float, default=3.1,
@@ -236,6 +250,12 @@ def parse_arguments():
                         help='From step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100 percent of the participants where available)')
     parser.add_argument('--shuffle_runs', action='store_true',
                         help='Shuffle runs order in permutations (only for step 1)')
+    parser.add_argument('--allow_space_mismatch', action='store_true',
+                        help=('Downgrade the voxel-grid check to a warning. The pipeline combines '
+                              'beta maps, masks and subject maps by array index, which is only valid '
+                              'when they share one grid (same shape AND same affine); by default a '
+                              'mismatch is fatal. Use only to reproduce legacy runs -- results '
+                              'produced with this flag are not anatomically valid.'))
     parser.add_argument('--participants_forced', type=int, nargs='+', default=[],
                         help='List of participants to include')
     parser.add_argument('--verbose', action='store_true',
@@ -338,6 +358,11 @@ def main():
     reload(rsa_utils)
     # import utils_EmoB
     # reload(utils_EmoB)
+
+    # Every step that combines images does so by array index, so all inputs must
+    # share one voxel grid. Enforce that unless the user explicitly opts out.
+    # Must come after reload(), which resets the module-level policy.
+    rsa_utils.set_space_check(strict=not args.allow_space_mismatch)
 
 
     project_dict = {
@@ -516,6 +541,52 @@ def main():
                     print(f"Finished sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}...")
             print("#### Done computing beta maps ####")
             _write_marker(job_marker_dir, 0)
+
+        if step == 0.5: # materialise beta maps on the template grid
+            print("### Step 0.5: Writing aligned beta maps ###")
+            if specie == 'H':
+                print("Humans: applying reg/example_func2standard.mat with flirt "
+                      "(FEAT leaves stats/pe*.nii.gz in scanner-native space).")
+            else:
+                print("Dogs: copying pe maps (already in template space, no transform).")
+
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
+
+            n_runs, failed = 0, []
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                for entry in session_and_run_dict:
+                    session = entry['session']
+                    run_N = entry['run_N']
+                    try:
+                        rsa_utils.calculate_aligned_beta_maps(
+                            datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                            stim_types, interp=args.beta_interp,
+                            replace_file=replace_file, verbose=verbose)
+                        n_runs += 1
+                    except rsa_utils.FslUnavailableError:
+                        # FSL missing / running on Windows -- identical for every
+                        # run, so stop rather than print 239 copies of it. Per-run
+                        # failures fall through to the collector below.
+                        raise
+                    except Exception as e:
+                        print(f"Error on sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}: {e}")
+                        failed.append((sub_N, session, run_N, str(e)))
+                print(f"Finished sub-{sub_N:02d}...")
+
+            print(f"#### Done: {n_runs} runs written, {len(failed)} failed ####")
+            if failed:
+                for sub_N, session, run_N, err in failed:
+                    print(f"  FAILED sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}: {err}")
+                # Step 1 would silently fall back to the raw .feat for these runs,
+                # so a partial step 0.5 must not report success.
+                raise RuntimeError(
+                    f"Step 0.5 failed for {len(failed)} of {n_runs + len(failed)} runs; "
+                    "step 1 would fall back to unaligned FEAT output for those."
+                )
+            _write_marker(job_marker_dir, 0.5)
+
         if step == 1: # compute pairwise similarity maps between beta maps by participant
             print("### Step 1: Computing pairwise similarity maps ###")
 
@@ -543,8 +614,13 @@ def main():
                             rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, [entry],
                                     specie, model, stim_types, mask2, task, radius=radius, 
                                     dis_method=dis_method, replace_file=replace_file, mah_fold=mah_fold, 
-                                    verbose=verbose, skip_prefile_check=skip_prefile_check, 
+                                    verbose=verbose, skip_prefile_check=skip_prefile_check,
                                     categories=categories, shuffle_runs=shuffle_runs, model_dict=model_dict)
+                        except rsa_utils.SpaceMismatchError:
+                            # a grid mismatch is a dataset-wide configuration error,
+                            # not a bad subject -- never swallow it, or the step would
+                            # report success and write its completion marker
+                            raise
                         except Exception as e:
                             print(f"Error processing sub-{sub_N:02d} ses-{session:02d} run-{run_N:02d}: {e}")
 
@@ -554,6 +630,9 @@ def main():
                                     specie, model, stim_types, mask2, task, radius=radius, 
                                     dis_method=dis_method, replace_file=replace_file, mah_fold=mah_fold, 
                                     verbose=verbose, skip_prefile_check=skip_prefile_check, categories=categories, shuffle_runs=shuffle_runs, model_dict=model_dict)
+                    except rsa_utils.SpaceMismatchError:
+                        # dataset-wide configuration error, not a bad subject -- see above
+                        raise
                     except Exception as e:
                         print(f"Error processing sub-{sub_N:02d}: {e}")
                 

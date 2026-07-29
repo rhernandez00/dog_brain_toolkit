@@ -38,6 +38,27 @@ the same *scheme* as `rsa_utils.shuffle_vector` (permute category labels) with t
 own deterministic seed, so they are a valid draw from the same null, not
 bit-identical to a CPU rerun.
 
+## Output geometry
+
+Every output volume is written with the **mask's affine** — the mask is the single
+reference voxel grid, and `check_same_space()` verifies that every beta map and
+every step-1 map sits on it before anything is computed.
+
+This used to be "whichever input image was loaded first", while the CPU used
+"whichever was loaded last". On a compliant dataset those are the same grid and it
+made no difference; on EmoC humans — where each run's betas are in a different
+scanner-native space — GPU and CPU maps came out numerically identical but with
+headers 5.2 mm apart, which looks like a shift or artifact in a viewer. The check
+now refuses such a dataset outright, on both paths. `check_same_space` here is a
+deliberate copy of `rsa_utils.check_same_space` (packages ship only `gpu_rsa.py`,
+so it cannot import the toolkit) — **keep the two in sync**.
+
+Check a dataset before packaging:
+
+```bash
+python tools/check_space.py --dataset EmoC --specie H --model basic-block
+```
+
 ## Files
 
 | File | What it is |

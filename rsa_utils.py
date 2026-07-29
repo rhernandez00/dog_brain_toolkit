@@ -1,6 +1,9 @@
 import utils
+import datetime
 import glob
+import json
 import os
+import subprocess
 import sys
 import nibabel as nib
 import yaml
@@ -8,7 +11,6 @@ import pandas as pd
 import numpy as np
 import os
 import numpy as np
-from nilearn.image import resample_to_img
 from time import time, perf_counter
 import shutil
 # import random
@@ -18,6 +20,283 @@ import warnings
 import numpy as np
 from scipy import ndimage                                                                                                                                      
 import preprocess_functions
+import itertools
+
+
+# ---------------------------------------------------------------------------
+# Voxel-grid validation
+#
+# The whole RSA pipeline combines images by array index: the mask selects
+# voxels with ``data[mask_bool]``, crossnobis folds subtract beta maps run by
+# run, and the group step averages subject maps element-wise. Every one of
+# those operations is only meaningful if all the images involved sit on the
+# *same voxel grid* -- same shape AND same affine.
+#
+# Nothing in the pipeline ever resampled to enforce that, and the only checks
+# that existed compared shapes. Two images can share a shape and still be tens
+# of millimetres apart (e.g. FSL first-level ``stats/pe*.nii.gz`` are left in
+# scanner-native space, one grid per run), which produced silently wrong
+# results instead of an error. These helpers make that condition fatal.
+# ---------------------------------------------------------------------------
+
+#: Max tolerated displacement between two voxel grids, in millimetres.
+SPACE_TOLERANCE_MM = 0.5
+
+_SPACE_CHECK = {'strict': True, 'tolerance_mm': SPACE_TOLERANCE_MM}
+
+
+class SpaceMismatchError(ValueError):
+    """Raised when images that must share a voxel grid do not."""
+
+
+class FslUnavailableError(RuntimeError):
+    """Raised when a step needs FSL and it is not usable on this machine.
+
+    Distinct from a per-run failure: this condition is identical for every run,
+    so callers should stop immediately instead of collecting hundreds of copies
+    of the same error.
+    """
+
+
+def set_space_check(strict=True, tolerance_mm=SPACE_TOLERANCE_MM):
+    '''Set the pipeline-wide policy for voxel-grid validation.
+
+    strict: bool. If True (default) a grid mismatch raises SpaceMismatchError.
+        If False it only prints a warning -- results computed this way are not
+        anatomically valid, so only use it to reproduce legacy runs.
+    tolerance_mm: float. Maximum displacement between two grids, in mm, that is
+        still treated as "the same space". Guards against float32/float64
+        round-trips in NIfTI headers, not against real misregistration.
+    '''
+    _SPACE_CHECK['strict'] = bool(strict)
+    _SPACE_CHECK['tolerance_mm'] = float(tolerance_mm)
+    if not _SPACE_CHECK['strict']:
+        print("WARNING: voxel-grid validation disabled (allow_space_mismatch). "
+              "Images will be combined by array index regardless of their affines.")
+
+
+def grid_offset_mm(affine_a, affine_b, shape):
+    '''Worst-case displacement in mm between two voxel grids over a volume.
+
+    Compares where the two affines place the same voxel indices, sampling the
+    eight corners and the centre of `shape`. Returns the largest distance.
+    '''
+    shape = tuple(int(s) for s in shape[:3])
+    corners = np.array(list(itertools.product(*[(0, s - 1) for s in shape])), dtype=float)
+    centre = (np.array(shape, dtype=float) - 1.0) / 2.0
+    points = np.vstack([corners, centre])
+    hom = np.c_[points, np.ones(len(points))]
+    pos_a = (np.asarray(affine_a, dtype=float) @ hom.T).T[:, :3]
+    pos_b = (np.asarray(affine_b, dtype=float) @ hom.T).T[:, :3]
+    return float(np.linalg.norm(pos_a - pos_b, axis=1).max())
+
+
+def _as_nifti(image):
+    """Accept a path or a loaded image; return a nibabel image."""
+    if isinstance(image, str):
+        return nib.load(image)
+    return image
+
+
+def check_same_space(reference, images, context='', tolerance_mm=None, strict=None):
+    '''Verify that every image sits on the same voxel grid as `reference`.
+
+    reference: (label, path-or-image). The grid everything is compared against
+        -- normally the searchlight mask.
+    images: iterable of (label, path-or-image) to validate.
+    context: str. Prepended to the error message, e.g. "step 1, H-sub-07".
+    tolerance_mm / strict: override the pipeline policy set by set_space_check.
+
+    Returns True when all grids agree. Raises SpaceMismatchError otherwise
+    (or prints a warning and returns False when strict is disabled).
+    '''
+    if tolerance_mm is None:
+        tolerance_mm = _SPACE_CHECK['tolerance_mm']
+    if strict is None:
+        strict = _SPACE_CHECK['strict']
+
+    ref_label, ref_image = reference
+    ref_img = _as_nifti(ref_image)
+    ref_shape = ref_img.shape[:3]
+    ref_affine = ref_img.affine
+
+    problems = []
+    for label, image in images:
+        img = _as_nifti(image)
+        shape = img.shape[:3]
+        if shape != tuple(ref_shape):
+            problems.append(f"  {label}: shape {shape} != {tuple(ref_shape)}")
+            continue
+        offset = grid_offset_mm(img.affine, ref_affine, ref_shape)
+        if offset > tolerance_mm:
+            problems.append(f"  {label}: same shape but grid is {offset:.1f} mm away")
+
+    if not problems:
+        return True
+
+    shown = problems[:12]
+    if len(problems) > len(shown):
+        shown.append(f"  ... and {len(problems) - len(shown)} more")
+    message = (
+        f"Voxel-grid mismatch{' in ' + context if context else ''}.\n"
+        f"Reference grid: {ref_label}\n"
+        + "\n".join(shown)
+        + "\n\nThe pipeline combines these images by array index (masking, "
+          "crossnobis folds, group averaging), so they must share one grid.\n"
+          "Images that merely share a shape are NOT in the same space.\n\n"
+          "Most common cause: FSL first-level stats were never resampled into "
+          "template space. FEAT with regstandard_yn=1 only estimates the "
+          "transform; stats/pe*.nii.gz stay in scanner-native space, one grid "
+          "per run. Apply the transform FEAT already computed, e.g.\n"
+          "  flirt -in stats/pe1.nii.gz -ref reg/standard.nii.gz \\\n"
+          "        -applyxfm -init reg/example_func2standard.mat -out <out>\n"
+          "(or featregapply on each .feat), write the result to a parallel GLM "
+          "tree, and use a mask on that same grid.\n"
+          "Run tools/check_space.py to see the full picture for a dataset.\n"
+          "To reproduce a legacy run anyway, pass --allow_space_mismatch."
+    )
+    if strict:
+        raise SpaceMismatchError(message)
+    print(f"WARNING: {message}")
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Beta-map location
+#
+# Two layouts exist for the per-run beta maps that feed step 1:
+#
+#   aligned (preferred, written by step 0.5)
+#       .../GLM/{model}/{specie}-sub-{NN}/ses-{ss}_task-{task}_run-{rr}/
+#           beta_{stim}.nii.gz          one file per entry of config stim_types
+#           beta_manifest.json          provenance: source pe, transform, grid
+#
+#   legacy (raw FSL first-level output)
+#       .../GLM/{model}/{specie}-sub-{NN}/ses-{ss}_task-{task}_run-{rr}.feat/
+#           stats/pe{(i+1)*2-1}.nii.gz  odd pe indices; even ones are the
+#                                       temporal derivatives of each EV
+#
+# The legacy layout is what made the voxel-grid problem invisible: it encodes
+# the stimulus only as a position in ``stim_types`` and, for humans, is in
+# scanner-native space (see the block above). The aligned layout names each
+# file after its stimulus and is guaranteed on the template grid, so a run
+# folder stays interpretable after its .feat has been deleted.
+#
+# Everything that reads beta maps must go through ``resolve_beta_map`` so the
+# fallback (and its warning) lives in exactly one place.
+# ---------------------------------------------------------------------------
+
+#: Runs whose legacy-fallback warning has already been printed.
+_LEGACY_BETA_WARNED = set()
+
+#: Cache of "does this run have a complete set of aligned beta maps?" -- keyed by
+#: run, answered by the manifest. Step 1 asks this once per beta map read (780
+#: pairs x runs for correlation), so it must not stat the disk every time.
+_ALIGNED_RUN_CACHE = {}
+
+
+def _aligned_run_key(datafolder, dataset, model, specie, sub_N, session, run_N, task):
+    return (datafolder, dataset, model, specie, int(sub_N), int(session), int(run_N), task)
+
+
+def run_is_aligned(datafolder, dataset, model, specie, sub_N, session, run_N, task):
+    '''True when step 0.5 finished for this run.
+
+    Keyed on ``beta_manifest.json``, which ``calculate_aligned_beta_maps`` writes
+    *after* every map -- so a run interrupted halfway has maps but no manifest and
+    is correctly treated as not converted. Trusting individual files instead would
+    let one run read some stimuli from aligned maps and others from raw FEAT
+    output, which for humans means mixing two voxel grids inside one RDM.
+    '''
+    key = _aligned_run_key(datafolder, dataset, model, specie, sub_N, session, run_N, task)
+    if key not in _ALIGNED_RUN_CACHE:
+        _ALIGNED_RUN_CACHE[key] = os.path.exists(beta_manifest_path(
+            datafolder, dataset, model, specie, sub_N, session, run_N, task))
+    return _ALIGNED_RUN_CACHE[key]
+
+
+def _run_stem(session, run_N, task):
+    return f"ses-{int(session):02d}_task-{task}_run-{int(run_N):02d}"
+
+
+def beta_run_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task):
+    '''Directory holding the aligned beta maps of one run (sibling of the .feat).'''
+    return os.path.join(
+        datafolder, dataset, 'results', 'GLM', model,
+        f"{specie}-sub-{int(sub_N):02d}", _run_stem(session, run_N, task)
+    )
+
+
+def feat_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task):
+    '''Directory of the raw FSL first-level output for one run.'''
+    return beta_run_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task) + '.feat'
+
+
+def beta_map_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, stim):
+    '''Path of the aligned beta map for one stimulus, written by step 0.5.'''
+    return os.path.join(
+        beta_run_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task),
+        f"beta_{stim}.nii.gz"
+    )
+
+
+def beta_manifest_path(datafolder, dataset, model, specie, sub_N, session, run_N, task):
+    '''Path of the JSON sidecar describing one run's aligned beta maps.'''
+    return os.path.join(
+        beta_run_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task),
+        'beta_manifest.json'
+    )
+
+
+def pe_index_for_stim(stim_index):
+    '''FSL pe number for the ``stim_index``-th EV (0-based), skipping derivatives.'''
+    return (int(stim_index) + 1) * 2 - 1
+
+
+def legacy_pe_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, stim_index):
+    '''Path of the raw FEAT parameter-estimate map for one stimulus.'''
+    return os.path.join(
+        feat_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task),
+        'stats', f"pe{pe_index_for_stim(stim_index)}.nii.gz"
+    )
+
+
+def resolve_beta_map(datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                     stim, stim_index, allow_legacy=True, verbose=False):
+    '''Return the beta map to read for one stimulus of one run.
+
+    Prefers the aligned map written by step 0.5. Falls back to the raw FEAT
+    ``pe`` file when it is absent and ``allow_legacy`` is set, warning once per
+    run -- for humans that fallback is the scanner-native data, which
+    ``check_same_space`` will reject downstream unless the caller opted out
+    with ``--allow_space_mismatch``.
+
+    Returns the aligned path when neither exists, so callers reporting a
+    missing file point at the layout the pipeline wants.
+    '''
+    aligned = beta_map_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, stim)
+    # The manifest, not the individual file, decides -- see run_is_aligned.
+    if run_is_aligned(datafolder, dataset, model, specie, sub_N, session, run_N, task):
+        return aligned
+
+    if not allow_legacy:
+        return aligned
+
+    legacy = legacy_pe_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, stim_index)
+    if os.path.exists(legacy):
+        key = (dataset, model, specie, int(sub_N), int(session), int(run_N))
+        if key not in _LEGACY_BETA_WARNED:
+            _LEGACY_BETA_WARNED.add(key)
+            print(
+                f"WARNING: no aligned beta maps for {specie}-sub-{int(sub_N):02d} "
+                f"{_run_stem(session, run_N, task)}; falling back to raw FEAT pe files.\n"
+                f"         Run step 0.5 to write beta_{{stim}}.nii.gz on the template grid."
+            )
+        if verbose:
+            print(f"  legacy beta map: {legacy}")
+        return legacy
+
+    return aligned
 
 
 def _get_emoc_multiple_fold_stim_files(session_and_run_dict, model_dict):
@@ -620,6 +899,9 @@ def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_a
                 
                 # save similarity values to txt file
                 np.savetxt(output_path, vals)
+            except SpaceMismatchError:
+                # dataset-wide configuration error, not a bad run
+                raise
             # if any error occurs, print error message and continue with next iteration, removing temp file if it exists
             except Exception as e:
                 print(f"Error processing {specie}-sub-{sub_N:02d}, session {session}, run {run_N}: {e}")
@@ -642,13 +924,15 @@ def get_similarity_in_sphere(datafolder, dataset, specie, mask, sub_N, session, 
     if voxel_coords is None:
         raise ValueError("voxel_coords must be provided as a tuple of (X, Y, Z) voxel coordinates.")
     ref_img = nib.load(mask).get_fdata()
-    # ref_affine = nib.load(mask).affine
+    ref_affine = nib.load(mask).affine
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + model + '.yaml'
     # load meta similarity map for participant, session, run, and model
-    meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, 
-                                                           specie, sub_N, session, run_N, config_path, 
-                                                           rsa_method=rsa_method, radius=radius, verbose=verbose)
+    meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset,
+                                                           specie, sub_N, session, run_N, config_path,
+                                                           rsa_method=rsa_method, radius=radius, verbose=verbose,
+                                                           ref_affine=ref_affine,
+                                                           ref_label=f"mask {os.path.basename(mask)}")
     X, Y, Z = voxel_coords
     # get similarity [X,Y,Z,:] for voxel with voxel coordinates (X,Y,Z)
     vals = meta_similarity_map[X, Y, Z, :]
@@ -757,7 +1041,8 @@ def calculate_cross_participant_similarity(datafolder, dataset, session_and_run_
             print(f"Loading meta similarity map for {specie}-sub-{sub_N1:02d}, session {session1}, run {run_N1}...")  
             # load meta similarity map for participant1
             # meta_similarity_map1: 4D numpy array of shape (X, Y, Z, n_pairs) where n_pairs is the number of unique pairs of categories in the RSA model, containing the pairwise similarity values for each voxel (coordinate [x, y, z]) and each pair of categories for the model participant
-            meta_similarity_map1 = load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N1, session1, run_N1, config_path, rsa_class=rsa_class, dis_method=dis_method, radius=radius, verbose=verbose)
+            meta_similarity_map1 = load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N1, session1, run_N1, config_path, rsa_class=rsa_class, dis_method=dis_method, radius=radius, verbose=verbose,
+                                                             ref_affine=ref_affine, ref_label=f"mask {os.path.basename(mask)}")
             # if meta_similarity_map1 == 0, means that the meta similarity map is missing, skip to next iteration
             if isinstance(meta_similarity_map1, int) and meta_similarity_map1 == 0:
                 warnings.warn(f"Meta similarity map for {specie}-sub-{sub_N1:02d}, session {session1}, run {run_N1} is missing. Skipping to next iteration.")
@@ -803,7 +1088,8 @@ def calculate_cross_participant_similarity(datafolder, dataset, session_and_run_
                         print(f"crossing with {specie}-sub-{sub_N2:02d}...")
                         # load meta similarity map for target participant
                         try:
-                            meta_similarity_map2 = load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N2, session2, run_N2, config_path, rsa_class=rsa_class, dis_method=dis_method, radius=radius, verbose=verbose)
+                            meta_similarity_map2 = load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N2, session2, run_N2, config_path, rsa_class=rsa_class, dis_method=dis_method, radius=radius, verbose=verbose,
+                                                                             ref_affine=ref_affine, ref_label=f"mask {os.path.basename(mask)}")
                             # if meta_similarity_map2 == 0, means that the meta similarity map is missing, skip to next iteration
                             if isinstance(meta_similarity_map2, int) and meta_similarity_map2 == 0:
                                 warnings.warn(f"Meta similarity map for {specie}-sub-{sub_N2:02d}, session {session2}, run {run_N2} is missing. Skipping to next iteration.")
@@ -814,6 +1100,9 @@ def calculate_cross_participant_similarity(datafolder, dataset, session_and_run_
                             # save cross-participant similarity map as nifti file
                             nib.save(nib.Nifti1Image(cross_participant_similarity_map, affine=ref_affine), output_path)
                             print(f"Saved cross-participant similarity map to {output_path}")
+                        except SpaceMismatchError:
+                            # dataset-wide configuration error, not a bad pair
+                            raise
                         except Exception as e:
                             print(f"Error processing comparison between {specie}-sub-{sub_N1:02d} and {specie}-sub-{sub_N2:02d} for session {session1} and session {session2}: {e}")
                         finally:
@@ -1447,12 +1736,10 @@ def calculate_similarity_in_roi(datafolder,
         run_N = first_entry['run_N']
         # correct session to 2 digits
         session = f"{session:02d}"
-        sample_file_path = os.path.join(
-                    datafolder, dataset, 'results', 'GLM', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                    'stats', f'pe1.nii.gz'
-                )
+        sample_file_path = resolve_beta_map(
+            datafolder, dataset, model, specie, sub_N, session, run_N, task,
+            stim_types[0], 0
+        )
         sample_img = nib.load(sample_file_path)
         # print sample_img dimensions
         print(f"Sample image shape: {sample_img.shape}")
@@ -1523,18 +1810,14 @@ def calculate_similarity_in_roi(datafolder,
             for j, stim_j in enumerate(stim_types):
                 if i >= j:
                     continue  # avoid duplicates and self-comparison
-                input_file_i = os.path.join(
-                    datafolder, dataset, 'results', 'GLM', model,
-                    f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                    'stats', f'pe{(i+1)*2 - 1}.nii.gz'
+                input_file_i = resolve_beta_map(
+                    datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                    stim_i, i
                 )
-                input_file_j = os.path.join(
-                        datafolder, dataset, 'results', 'GLM', model,
-                        f"{specie}-sub-{sub_N:02d}",
-                        f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                        'stats', f'pe{(j+1)*2 - 1}.nii.gz'
-                    )
+                input_file_j = resolve_beta_map(
+                    datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                    stim_j, j
+                )
                 # load beta maps
                 beta_map_i = nib.load(input_file_i).get_fdata()
                 beta_map_j = nib.load(input_file_j).get_fdata()
@@ -1927,6 +2210,17 @@ def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose
     img_affine = first_img.affine
     if verbose:
         print(f"Computing mean for {len(img_list)} images of shape {img_shape}")
+
+    # The mean is taken voxel by voxel and inherits img_affine, so every input
+    # must already be on that grid. Matching shapes alone does not establish
+    # that -- subject maps left in native space share a shape while sitting
+    # centimetres apart, and averaging them produces a map of nothing.
+    check_same_space(
+        (os.path.basename(img_list[0]), first_img),
+        [(os.path.basename(p), p) for p in img_list[1:]],
+        context=f"group averaging of {len(img_list)} maps",
+    )
+
     ## Compute mean
     # Initialize an array to hold the sum
     sum_data = np.zeros(img_shape, dtype=np.float64)
@@ -2110,6 +2404,9 @@ def _compare_mahalanobis_with_model(datafolder, dataset, sub_N,
             rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session,
             run_N, config_path, dis_method='mahalanobis', radius=radius,
             verbose=verbose, mah_fold=mah_fold, pairs=pairs,
+            # the output below is written with mask_affine -- validate that the
+            # step-1 maps really are on that grid before adopting its header
+            ref_affine=mask_affine, ref_label=f"mask {os.path.basename(mask)}",
         )
 
         if rnd:
@@ -2533,7 +2830,10 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
         model_vector[i] = rsa_model_dict['model'][pair[0]][pair[1]]
     
     print("Loading meta similarity map...")
-    meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose)
+    meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose,
+                                                   # output below is written with mask_affine; make sure
+                                                   # the step-1 maps are actually on that grid
+                                                   ref_affine=mask_affine, ref_label='mask (mask_affine)')
     print("Meta similarity map loaded.")
     # create similarity_table (x, y, z) of all voxels in the mask, results will be added here
     similarity_table = np.column_stack(np.where(ref_img > 0))
@@ -2678,7 +2978,7 @@ def remove_existing_rnd_files(datafolder, dataset, sub_N, session, run_N, specie
                 print(f"Removing {file_path}")
             os.remove(file_path)
 
-def load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, rsa_class=None, dis_method='pearson', radius=3, verbose=False):
+def load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, rsa_class=None, dis_method='pearson', radius=3, verbose=False, ref_affine=None, ref_label='reference grid'):
     '''
     Loads the meta similarity map for given parameters.
     
@@ -2709,7 +3009,8 @@ def load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N, sessi
         cat2 = row['cat2']
         if verbose:
             print(f"Pair {index}: {cat1} vs {cat2}")
-        map = load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, run_N, cat1, cat2, config_path, dis_method=dis_method, radius=radius, verbose=verbose)
+        map = load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, run_N, cat1, cat2, config_path, dis_method=dis_method, radius=radius, verbose=verbose,
+                                           ref_affine=ref_affine, ref_shape=(X, Y, Z), ref_label=ref_label)
         # if map == 0, means that the pair is missing, return 0
         if isinstance(map, int) and map == 0:
             warnings.warn(f"Pairwise similarity map for {cat1} vs {cat2} is missing. Returning empty meta similarity map.")
@@ -2719,7 +3020,7 @@ def load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N, sessi
     return meta_similarity_map
 
 
-def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method='pearson', radius=3, verbose=False, mah_fold='stim-wise', pairs=None):
+def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method='pearson', radius=3, verbose=False, mah_fold='stim-wise', pairs=None, ref_affine=None, ref_label='reference grid'):
     '''
     Loads the meta similarity map for given parameters.
     
@@ -2756,6 +3057,7 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, speci
             datafolder, dataset, specie, sub_N, session, run_N, cat1, cat2,
             config_path, dis_method=dis_method, radius=radius, verbose=verbose,
             mah_fold=mah_fold,
+            ref_affine=ref_affine, ref_shape=(X, Y, Z), ref_label=ref_label,
         )
         if isinstance(map, int) and map == 0:
             raise FileNotFoundError(
@@ -2770,7 +3072,7 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, speci
         k += 1
     return meta_similarity_map
 
-def load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, run_N, stim_1_name, stim_2_name, config_path, dis_method='pearson', radius=3, verbose=False, mah_fold='stim-wise'):
+def load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, run_N, stim_1_name, stim_2_name, config_path, dis_method='pearson', radius=3, verbose=False, mah_fold='stim-wise', ref_affine=None, ref_shape=None, ref_label='reference grid'):
     # import warnings
     
 
@@ -2822,9 +3124,27 @@ def load_pairwise_similarity_map(datafolder, dataset, specie, sub_N, session, ru
         warnings.warn(f"Neither {file_path} nor {file_path_inverted} exist. Returning empty")
         # return empty or nothing
         return 0
-        
-        
-    map = nib.load(file_path).get_fdata()
+
+
+    img = nib.load(file_path)
+    # The caller stacks these into a 4D array indexed against the mask and
+    # later writes the result out with the mask's affine. If this map is not
+    # on the mask's grid, that write would silently relabel data from another
+    # space -- which is how native-space results ended up carrying a template
+    # affine. Refuse instead.
+    if ref_affine is not None:
+        _ref = nib.Nifti1Image(
+            np.zeros(tuple(ref_shape) if ref_shape is not None else img.shape[:3],
+                     dtype=np.int8),
+            ref_affine,
+        )
+        check_same_space(
+            (ref_label, _ref),
+            [(os.path.relpath(file_path, datafolder), img)],
+            context=(f"step 2 (model comparison) for {specie}-sub-{sub_N:02d}, "
+                     f"pairwise map {stim_1_name} vs {stim_2_name}"),
+        )
+    map = img.get_fdata()
     return map
 
 def read_model_dict(model_path, erase_existing_npy=False, return_all_comparisons=False):
@@ -3684,6 +4004,169 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
     os.remove(design_out)
 
 
+def calculate_aligned_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_N,
+                                task, stim_types, apply_transform=None, interp='trilinear',
+                                replace_file=False, verbose=False):
+    '''Step 0.5 -- materialise one run's beta maps on the template grid.
+
+    Reads ``stats/pe{(i+1)*2-1}.nii.gz`` out of the run's ``.feat`` and writes
+    one ``beta_{stim}.nii.gz`` per entry of ``stim_types`` into the sibling run
+    folder, plus a ``beta_manifest.json`` recording where each file came from.
+
+    Humans: FEAT with ``regstandard_yn 1`` only *estimates* the transform into
+    template space -- ``stats/`` stays in scanner-native space, one grid per
+    run. This applies the transform FEAT already computed
+    (``reg/example_func2standard.mat``) onto ``reg/standard.nii.gz`` with
+    ``flirt -applyxfm``, so every run of every participant lands on one grid.
+
+    Dogs: the functional data is normalised into Nitzsche space before the GLM,
+    so the pe maps already satisfy the invariant and are copied unchanged.
+
+    After writing, the outputs are re-read and checked against the reference
+    grid. That check is always strict: producing aligned maps is the entire
+    point of this step, so ``--allow_space_mismatch`` must not be able to
+    silence it.
+
+    Inputs:
+        - datafolder, dataset, model, specie, sub_N, session, run_N, task: run selectors
+        - stim_types: list of str. Config stimulus list; position i maps to pe{(i+1)*2-1}
+        - apply_transform: bool or None. None resolves to True for 'H', False for 'D'
+        - interp: str. flirt interpolation for the resampling (default 'trilinear')
+        - replace_file: bool. Recompute even when the outputs already exist
+        - verbose: bool
+    Output:
+        - True on success. Raises on any failure, so the caller can trust the
+          absence of an exception as the success signal.
+    '''
+    if apply_transform is None:
+        apply_transform = (specie == 'H')
+
+    run_label = f"{specie}-sub-{int(sub_N):02d} {_run_stem(session, run_N, task)}"
+    feat = feat_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task)
+    out_dir = beta_run_dir(datafolder, dataset, model, specie, sub_N, session, run_N, task)
+    manifest_file = beta_manifest_path(datafolder, dataset, model, specie, sub_N, session, run_N, task)
+
+    # Already done? The manifest is written last, so its presence means the whole
+    # run completed -- a half-written folder has maps but no manifest and is redone.
+    if os.path.exists(manifest_file) and not replace_file:
+        expected = [beta_map_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, s)
+                    for s in stim_types]
+        if all(os.path.exists(p) for p in expected):
+            if verbose:
+                print(f"  {run_label}: aligned beta maps already present, skipping")
+            return True
+
+    if not os.path.isdir(feat):
+        raise FileNotFoundError(
+            f"No FSL first-level output for {run_label}: {feat}\n"
+            "Step 0.5 reads the pe maps out of the .feat, so it must run before "
+            "the .feat is deleted."
+        )
+
+    reference = None
+    transform = None
+    if apply_transform:
+        reference = os.path.join(feat, 'reg', 'standard.nii.gz')
+        transform = os.path.join(feat, 'reg', 'example_func2standard.mat')
+        for path, what in ((reference, 'reference image'), (transform, 'transform matrix')):
+            if not os.path.exists(path):
+                raise FileNotFoundError(
+                    f"{run_label}: missing {what} {path}.\n"
+                    "FEAT must have been run with fmri(regstandard_yn) 1 for the "
+                    "EPI->template transform to exist."
+                )
+        if os.name == 'nt':
+            raise FslUnavailableError(
+                f"{run_label}: step 0.5 needs FSL's flirt to resample into template "
+                "space, and FSL is not available on Windows in this setup.\n"
+                "Run step 0.5 on the Linux machine; the outputs land on the shared "
+                "disk, so Windows can run steps 1+ afterwards."
+            )
+        if shutil.which('flirt') is None:
+            raise FslUnavailableError(
+                f"{run_label}: 'flirt' is not on PATH. Load FSL before running step 0.5 "
+                "(e.g. source $FSLDIR/etc/fslconf/fsl.sh)."
+            )
+
+    os.makedirs(out_dir, exist_ok=True)
+    if verbose:
+        print(f"  {run_label}: {'flirt -applyxfm' if apply_transform else 'copy'} "
+              f"-> {out_dir}")
+
+    entries = []
+    for i, stim in enumerate(stim_types):
+        src = legacy_pe_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, i)
+        if not os.path.exists(src):
+            raise FileNotFoundError(
+                f"{run_label}: beta map for stimulus {stim!r} "
+                f"(index {i}, pe{pe_index_for_stim(i)}) not found: {src}"
+            )
+        dst = beta_map_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, stim)
+
+        if apply_transform:
+            cmd = ['flirt', '-in', src, '-ref', reference, '-applyxfm',
+                   '-init', transform, '-interp', interp, '-out', dst]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            if result.returncode != 0:
+                raise RuntimeError(
+                    f"{run_label}: flirt failed for {stim!r} (exit {result.returncode})\n"
+                    f"  {' '.join(cmd)}\n{result.stderr.strip()}"
+                )
+        else:
+            shutil.copyfile(src, dst)
+
+        if not os.path.exists(dst):
+            raise RuntimeError(f"{run_label}: expected output not written: {dst}")
+        entries.append({
+            'index': i + 1,
+            'stim': stim,
+            'src': os.path.relpath(src, feat).replace(os.sep, '/'),
+            'file': os.path.basename(dst),
+        })
+
+    # Prove the outputs are where they were supposed to land. For dogs there is
+    # no external reference, so the run's own first map defines the grid and the
+    # check catches a partial/corrupt copy.
+    written = [(e['stim'], nib.load(
+        beta_map_path(datafolder, dataset, model, specie, sub_N, session, run_N, task, e['stim'])
+    )) for e in entries]
+    if apply_transform:
+        ref_pair = ('reg/standard.nii.gz', nib.load(reference))
+    else:
+        ref_pair = (f"{written[0][0]} (first map of run)", written[0][1])
+    check_same_space(ref_pair, written,
+                     context=f"step 0.5 output for {run_label}", strict=True)
+
+    ref_img = ref_pair[1]
+    manifest = {
+        'created': datetime.datetime.now().isoformat(timespec='seconds'),
+        'dataset': dataset,
+        'model': model,
+        'specie': specie,
+        'sub_N': int(sub_N),
+        'session': int(session),
+        'run_N': int(run_N),
+        'task': task,
+        'source_feat': feat,
+        'transform': os.path.relpath(transform, feat).replace(os.sep, '/') if transform else None,
+        'reference': os.path.relpath(reference, feat).replace(os.sep, '/') if reference else None,
+        'interp': interp if apply_transform else None,
+        'shape': [int(v) for v in ref_img.shape[:3]],
+        'affine': [[float(v) for v in row] for row in ref_img.affine],
+        'n_pe_files_in_feat': len(glob.glob(os.path.join(feat, 'stats', 'pe*.nii.gz'))),
+        'stim_types': list(stim_types),
+        'stims': entries,
+    }
+    with open(manifest_file, 'w') as f:
+        json.dump(manifest, f, indent=2)
+    # this run just became aligned; drop any cached "not converted" answer
+    _ALIGNED_RUN_CACHE.pop(
+        _aligned_run_key(datafolder, dataset, model, specie, sub_N, session, run_N, task), None)
+
+    if verbose:
+        print(f"  {run_label}: wrote {len(entries)} beta maps + manifest")
+    return True
+
 
 def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
                           specie, model, stim_types, mask, task, radius, 
@@ -3839,17 +4322,13 @@ def calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_
                 for j, stim_j in enumerate(stim_types):
                     if i >= j:
                         continue  # avoid duplicates and self-comparison
-                    input_file_i = os.path.join(
-                        datafolder, dataset, 'results', 'GLM', model,
-                        f"{specie}-sub-{sub_N:02d}",
-                        f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                        'stats', f'pe{(i+1)*2 - 1}.nii.gz'
+                    input_file_i = resolve_beta_map(
+                        datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                        stim_i, i
                     )
-                    input_file_j = os.path.join(
-                        datafolder, dataset, 'results', 'GLM', model,
-                        f"{specie}-sub-{sub_N:02d}",
-                        f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                        'stats', f'pe{(j+1)*2 - 1}.nii.gz'
+                    input_file_j = resolve_beta_map(
+                        datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                        stim_j, j
                     )
                     if not os.path.exists(input_file_i):
                         if verbose:
@@ -4013,32 +4492,28 @@ def _calculate_emoc_within_run_class_maps(datafolder, dataset, sub_N,
         run_mask_img_obj = mask_img_obj
         run_mask_img = run_mask_img_obj.get_fdata().astype(bool)
         maps = {}
-        affine = None
+        beta_images = []  # (label, img) for the voxel-grid check below
         for stim, _, _ in condition_folds:
-            input_file = os.path.join(
-                datafolder, dataset, 'results', 'GLM', model,
-                f"{specie}-sub-{sub_N:02d}",
-                f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                'stats', f"pe{stim_indices[stim] * 2 + 1}.nii.gz"
+            input_file = resolve_beta_map(
+                datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                stim, stim_indices[stim]
             )
             if not os.path.exists(input_file):
                 raise FileNotFoundError(f"Beta map file not found: {input_file}")
 
             map_img_obj = nib.load(input_file)
-            map_data = map_img_obj.get_fdata()
-            if map_data.shape != run_mask_img.shape:
-                run_mask_img_obj = resample_to_img(
-                    source_img=run_mask_img_obj,
-                    target_img=map_img_obj,
-                    interpolation="nearest"
-                )
-                run_mask_img = run_mask_img_obj.get_fdata().astype(bool)
-                print(
-                    f"Warning: Beta map shape {map_data.shape} does not match mask shape "
-                    f"{run_mask_img.shape}. Resampled mask to match beta map."
-                )
-            maps[stim] = map_data
-            affine = map_img_obj.affine
+            maps[stim] = map_img_obj.get_fdata()
+            beta_images.append((f"ses-{session} run-{run_N:02d} {stim}", map_img_obj))
+
+        # Mask and searchlight index these arrays directly -- the beta maps must
+        # sit on the mask's grid, not merely share its shape.
+        check_same_space(
+            (f"mask {os.path.basename(mask)}", run_mask_img_obj),
+            beta_images,
+            context=(f"step 1 (mahalanobis, mah_fold=stim-wise-all-runs) for "
+                     f"{specie}-sub-{sub_N:02d} ses-{session} run-{run_N:02d}"),
+        )
+        affine = run_mask_img_obj.affine
 
         ndim = run_mask_img.ndim
         searchlight_radius = float(radius)
@@ -4221,6 +4696,7 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
     print(f"Categories for Mahalanobis folding: {categories}")
     #### --- loading beta maps --- ####
     print("Loading beta maps...")
+    beta_images = []  # (label, img) for the voxel-grid check below
 
     # Go over every run for the participant and load beta maps to session_and_run_dict
     for indx, entry in enumerate(session_and_run_dict):
@@ -4234,34 +4710,28 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
         # initialize maps dict
         session_and_run_dict[indx]['maps'] = {}
         for i, stim in enumerate(stim_types):
-            input_file = os.path.join(
-                datafolder, dataset, 'results', 'GLM', model,
-                f"{specie}-sub-{sub_N:02d}",
-                f"ses-{session}_task-{task}_run-{run_N:02d}.feat",
-                'stats', f'pe{(i+1)*2 - 1}.nii.gz'
+            input_file = resolve_beta_map(
+                datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                stim, i
             )
             if not os.path.exists(input_file):
                 raise FileNotFoundError(f"Beta map file not found: {input_file}")
             # load map
             map_img_obj = nib.load(input_file)
             map_data = map_img_obj.get_fdata()
-            # make sure map_data has same shape as mask
-            if map_data.shape != mask_img.shape:
-                # resample mask to match map (nearest neighbor = IMPORTANT for masks)
-                mask_img_obj = resample_to_img(
-                    source_img=mask_img_obj,
-                    target_img=map_img_obj,
-                    interpolation="nearest"
-                )
-                mask_img = mask_img_obj.get_fdata().astype(bool)
-                # issue a warning
-                print(f"Warning: Beta map shape {map_data.shape} does not match mask shape {mask_img.shape}. Resampled mask to match beta map.")
-
-                # if map_data.shape != mask_img.shape:
-                    # raise ValueError(f"Beta map shape {map_data.shape} does not match mask shape {mask_img.shape}.")
-
+            # The searchlight, the mask and the crossnobis folds all index this
+            # array directly, and folds are taken ACROSS runs -- so every beta
+            # map of this subject must share the mask's grid. Checking the shape
+            # is not enough: native-space runs of one subject can be tens of mm
+            # apart while all being 96x96x52.
+            beta_images.append((f"ses-{session} run-{run_N:02d} {stim}", map_img_obj))
             # store in session_and_run_dict
             session_and_run_dict[indx]['maps'][stim] = map_data
+    check_same_space(
+        (f"mask {os.path.basename(mask)}", mask_img_obj),
+        beta_images,
+        context=f"step 1 (mahalanobis, mah_fold={mah_fold}) for {specie}-sub-{sub_N:02d}",
+    )
     print("All beta maps loaded successfully.")
     ##### --- end of loading beta maps --- #####
 
@@ -4448,9 +4918,12 @@ def calculate_mahalanobis_pairwise_maps(datafolder, dataset, sub_N, session_and_
             output_dir = os.path.dirname(output_file)
             if not os.path.exists(output_dir):
                 os.makedirs(output_dir)
-            # save NIfTI
-            affine = nib.load(input_file).affine  # use affine from last loaded map
-            sim_map_nifti = nib.Nifti1Image(similarity_maps[key], affine)
+            # save NIfTI on the reference grid. check_same_space() above has
+            # verified the beta maps sit on this grid, so this is the same
+            # geometry the betas had -- but taking it from the mask keeps every
+            # subject's output byte-identical in header terms, which is what
+            # steps 2 and 3 assume when they combine subjects by index.
+            sim_map_nifti = nib.Nifti1Image(similarity_maps[key], mask_img_obj.affine)
             nib.save(sim_map_nifti, output_file)
             print(f"Saved similarity map: {output_file}")
             if save_inverted:
@@ -4498,11 +4971,23 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
     log.append(f"specie: {specie}")
     log.append(f"model: {model}")
     log.append(f"mask: {mask}")
+    mask_img_obj = nib.load(mask)
     for stim_N1, stim_1_name in enumerate(stim_types):
         blank = False  # flag to indicate if either map is blank
         # stim_1_name = stim_types[stim_N1]
-        file_1_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + 'stats' + os.sep + f"pe{(stim_N1+1)*2 - 1}.nii.gz"
-        file_1_map = nib.load(file_1_path).get_fdata()
+        file_1_path = resolve_beta_map(
+            datafolder, dataset, model, specie, sub_N, session, run_N, task,
+            stim_1_name, stim_N1
+        )
+        file_1_img = nib.load(file_1_path)
+        # the mask is applied by array index below, so it must be the same grid
+        check_same_space(
+            (f"mask {os.path.basename(mask)}", mask_img_obj),
+            [(f"{stim_1_name} ({os.path.basename(file_1_path)})", file_1_img)],
+            context=(f"step 1 ({dis_method}) for {specie}-sub-{sub_N:02d} "
+                     f"ses-{session} run-{run_N:02d}"),
+        )
+        file_1_map = file_1_img.get_fdata()
         # check if file_1_map is empty (all zeros)
         if np.all(file_1_map == 0):
             blank = True # all next maps will be blank
@@ -4516,7 +5001,10 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
             if stim_N1 >= stim_N2:
                 # print("Skipping identical stimuli...")
                 continue                
-            file_2_path = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}.feat" + os.sep + 'stats' + os.sep + f"pe{(stim_N2+1)*2 - 1}.nii.gz"
+            file_2_path = resolve_beta_map(
+                datafolder, dataset, model, specie, sub_N, session, run_N, task,
+                stim_2_name, stim_N2
+            )
             log.append(f"Comparing with stim {stim_N2}, file: {file_2_path}")
             # add to log
             # build output path
@@ -4538,24 +5026,32 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
                     log.append(f"File {file_2_path} does not exist. Skipping...")
                 continue
             
-            file_2_map = nib.load(file_2_path).get_fdata()
+            file_2_img = nib.load(file_2_path)
+            check_same_space(
+                (f"mask {os.path.basename(mask)}", mask_img_obj),
+                [(f"{stim_2_name} ({os.path.basename(file_2_path)})", file_2_img)],
+                context=(f"step 1 ({dis_method}) for {specie}-sub-{sub_N:02d} "
+                         f"ses-{session} run-{run_N:02d}"),
+            )
+            file_2_map = file_2_img.get_fdata()
             # check if either map is blank
             if blank or np.all(file_2_map == 0):
                 if verbose:
                     print(f"One of the maps is blank (all zeros). Creating blank similarity map for {output_path}...")
                 log.append(f"One of the maps is blank (all zeros). Creating blank similarity map for {output_path}...")
                 # create blank similarity map
-                similarity_map = np.zeros(nib.load(mask).get_fdata().shape)
+                similarity_map = np.zeros(mask_img_obj.shape)
             else:
-                similarity_map = similarity_searchlight(file_1_map, file_2_map, nib.load(mask).get_fdata().astype(bool), radius=radius, dis_method=dis_method)
+                similarity_map = similarity_searchlight(file_1_map, file_2_map, mask_img_obj.get_fdata().astype(bool), radius=radius, dis_method=dis_method)
             # add to log
             log.append(f"Saved similarity map to {output_path}")
             # check if output directory exists
             if not os.path.exists(os.path.dirname(output_path)):
                 os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            nib.save(nib.Nifti1Image(similarity_map, nib.load(file_1_path).affine), output_path)
+            # write on the reference grid (verified above to match the betas)
+            nib.save(nib.Nifti1Image(similarity_map, mask_img_obj.affine), output_path)
             # save the version with the stims inverted
-            nib.save(nib.Nifti1Image(similarity_map, nib.load(file_1_path).affine), output_pathb)
+            nib.save(nib.Nifti1Image(similarity_map, mask_img_obj.affine), output_pathb)
             print(f"Saved {dis_method} similarity map to {output_path}")
     if verbose:
         # print that we are done
@@ -4878,6 +5374,10 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             # calculate group model similarity map
             # nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
             nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False)
+        except SpaceMismatchError:
+            # dataset-wide configuration error -- skipping it would quietly
+            # produce a null distribution built from unaligned maps
+            raise
         except Exception as e:
             print(f"Error {e} calculating group model similarity map for rsa_model {rsa_model} sub_N {sub_N} rnd {rnd_N:05d}. Skipping...")
         # remove temp file

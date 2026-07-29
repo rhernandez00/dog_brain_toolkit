@@ -42,6 +42,7 @@ for p in (HERE, REPO):
         sys.path.insert(0, p)
 
 import models_manifest as mm          # noqa: E402
+import rsa_utils                      # noqa: E402
 from scheduler.paths import get_paths  # noqa: E402
 
 COLAB_DIR = os.path.join(HERE, "colab_gpu")
@@ -64,12 +65,18 @@ def get_runs(datafolder, dataset, specie, sub_N):
     return [{"session": int(r["session"]), "run_N": int(r["run_N"])} for _, r in db.iterrows()]
 
 
-def beta_relpath(dataset, model, specie, sub_N, session, run_N, task, stim_index):
-    """Package-relative path (under data/) of one GLM beta map -- pe{(i+1)*2-1}."""
+def beta_relpath(dataset, model, specie, sub_N, session, run_N, task, stim):
+    """Package-relative path (under data/) of one aligned beta map.
+
+    Mirrors ``rsa_utils.beta_map_path``: the step-0.5 layout, not the raw FEAT
+    ``stats/pe*`` files. The GPU port masks and folds these by array index just
+    like the CPU pipeline, so it must be fed maps that are known to share one
+    voxel grid.
+    """
     return os.path.join(
         "data", dataset, "results", "GLM", model, f"{specie}-sub-{sub_N:02d}",
-        f"ses-{int(session):02d}_task-{task}_run-{int(run_N):02d}.feat",
-        "stats", f"pe{(stim_index + 1) * 2 - 1}.nii.gz",
+        f"ses-{int(session):02d}_task-{task}_run-{int(run_N):02d}",
+        f"beta_{stim}.nii.gz",
     ).replace(os.sep, "/")
 
 
@@ -140,7 +147,7 @@ def step1_corr_maps_on_disk(datafolder, dataset, model, specie, sub_N, radius, t
 # ---------------------------------------------------------------------------
 def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model,
                   radius, dis_method, mah_fold, rsa_method, reps, mask_type, out_dir,
-                  verbose=True):
+                  verbose=True, allow_space_mismatch=False):
     if specie not in ("D", "H"):
         raise ValueError("specie must be 'D' or 'H'")
     if dis_method not in ("mahalanobis", "correlation"):
@@ -191,24 +198,49 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
         "dis_method": dis_method, "mah_fold": mah_fold, "rsa_method": rsa_method,
         "reps": reps, "stim_types": stim_types, "categories": categories,
         "pairs": pairs, "runs": runs, "models": model_list, "step1_done": step1_done,
+        # gpu_rsa runs the same voxel-grid check on Colab; without this the package
+        # would build here and then fail there
+        "allow_space_mismatch": bool(allow_space_mismatch),
     }
 
     os.makedirs(out_dir, exist_ok=True)
     zip_name = f"pkg_{specie}-sub-{sub_N:02d}_{dataset}_{model}_{dis_method}.zip"
     zip_path = os.path.join(out_dir, zip_name)
 
+    # The GPU port masks and folds these betas by array index exactly as the CPU
+    # pipeline does, so the same voxel-grid invariant applies -- check before
+    # shipping gigabytes to Colab rather than after.
+    beta_srcs = []
+    for entry in runs:
+        for stim in stim_types:
+            rel = beta_relpath(dataset, model, specie, sub_N,
+                               entry["session"], entry["run_N"], task, stim)
+            src = os.path.join(datafolder, rel[len("data/"):].replace("/", os.sep))
+            if not os.path.exists(src):
+                raise FileNotFoundError(
+                    f"Aligned beta map not found: {src}\n"
+                    f"Run step 0.5 for {specie}-sub-{sub_N:02d} first:\n"
+                    f"  python searchlight.py --dataset {dataset} --model {model} "
+                    f"--specie {specie} --steps_to_run 0.5\n"
+                    "Packages deliberately ship only step-0.5 output -- the raw FEAT "
+                    "pe maps are scanner-native for humans and would make the GPU "
+                    "results anatomically meaningless."
+                )
+            beta_srcs.append((rel, src))
+    rsa_utils.check_same_space(
+        (f"mask {os.path.basename(mask_src)}", mask_src),
+        [(os.path.basename(os.path.dirname(src)) + "/" + os.path.basename(src), src)
+         for _, src in beta_srcs],
+        context=f"packaging {specie}-sub-{sub_N:02d} of {dataset} for Colab",
+        strict=not allow_space_mismatch,
+    )
+
     n_betas = 0
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
         # betas (only the odd pe maps actually used)
-        for entry in runs:
-            for i in range(len(stim_types)):
-                rel = beta_relpath(dataset, model, specie, sub_N,
-                                   entry["session"], entry["run_N"], task, i)
-                src = os.path.join(datafolder, rel[len("data/"):].replace("/", os.sep))
-                if not os.path.exists(src):
-                    raise FileNotFoundError(f"Beta map not found: {src}")
-                zf.write(src, arcname=rel)
-                n_betas += 1
+        for rel, src in beta_srcs:
+            zf.write(src, arcname=rel)
+            n_betas += 1
         # mask
         zf.write(mask_src, arcname=f"data/{dataset}/ROI/{specie}/{mask_type}.nii.gz")
         # model CSVs
@@ -277,6 +309,11 @@ def parse_args():
     ap.add_argument("--reps", type=int, default=100, help="Permutations for step 4")
     ap.add_argument("--mask_type", default="b_GreyMatter2mmB")
     ap.add_argument("--out", default=DEFAULT_OUT, help="Output folder for the .zip")
+    ap.add_argument("--allow_space_mismatch", action="store_true",
+                    help=("Downgrade the voxel-grid check to a warning and package "
+                          "anyway. Recorded in the manifest so the Colab run honours "
+                          "it too. The betas are then masked and folded by array "
+                          "index regardless of their affines."))
     return ap.parse_args()
 
 
@@ -284,7 +321,7 @@ def main():
     a = parse_args()
     build_package(a.specie, a.sub_N, a.models, a.all_flag, a.all_stim_wise, a.dataset,
                   a.model, a.radius, a.dis_method, a.mah_fold, a.rsa_method, a.reps,
-                  a.mask_type, a.out)
+                  a.mask_type, a.out, allow_space_mismatch=a.allow_space_mismatch)
 
 
 if __name__ == "__main__":

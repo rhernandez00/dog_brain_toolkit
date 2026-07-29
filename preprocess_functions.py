@@ -690,6 +690,13 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             if verbose:
                 print('feat folder does not exist: ' + filename)
             return False, filename
+    # NOTE: the 'beta_map'/'beta_maps' branches below probe the *legacy* FEAT
+    # layout (.feat/stats/pe*). They predate step 0.5 and have no callers today
+    # (both check_file_status callers pass process='GLM'). If you revive them,
+    # route through rsa_utils.resolve_beta_map instead -- these paths report
+    # "missing" for any run whose .feat has been deleted after step 0.5.
+    # They are not fixed in place because rsa_utils imports this module, so
+    # importing it back here would be circular.
     elif process == 'beta_map': # check if the beta map exist
         # build the filename for the beta map
         # make sure that all variables are available, if not indicate which is missing

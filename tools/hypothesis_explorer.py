@@ -18,11 +18,11 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     **Dog** or **Human** and the card draws that species' results map as a 2D atlas
     slice (put Dog and Human side by side in two cards). The map type defaults to
     the group **mean** and can be switched to the z-map or the cluster-corrected
-    map; axis, slice position, z-threshold, **colormap** and an optional **max**
-    (scale ceiling) are per-card. The colormap defaults to **Hot**: voxels below
-    the threshold render transparent (alpha=0), everything at/above rides the hot
-    scale.
-  * Toggle **🔗 sync** to mirror the view (slice, axis, threshold, max, colormap)
+    map; axis, slice position, a two-handle **range slider** (low/high threshold)
+    and **colormap** are per-card. The colormap defaults to **Hot**: voxels below
+    the range's low handle render transparent (alpha=0), everything at/above the
+    high handle is painted the top color of the scale.
+  * Toggle **🔗 sync** to mirror the view (slice, axis, range, colormap)
     across every *other synced card of the same species*: move the slice on one and
     the matching-species cards follow, scales included. Dog and Human sync
     independently.
@@ -55,6 +55,33 @@ saved to ``~/.rsa_hypothesis_explorer_settings.json`` and restored on the next
 launch. Each card's own selections (model, grouping, species, map type, axis,
 colormap, max, sync, on/off) are persisted by Dash's local persistence, so the
 cards come back as you left them.
+
+Auto-update / manual update
+----------------------------
+The top-bar **Auto-update** toggle (on by default) controls whether changing a
+card's fold/model/grouping/species/map-type/axis/threshold/colormap/max
+re-renders that card's map immediately. Turn it off to batch several changes
+and apply them together with **🔄 Update now**. The **slice** slider always
+updates live regardless of this toggle (it's cheap and you want to scrub it),
+as do card on/off, the matrix show/hide toggle, and the top-bar
+source/ROI/reload/view-height controls. A gated card shows a "pending
+changes" note until you click Update. The status line next to **Models** in
+the header (normally the fold/model-family count) doubles as a general
+feedback line: it also reports reloads, add/remove-card, layout-reset and
+update actions as they happen.
+
+Threshold (per card)
+---------------------
+A single two-handle **range slider** sets both bounds: the **low** handle
+filters voxels below it out (rendered transparent, alpha=0); the **high**
+handle caps the color scale — voxels at or above it are painted the top color
+of the palette. The slider's meaning and limits depend on the card's map
+type: for **Z-map** / **Cluster-corrected** it's a z-range (0-8, default
+[3.1, 8]); for **Group average** it's an average-similarity range, typically
+Kendall's tau (-1 to 1, default [0, 1]) since that's this pipeline's default
+RSA method. Switching map type updates the slider's limits and marks; a
+still-valid current [low, high] is kept, otherwise it resets to that mode's
+default.
 
 Standalone only (own port, default 8055):
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py
@@ -110,7 +137,7 @@ MAPS_OPTIONS = [("D", "Dog"), ("H", "Human")]
 COLORMAPS = ["Hot", "YlOrRd", "Reds", "Viridis", "Cividis", "Jet", "Turbo", "Greys", "Blues"]
 DEFAULT_CMAP = "Hot"
 # Per-card view controls that the "sync" toggle shares across same-species cards.
-SYNC_CONTROLS = ["axis", "frac", "zt", "vmax", "cmap"]
+SYNC_CONTROLS = ["axis", "frac", "range", "cmap"]
 MAX_MODELS = 6             # total model-card slots, pre-registered; "Add model" turns the
                            # next one on and its own ✕ turns it off (add / remove)
 DEFAULT_CARD_W = 360       # model-card base width (flex-basis, px); cards flex-grow to fill
@@ -829,6 +856,14 @@ def top_bar():
             _num("ex-gap", SETTINGS["layout"]["gap"], "56px"),
             html.Button("Reset order", id="ex-reset-layout", n_clicks=0, style=BTN2),
         ])),
+        html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
+        _labeled("Update", html.Div(style={"display": "flex", "gap": "8px", "alignItems": "center"}, children=[
+            dcc.Checklist(id="ex-autoupdate", options=[{"label": " Auto-update", "value": "auto"}],
+                          value=["auto"], persistence=True,
+                          labelStyle={"fontSize": "12px", "fontWeight": "bold"},
+                          style={"paddingTop": "2px"}),
+            html.Button("🔄 Update now", id="ex-update-now", n_clicks=0, style=BTN),
+        ])),
         html.Span(id="ex-source", style={"fontSize": "11px", "color": MUTED, "marginLeft": "auto"}),
     ])
 
@@ -917,14 +952,11 @@ def card(i):
                      marks=None, tooltip={"placement": "bottom"}), style={"flex": "1"}),
         ]),
         html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center"}, children=[
-            html.Span("z ≥", style={"fontSize": "11px", "color": MUTED}),
-            html.Div(dcc.Slider(id=f"pl-{i}-zt", min=0, max=8, step=0.1, value=3.1,
-                     marks={0: "0", 3.1: "3.1", 8: "8"}, tooltip={"placement": "bottom"}),
+            html.Span(id=f"pl-{i}-zt-label", style={"fontSize": "11px", "color": MUTED, "minWidth": "70px"}),
+            html.Div(dcc.RangeSlider(id=f"pl-{i}-range", min=-1, max=1, step=0.02, value=[0, 1],
+                     allowCross=False, marks={-1: "-1", 0: "0", 1: "1"},
+                     tooltip={"placement": "bottom", "always_visible": False}),
                      style={"flex": "1"}),
-            html.Span("max", style={"fontSize": "11px", "color": MUTED}),
-            dcc.Input(id=f"pl-{i}-vmax", value=None, type="number", debounce=True,
-                      placeholder="auto", persistence=True,
-                      style={**INPUT_STYLE, "width": "64px"}),
         ]),
         html.Div(id=f"pl-{i}-note", style={"fontSize": "11px", "color": ACCENT,
                  "minHeight": "16px", "marginTop": "4px"}),
@@ -956,6 +988,7 @@ app.layout = html.Div(style={"backgroundColor": BG, "color": INK, "minHeight": "
              children=[card(i) for i in range(MAX_MODELS)]),
 
     dcc.Store(id="ex-dataver", data=0),
+    dcc.Store(id="ex-update-trigger", data=0),
     dcc.Store(id="ex-grouped", data={"folds": [], "by_fold": {}}),
     dcc.Store(id="ex-layout", data=SETTINGS["layout"]),
     dcc.Store(id="ex-settings-status"),
@@ -1075,6 +1108,7 @@ for _i in range(MAX_MODELS):
 # out over every slot.
 
 @app.callback([Output(f"pl-{i}-enable", "value", allow_duplicate=True) for i in range(MAX_MODELS)],
+              Output("ex-models-title", "children", allow_duplicate=True),
               Input("ex-addpanel", "n_clicks"),
               [State(f"pl-{i}-enable", "value") for i in range(MAX_MODELS)],
               prevent_initial_call=True)
@@ -1085,15 +1119,16 @@ def cb_add_panel(_n, *enables):
     for i, e in enumerate(enables):
         if "on" not in (e or []):
             out[i] = ["on"]
-            break
-    return out
+            return out, f"Added model {i + 1}."
+    return out, f"All {MAX_MODELS} model slots are already in use."
 
 
 def _register_panel_remove(i):
     @app.callback(Output(f"pl-{i}-enable", "value", allow_duplicate=True),
+                  Output("ex-models-title", "children", allow_duplicate=True),
                   Input(f"pl-{i}-remove", "n_clicks"), prevent_initial_call=True)
     def _cb_remove(_n):
-        return []       # clear the "on" value -> card hides
+        return [], f"Removed model {i + 1}."       # clear the "on" value -> card hides
     return _cb_remove
 
 
@@ -1147,6 +1182,47 @@ for _i in range(MAX_MODELS):
 
 
 # ---------------------------------------------------------------------------
+# Callbacks — per-card threshold range (depends on the map type / "measure")
+# ---------------------------------------------------------------------------
+# The range slider's two handles mean different things for different map types:
+# a z-threshold (0-8) for the z-map / cluster-corrected map, vs. an
+# average-similarity threshold — Kendall's tau, this pipeline's default RSA
+# method, ranging -1..1 — for the group-average map. Switching map type swaps
+# the slider's limits/marks/label; a still-in-range current [lo, hi] survives
+# the switch, otherwise it resets to that mode's default. The **low** handle
+# filters voxels below it out (rendered transparent); the **high** handle caps
+# the color scale — voxels at/above it are painted the palette's top color.
+ZT_RANGE_Z = {"min": 0, "max": 8, "step": 0.1, "marks": {0: "0", 3.1: "3.1", 8: "8"},
+              "default": [3.1, 8], "label": "z"}
+ZT_RANGE_MEAN = {"min": -1, "max": 1, "step": 0.02, "marks": {-1: "-1", 0: "0", 1: "1"},
+                 "default": [0.0, 1.0], "label": "Kendall τ"}
+
+
+def _register_panel_zt_range(i):
+    @app.callback(
+        Output(f"pl-{i}-range", "min"), Output(f"pl-{i}-range", "max"),
+        Output(f"pl-{i}-range", "step"), Output(f"pl-{i}-range", "marks"),
+        Output(f"pl-{i}-range", "value", allow_duplicate=True),
+        Output(f"pl-{i}-zt-label", "children"),
+        Input(f"pl-{i}-maptype", "value"), State(f"pl-{i}-range", "value"),
+        prevent_initial_call="initial_duplicate")
+    def _cb(maptype, cur):
+        r = ZT_RANGE_MEAN if maptype == "mean" else ZT_RANGE_Z
+        try:
+            lo, hi = float(cur[0]), float(cur[1])
+            in_range = r["min"] <= lo <= hi <= r["max"]
+        except (TypeError, ValueError, IndexError):
+            in_range = False
+        val = [lo, hi] if in_range else list(r["default"])
+        return r["min"], r["max"], r["step"], r["marks"], val, r["label"]
+    return _cb
+
+
+for _i in range(MAX_MODELS):
+    _register_panel_zt_range(_i)
+
+
+# ---------------------------------------------------------------------------
 # Callbacks — card rendering (one per card)
 # ---------------------------------------------------------------------------
 
@@ -1163,14 +1239,14 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
     ax = int(axis)
     idx = int(round(float(frac) * (data.shape[ax] - 1)))
     nz = data[np.abs(data) > 1e-6]
-    if maptype == "z":
-        thr = float(zt)
-        vmin, auto_max = thr, (float(np.max(np.abs(nz))) if nz.size else thr + 1)
-    else:
-        thr = 1e-6
-        vmin, auto_max = 0.0, (float(np.max(np.abs(nz))) if nz.size else 1.0)
-    # A user-supplied max (the per-card "max" box, shared when synced) overrides the
-    # data-driven ceiling; blank/None falls back to the auto max.
+    # ``zt`` / ``vmax_override`` are the card's range-slider low/high handles,
+    # whose meaning depends on maptype (z-score for z/corrected, Kendall's-tau-
+    # like average similarity for mean — see ZT_RANGE_Z / ZT_RANGE_MEAN). The
+    # low handle filters voxels below it out (transparent); the high handle caps
+    # the color scale (falls back to the data-driven max if unset).
+    thr = float(zt)
+    vmin = thr
+    auto_max = float(np.max(np.abs(nz))) if nz.size else thr + 1
     try:
         vmax = float(vmax_override) if vmax_override not in (None, "") else auto_max
     except (TypeError, ValueError):
@@ -1198,14 +1274,16 @@ def _register_panel(i):
         Input(f"pl-{i}-stem", "value"),
         Input(f"pl-{i}-grouping", "value"), Input(f"pl-{i}-maps", "value"),
         Input(f"pl-{i}-showmodel", "value"), Input(f"pl-{i}-maptype", "value"),
-        Input(f"pl-{i}-axis", "value"), Input(f"pl-{i}-frac", "value"), Input(f"pl-{i}-zt", "value"),
-        Input(f"pl-{i}-cmap", "value"), Input(f"pl-{i}-vmax", "value"),
+        Input(f"pl-{i}-axis", "value"), Input(f"pl-{i}-frac", "value"), Input(f"pl-{i}-range", "value"),
+        Input(f"pl-{i}-cmap", "value"),
         Input("ex-roi", "value"), Input("ex-dataver", "data"),
         Input("ex-source-mode", "value"), Input("ex-glm-model", "value"),
         Input("ex-view-height", "value"), Input("ex-grouped", "data"),
+        Input("ex-update-trigger", "data"), State("ex-autoupdate", "value"),
         State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-modality", "value"))
-    def _cb(enable, mahfold, stem, grouping, maps, showmodel, maptype, axis, frac, zt, cmap, vmax,
-            roi, _ver, source, glm_model, view_h, grouped, datafolder, dataset, modality):
+    def _cb(enable, mahfold, stem, grouping, maps, showmodel, maptype, axis, frac, rng, cmap,
+            roi, _ver, source, glm_model, view_h, grouped, _update_trig, autoupdate,
+            datafolder, dataset, modality):
         vh = _int(view_h, DEFAULT_SETTINGS["view_height"])
         gshow = {"height": f"{vh}px"}
         wrap_show = {}
@@ -1213,6 +1291,18 @@ def _register_panel(i):
         show_matrix = "on" in (showmodel or [])
         if "on" not in (enable or []):        # card off — block hidden anyway
             return (no_update, no_update, no_update, no_update, wrap_hide, "")
+
+        # Auto-update off: only the slice slider, card on/off, matrix show/hide and
+        # the top-bar source/ROI/reload/view-height controls (plus the Update button
+        # itself) re-render live; everything else just flags a pending change and
+        # leaves the current map/matrix in place until Update is clicked.
+        trig = ctx.triggered_id
+        live_triggers = {f"pl-{i}-frac", f"pl-{i}-enable", f"pl-{i}-showmodel",
+                         "ex-update-trigger", "ex-roi", "ex-dataver", "ex-source-mode",
+                         "ex-glm-model", "ex-view-height", "ex-grouped"}
+        if trig is not None and trig not in live_triggers and "auto" not in (autoupdate or []):
+            return (no_update, no_update, no_update, no_update, no_update,
+                    "⏸ change pending — click 🔄 Update")
 
         model = _resolve_model(grouped, mahfold, stem, grouping)
         if not model:
@@ -1229,7 +1319,12 @@ def _register_panel(i):
         title = html.Span([status_dot(color), html.Span(model, style={"fontWeight": "bold", "color": INK}),
                            html.Span(f"  · {st_label}", style={"color": MUTED})])
 
-        # single-species results map (this card's column)
+        # single-species results map (this card's column). ``rng`` is the range
+        # slider's [low, high]: low filters voxels out, high caps the color scale.
+        try:
+            zt, vmax = float(rng[0]), float(rng[1])
+        except (TypeError, ValueError, IndexError):
+            zt, vmax = 0.0, 1.0
         specie = maps if maps in ("D", "H") else "D"
         label = {"D": "Dog", "H": "Human"}[specie]
         fig, n = _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
@@ -1364,11 +1459,36 @@ def cb_gap(gap, layout):
 
 
 @app.callback(Output("ex-layout", "data", allow_duplicate=True), Output("ex-gap", "value"),
+              Output("ex-models-title", "children", allow_duplicate=True),
               Input("ex-reset-layout", "n_clicks"), prevent_initial_call=True)
 def cb_reset_layout(_n):
     """Restore the default card order + gap and sync the gap box."""
     d = _default_layout()
-    return d, d["gap"]
+    return d, d["gap"], "Layout reset to default order."
+
+
+# ---------------------------------------------------------------------------
+# Callbacks — manual "Update now" + auto-update status feedback
+# ---------------------------------------------------------------------------
+
+@app.callback(Output("ex-update-trigger", "data"), Output("ex-models-title", "children", allow_duplicate=True),
+              Input("ex-update-now", "n_clicks"), State("ex-update-trigger", "data"),
+              [State(f"pl-{i}-enable", "value") for i in range(MAX_MODELS)],
+              prevent_initial_call=True)
+def cb_update_now(_n, ver, *enables):
+    """Bumps ex-update-trigger, which every card's render callback treats as a
+    live trigger regardless of the auto-update toggle — applies any pending
+    changes on enabled cards."""
+    n_on = sum(1 for e in enables if "on" in (e or []))
+    return (ver or 0) + 1, f"Updated {n_on} enabled card(s)."
+
+
+@app.callback(Output("ex-models-title", "children", allow_duplicate=True),
+              Input("ex-autoupdate", "value"), prevent_initial_call=True)
+def cb_autoupdate_status(val):
+    if "auto" in (val or []):
+        return "Auto-update ON — cards refresh as you change settings."
+    return "Auto-update OFF — change settings, then click 🔄 Update now to apply."
 
 
 # ---------------------------------------------------------------------------

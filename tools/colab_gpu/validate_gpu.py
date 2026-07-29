@@ -135,11 +135,11 @@ def check_step1_realdata():
     manifest = dict(dataset=dataset, model=model, specie=specie, sub_N=sub_N,
                     task=cfg["task"], stim_types=stim_types, categories=categories,
                     runs=runs, radius=radius, mask_type="b_GreyMatter2mmB")
-    mask_path = os.path.join(datafolder, dataset, "ROI", specie, "b_GreyMatter2mmB.nii.gz")
-    mask_bool = np.asarray(nib.load(mask_path).dataobj).astype(bool)
+    mask_img, mask_bool = gpu_rsa.load_reference_mask(datafolder, manifest)
 
     print(f"[step1 realdata] {len(runs)} runs, {int(mask_bool.sum())} voxels -- computing ...")
-    means, affine, cats, runs = gpu_rsa._load_category_means(datafolder, manifest, mask_bool)
+    means, affine, cats, runs = gpu_rsa._load_category_means(
+        datafolder, manifest, mask_bool, ref_img=mask_img)
     dist_maps = gpu_rsa.crossnobis_searchlight(means, mask_bool, cats, runs, radius,
                                                device=DEV, batch=2048, verbose=False)
 
@@ -236,10 +236,10 @@ def check_correlation():
     manifest = dict(dataset=dataset, model=model, specie=specie, sub_N=sub_N, task=task,
                     stim_types=stim_types, categories=list(stim_types), radius=radius,
                     mask_type="b_GreyMatter2mmB")
-    mask_path = os.path.join(datafolder, dataset, "ROI", specie, "b_GreyMatter2mmB.nii.gz")
-    mask_bool = np.asarray(nib.load(mask_path).dataobj).astype(bool)
+    mask_img, mask_bool = gpu_rsa.load_reference_mask(datafolder, manifest)
 
-    betas, _aff = gpu_rsa._load_run_betas(datafolder, manifest, entry, mask_bool)
+    betas, _aff = gpu_rsa._load_run_betas(datafolder, manifest, entry, mask_bool,
+                                          ref_img=mask_img)
     dist, mask_flat = gpu_rsa.pearson_rdm_searchlight(betas, mask_bool, radius,
                                                       device=DEV, batch=4096)
     pairs = gpu_rsa.canonical_pairs(stim_types)            # 780
