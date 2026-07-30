@@ -9,7 +9,7 @@ file-probing logic in ``pipeline_console.py``.
 Design goals (per request)
 ---------------------------
 * **Editable parameters in the page** — dataset, model, rsa_model, specie,
-  method, rsa_method, radius, z_threshold, mask_type, reps, reps_group. Change
+  dis_method, rsa_method, radius, z_threshold, mask_type, reps, reps_group. Change
   any of them and the view reflects that parameter set.
 * **Check only on demand** — scanning the disk is slow, so nothing is checked
   automatically. You press "Check" on a step (or "Check all") to run the probe.
@@ -64,13 +64,14 @@ from scheduler.jobs import create_job  # noqa: E402
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "1.6.0"
-LAST_CHANGE = ("dis_method is now a dropdown (pearson/kendall/euclidean/mahalanobis/"
-               "correlation). The rsa_model menu shows ONLY _models.csv models: for "
-               "mahalanobis it is filtered to the selected mah_fold's models (and the "
-               "mah_fold dropdown is enabled); for any other method the fold filter is "
-               "dropped, the mah_fold dropdown is disabled, and every manifest model is "
-               "offered. The selected model's 'why' note is shown; PORT env var honoured.")
+VERSION = "2.0.0"
+LAST_CHANGE = ("Renamed the ambiguous param 'method' to 'dis_method' everywhere "
+               "(PARAM_KEYS, DEFAULTS, the p-method dropdown id, and every callback "
+               "signature), matching searchlight.py --dis_method and pipeline_console's "
+               "ctx.dis_method. Because 'method' was part of PARAM_KEYS it was part of the "
+               "cache signature, so every existing "
+               "~/.rsa_pipeline_dashboard_cache.json entry is invalidated and will be "
+               "re-probed on first load — hence the major bump.")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10
@@ -86,7 +87,7 @@ PER_PARTICIPANT_STEPS = {0, 1, 2, 4}
 # Parameters that define a "run" (and therefore the cache signature)
 # ---------------------------------------------------------------------------
 PARAM_KEYS = [
-    'dataset', 'model', 'rsa_model', 'specie', 'method', 'mah_fold', 'rsa_method',
+    'dataset', 'model', 'rsa_model', 'specie', 'dis_method', 'mah_fold', 'rsa_method',
     'radius', 'z_threshold', 'mask_type', 'reps', 'reps_group',
 ]
 
@@ -95,7 +96,7 @@ DEFAULTS = {
     'model': 'basic-block',
     'rsa_model': None,
     'specie': 'D',
-    'method': 'mahalanobis',
+    'dis_method': 'mahalanobis',
     'mah_fold': 'stim-wise',
     'rsa_method': 'kendall',
     'radius': None,          # None -> auto (3 dog / 4 human)
@@ -105,12 +106,12 @@ DEFAULTS = {
     'reps_group': 1000,
 }
 
-# Pairwise dissimilarity methods (searchlight.py --method / dis_method). Only
+# Pairwise dissimilarity methods (searchlight.py --dis_method). Only
 # 'mahalanobis' uses mah_fold — see MAH_FOLD_OPTIONS and populate_models below.
 DIS_METHODS = ['pearson', 'kendall', 'euclidean', 'mahalanobis', 'correlation']
 
 # Mahalanobis folding strategies (searchlight.py --mah_fold). Only meaningful when
-# method == 'mahalanobis'; it decides where/which pairwise maps land on disk, so it
+# dis_method == 'mahalanobis'; it decides where/which pairwise maps land on disk, so it
 # is part of the run signature — two folds of the same model are tracked apart.
 MAH_FOLD_OPTIONS = [
     'stim-wise', 'stim-wise-multiple-folds', 'stim-wise-all-runs', 'run-wise',
@@ -161,7 +162,7 @@ def signature(params):
     return " | ".join(f"{k}={params.get(k)}" for k in PARAM_KEYS)
 
 
-def params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
+def params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
                        radius, z_threshold, mask_type, reps, reps_group):
     def _int_or_none(v):
         try:
@@ -173,7 +174,7 @@ def params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold, rsa_
         'model': (model or '').strip(),
         'rsa_model': rsa_model,
         'specie': specie or 'D',
-        'method': (method or '').strip(),
+        'dis_method': (dis_method or '').strip(),
         'mah_fold': (mah_fold or 'stim-wise').strip(),
         'rsa_method': (rsa_method or '').strip(),
         'radius': _int_or_none(radius),
@@ -268,7 +269,7 @@ def _schedule_jobs(params, step, participants, overwrite):
             rsa_model=params['rsa_model'], specie=params['specie'], step=step,
             z_threshold=params['z_threshold'], reps=params['reps'],
             reps_group=params['reps_group'],
-            rsa_method=params['rsa_method'], dis_method=params['method'],
+            rsa_method=params['rsa_method'], dis_method=params['dis_method'],
             mah_fold=params['mah_fold'],
             participant=sub, radius=params['radius'], mask_type=params['mask_type'],
             replace_file=bool(overwrite), replace_rnd_files=replace_rnd,
@@ -343,7 +344,7 @@ def _schedule_from_here(params, start_step, overwrite):
         target_step=FINAL_STEP, start_step=start_step,
         z_threshold=params['z_threshold'], reps=params['reps'],
         reps_group=params['reps_group'],
-        rsa_method=params['rsa_method'], dis_method=params['method'],
+        rsa_method=params['rsa_method'], dis_method=params['dis_method'],
         mah_fold=params['mah_fold'],
     )
     created = []
@@ -408,9 +409,9 @@ def param_panel():
                          style={'width': '120px', 'display': 'inline-block',
                                 'verticalAlign': 'middle', 'marginRight': '10px'}),
             html.Label('dis_method'),
-            dcc.Dropdown(id='p-method',
+            dcc.Dropdown(id='p-dis_method',
                          options=[{'label': m, 'value': m} for m in DIS_METHODS],
-                         value=DEFAULTS['method'], clearable=False,
+                         value=DEFAULTS['dis_method'], clearable=False,
                          style={'width': '150px', 'display': 'inline-block',
                                 'verticalAlign': 'middle', 'marginRight': '10px'}),
             html.Label('mah_fold'),
@@ -510,7 +511,7 @@ app.layout = html.Div([
             "* Results are remembered in `~/.rsa_pipeline_dashboard_cache.json`. "
             "Use a step's **Clear** or **Clear all** after you redo a step so it "
             "gets re-checked.\n"
-            "* Parameters must match how the model was run — `method`, `rsa_method`, "
+            "* Parameters must match how the model was run — `dis_method`, `rsa_method`, "
             "`radius`, `mask_type`, `z_threshold` are encoded in the filenames.\n"
             "* This app runs on its own port; closing it does not affect your other "
             "consoles."
@@ -559,25 +560,25 @@ def populate_mah_folds(dataset, _n, current):
     Output('p-rsa_model', 'options'),
     Output('p-rsa_model', 'value'),
     Input('p-dataset', 'value'),
-    Input('p-method', 'value'),
+    Input('p-dis_method', 'value'),
     Input('p-mah_fold', 'value'),
     Input('reload-models', 'n_clicks'),
     State('p-rsa_model', 'value'),
 )
-def populate_models(dataset, method, mah_fold, _n, current):
+def populate_models(dataset, dis_method, mah_fold, _n, current):
     dataset = (dataset or '').strip()
-    method = (method or '').strip().lower()
-    _log(f"reloading rsa_model list dataset={dataset!r} dis_method={method!r} "
+    dis_method = (dis_method or '').strip().lower()
+    _log(f"reloading rsa_model list dataset={dataset!r} dis_method={dis_method!r} "
          f"mah_fold={mah_fold!r} ...")
     mm.clear_cache()
     dirs = mm.rsa_models_dirs(DATAFOLDER, dataset)
     on_disk = {m for m in pc.list_rsa_models(DATAFOLDER, dataset)[0] if not m.startswith('_')}
-    if method == 'mahalanobis':
+    if dis_method == 'mahalanobis':
         candidates = mm.concrete_models_for_fold(dirs, mah_fold or '')   # fold-filtered
         note = f"mahalanobis / {mah_fold}"
     else:
         candidates = mm.all_concrete_models(dirs)                        # fold ignored
-        note = f"{method or 'non-mahalanobis'} (fold ignored)"
+        note = f"{dis_method or 'non-mahalanobis'} (fold ignored)"
     models = [m for m in candidates if m in on_disk]
     _log(f"  {len(models)} model(s) from _models.csv — {note}")
     options = [{'label': m, 'value': m} for m in models]
@@ -590,10 +591,10 @@ def populate_models(dataset, method, mah_fold, _n, current):
 # ---------------------------------------------------------------------------
 @app.callback(
     Output('p-mah_fold', 'disabled'),
-    Input('p-method', 'value'),
+    Input('p-dis_method', 'value'),
 )
-def toggle_mah_fold(method):
-    return (method or '').strip().lower() != 'mahalanobis'
+def toggle_mah_fold(dis_method):
+    return (dis_method or '').strip().lower() != 'mahalanobis'
 
 
 # ---------------------------------------------------------------------------
@@ -632,7 +633,7 @@ def show_model_why(rsa_model, dataset):
     State('detail-overwrite', 'value'),
     State('verbose-mode', 'value'),
     State('p-dataset', 'value'), State('p-model', 'value'), State('p-rsa_model', 'value'),
-    State('p-specie', 'value'), State('p-method', 'value'), State('p-mah_fold', 'value'),
+    State('p-specie', 'value'), State('p-dis_method', 'value'), State('p-mah_fold', 'value'),
     State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
@@ -640,7 +641,7 @@ def show_model_why(rsa_model, dataset):
 )
 def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite_val,
               verbose_val,
-              dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
+              dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
               radius, z_threshold, mask_type, reps, reps_group):
     trig = callback_context.triggered
     if not trig or trig[0]['value'] in (None, 0):
@@ -659,7 +660,7 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     overwrite = 'ow' in (overwrite_val or [])
     verbose = 'v' in (verbose_val or [])
 
-    params = params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold,
+    params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
                                 rsa_method, radius, z_threshold, mask_type, reps, reps_group)
     if not params['rsa_model']:
         _log(f"button pressed ({prop}) but no rsa_model selected — ignoring")
@@ -751,14 +752,14 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     Output('sig-label', 'children'),
     Input('cache-version', 'data'),
     Input('p-dataset', 'value'), Input('p-model', 'value'), Input('p-rsa_model', 'value'),
-    Input('p-specie', 'value'), Input('p-method', 'value'), Input('p-mah_fold', 'value'),
+    Input('p-specie', 'value'), Input('p-dis_method', 'value'), Input('p-mah_fold', 'value'),
     Input('p-rsa_method', 'value'),
     Input('p-radius', 'value'), Input('p-z_threshold', 'value'), Input('p-mask_type', 'value'),
     Input('p-reps', 'value'), Input('p-reps_group', 'value'),
 )
-def render_table(_v, dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
+def render_table(_v, dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
                  radius, z_threshold, mask_type, reps, reps_group):
-    params = params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold,
+    params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
                                 rsa_method, radius, z_threshold, mask_type, reps, reps_group)
     sig = signature(params)
     cache = load_cache()
@@ -828,17 +829,17 @@ def render_table(_v, dataset, model, rsa_model, specie, method, mah_fold, rsa_me
     Input('selected-step', 'data'),
     Input('cache-version', 'data'),
     State('p-dataset', 'value'), State('p-model', 'value'), State('p-rsa_model', 'value'),
-    State('p-specie', 'value'), State('p-method', 'value'), State('p-mah_fold', 'value'),
+    State('p-specie', 'value'), State('p-dis_method', 'value'), State('p-mah_fold', 'value'),
     State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
 )
-def render_detail(step, _v, dataset, model, rsa_model, specie, method, mah_fold, rsa_method,
+def render_detail(step, _v, dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
                   radius, z_threshold, mask_type, reps, reps_group):
     if step is None:
         return html.Span('Select a step\'s "Details" (or "Check" a step) to see the '
                          'per-participant breakdown here.', style={'color': '#57606a'})
-    params = params_from_inputs(dataset, model, rsa_model, specie, method, mah_fold,
+    params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
                                 rsa_method, radius, z_threshold, mask_type, reps, reps_group)
     sig = signature(params)
     c = load_cache().get(sig, {}).get('steps', {}).get(str(step))

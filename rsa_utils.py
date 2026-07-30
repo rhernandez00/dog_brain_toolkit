@@ -1452,10 +1452,10 @@ def calculate_similarity_maps_by_class(datafolder, dataset, session_and_run_all_
         # determine output mean
         result_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + 'by_class' + os.sep + 'classes' + os.sep +
-                        f"{specie}-r-{radius}_{method}_class_{class_name}_mean.nii.gz")
+                        f"{specie}-r-{radius}_{dis_method}_class_{class_name}_mean.nii.gz")
         result_map_path_std = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + 'by_class' + os.sep + 'classes' + os.sep +
-                        f"{specie}-r-{radius}_{method}_class_{class_name}_std.nii.gz")
+                        f"{specie}-r-{radius}_{dis_method}_class_{class_name}_std.nii.gz")
         # check if output file already exists
         if os.path.exists(result_map_path) and not replace_file:
             if verbose:
@@ -1495,7 +1495,7 @@ def calculate_similarity_maps_by_class(datafolder, dataset, session_and_run_all_
                                 datafolder, dataset, 'results', 'RSA', model,
                                 f"{specie}-sub-{sub_N:02d}",
                                 f"ses-{session}_task-{task}_run-{run_N:02d}",
-                                f"r-{radius}_{method}_{class_a}_{class_b}.nii.gz"
+                                f"r-{radius}_{dis_method}_{class_a}_{class_b}.nii.gz"
                             )
                     if os.path.exists(input_file):
                         files_list.append(input_file)
@@ -1825,13 +1825,13 @@ def calculate_similarity_in_roi(datafolder,
                 data_i = beta_map_i[mask.get_fdata() > 0]
                 data_j = beta_map_j[mask.get_fdata() > 0]
                 # compute similarity
-                if method == 'pearson':
+                if dis_method == 'pearson':
                     similarity = _pearson(data_i, data_j)
-                elif method == 'correlation':
+                elif dis_method == 'correlation':
                     similarity = _correlation(data_i, data_j)
-                elif method == 'kendall':
+                elif dis_method == 'kendall':
                     similarity = _kendall(data_i, data_j)
-                elif method == 'euclidean':
+                elif dis_method == 'euclidean':
                     similarity = _euclidean(data_i, data_j)
                 # create new_row
                 new_row = {

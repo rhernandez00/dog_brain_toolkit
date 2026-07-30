@@ -557,7 +557,7 @@ def run_process(job):
         print('Process not found')
 
 def check_file_status(project_dict, sub_N, run_N, session, process, verbose=False, 
-                      model=None, method=None, rsa_method=None, radius=None, rsa_model=None,
+                      model=None, dis_method=None, rsa_method=None, radius=None, rsa_model=None,
                       stim_N=None, stim_1_name=None, stim_2_name=None, stim_types=None,
                       reps=None, reps_group=None):
     
@@ -756,8 +756,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     elif process == 'pairwise_similarity_maps':
         # build the filename for the pairwise similarity map
         # make sure that all variables are available, if not indicate which is missing
-        list_vars = [model, method, radius, stim_types]
-        list_vars_name = ['model', 'method', 'radius', 'stim_types']
+        list_vars = [model, dis_method, radius, stim_types]
+        list_vars_name = ['model', 'dis_method', 'radius', 'stim_types']
         for var, var_name in zip(list_vars, list_vars_name):
             if var is None:
                 print(f'{var_name} is missing')
@@ -772,7 +772,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
                     filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                                 model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
                                 f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                                f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz")
+                                f"r-{radius}_{dis_method}_{stim_1_name}_{stim_2_name}.nii.gz")
                     # add to files_found if exist
                     if os.path.exists(filename):
                         if verbose:
@@ -795,8 +795,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     elif process == 'pairwise_similarity_map':
         # build the filename for the pairwise similarity map
         # make sure that all variables are available, if not indicate which is missing
-        list_vars = [model, method, radius, stim_1_name, stim_2_name]
-        list_vars_name = ['model', 'method', 'radius', 'stim_1_name', 'stim_2_name']
+        list_vars = [model, dis_method, radius, stim_1_name, stim_2_name]
+        list_vars_name = ['model', 'dis_method', 'radius', 'stim_1_name', 'stim_2_name']
         for var, var_name in zip(list_vars, list_vars_name):
             if var is None:
                 print(f'{var_name} is missing')
@@ -805,7 +805,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + 
                     f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                    f"r-{radius}_{method}_{stim_1_name}_{stim_2_name}.nii.gz")
+                    f"r-{radius}_{dis_method}_{stim_1_name}_{stim_2_name}.nii.gz")
         # check if filename exist
         if os.path.exists(filename):
             if verbose:
@@ -818,8 +818,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     elif process == 'model_similarity_map':
         # build the filename for the model similarity map
         # make sure that all variables are available, if not indicate which is missing
-        list_vars = [model, method, rsa_method, radius, rsa_model]
-        list_vars_name = ['model', 'method', 'rsa_method', 'radius', 'rsa_model'
+        list_vars = [model, dis_method, rsa_method, radius, rsa_model]
+        list_vars_name = ['model', 'dis_method', 'rsa_method', 'radius', 'rsa_model'
                           ]
         for var, var_name in zip(list_vars, list_vars_name):
             if var is None:
@@ -828,7 +828,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
 
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                    f"r-{radius}_{method}_{rsa_method}.nii.gz")
+                    f"r-{radius}_{dis_method}_{rsa_method}.nii.gz")
         # check if filename exist
         if os.path.exists(filename):
             if verbose:
@@ -842,8 +842,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
     elif process == 'mean_model_similarity_map':
         # build the filename for the mean model similarity map
         # make sure that all variables are available, if not indicate which is missing
-        list_vars = [model, method, rsa_method, radius, rsa_model]
-        list_vars_name = ['model', 'method', 'rsa_method', 'radius', 'rsa_model'
+        list_vars = [model, dis_method, rsa_method, radius, rsa_model]
+        list_vars_name = ['model', 'dis_method', 'rsa_method', 'radius', 'rsa_model'
                           ]
         for var, var_name in zip(list_vars, list_vars_name):
             if var is None:
@@ -852,7 +852,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
 
         filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
                     model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
-                    f"r-{radius}_{method}_{rsa_method}_mean.nii.gz")
+                    f"r-{radius}_{dis_method}_{rsa_method}_mean.nii.gz")
         # check if filename exist
         if os.path.exists(filename):
             if verbose:
@@ -868,8 +868,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         # false, missing_files. If one or more files are missing, list of missing files
         # make sure that all variables are available, if not indicate which is missing
         # reps - number of by participant repetitions
-        list_vars = [model, method, rsa_method, radius, rsa_model, reps]
-        list_vars_name = ['model', 'method', 'rsa_method', 'radius', 'rsa_model'
+        list_vars = [model, dis_method, rsa_method, radius, rsa_model, reps]
+        list_vars_name = ['model', 'dis_method', 'rsa_method', 'radius', 'rsa_model'
                           'reps']
         # check that all variables are available, if not indicate which is missing
         for var, var_name in zip(list_vars, list_vars_name):
@@ -882,7 +882,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         for rep in range(reps):
             filename = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
                         model + os.sep + rsa_model + os.sep + f"{specie}-sub-{sub_N:02d}" + os.sep + f"ses-{session}_task-{task}_run-{run_N:02d}" + os.sep +
-                        f"r-{radius}_{method}_{rsa_method}_{str(rep).zfill(4)}.nii.gz")
+                        f"r-{radius}_{dis_method}_{rsa_method}_{str(rep).zfill(4)}.nii.gz")
             # add to files_found if exist
             if os.path.exists(filename):
                 files_found.append(filename)
@@ -907,8 +907,8 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
         # false, missing_files. If one or more files are missing, list of missing files
         # make sure that all variables are available, if not indicate which is missing
         # reps - number of by participant repetitions
-        list_vars = [model, method, rsa_method, radius, rsa_model, reps, reps_group]
-        list_vars_name = ['model', 'method', 'rsa_method', 'radius', 'rsa_model',
+        list_vars = [model, dis_method, rsa_method, radius, rsa_model, reps, reps_group]
+        list_vars_name = ['model', 'dis_method', 'rsa_method', 'radius', 'rsa_model',
                          'reps_group']
         # check that all variables are available, if not indicate which is missing
         for var, var_name in zip(list_vars, list_vars_name):
@@ -923,7 +923,7 @@ def check_file_status(project_dict, sub_N, run_N, session, process, verbose=Fals
             filename = (datafolder + os.sep + dataset + os.sep + 
                         'results' + os.sep + 'RSA_rnd' + os.sep +
                         model + os.sep + rsa_model + os.sep +
-                        'r-' + str(radius) + '_' + method + '_' + rsa_method + '_mean_' + str(g_rep).zfill(len(str(reps_group))) + '.nii.gz')
+                        'r-' + str(radius) + '_' + dis_method + '_' + rsa_method + '_mean_' + str(g_rep).zfill(len(str(reps_group))) + '.nii.gz')
             # add to files_found if exist
             if os.path.exists(filename):
                 files_found.append(filename)

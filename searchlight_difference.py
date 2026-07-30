@@ -25,7 +25,7 @@ def parse_arguments():
                         help='Steps to run. Options: 0 (compute beta maps), 1 (compute pairwise similarity maps), 2 (compute group similarity maps), 3 (compute group difference map), 4 (compute permutations for group similarity map). Default: all steps [0,1,2,3,4]')
     parser.add_argument('--model', type=str, default='basic-block',
                         help='Model name to use for RSA analysis. Default: basic-block')
-    parser.add_argument('--method', type=str, default='mahalanobis',
+    parser.add_argument('--dis_method', type=str, default='mahalanobis',
                         help='Method for pairwise similarity calculation. Options: pearson, kendall, euclidean, mahalanobis, correlation. Default: mahalanobis')
     parser.add_argument('--specie', type=str, default='D',
                         help='Specie to analyze. Options: D (Dog), H (Human). Default: D')
@@ -57,7 +57,7 @@ def main():
     steps_to_run = args.steps_to_run
     model = args.model
     # mask_path = args.mask_path
-    method = args.method
+    dis_method = args.dis_method
     specie = args.specie
     mask_type = args.mask_type
     radius = args.radius
@@ -212,7 +212,7 @@ def main():
                 session_and_run_dict = utils_EmoB.get_session_and_run_list(specie, sub_N)
                 rsa_utils.calculate_pairwise_similarity_maps2(datafolder, dataset, sub_N, session_and_run_dict,
                                     specie, model, stim_types, mask, task, radius, 
-                                    dis_method=method, replace_file=replace_file, mah_fold='run-wise', verbose=verbose)
+                                    dis_method=dis_method, replace_file=replace_file, mah_fold='run-wise', verbose=verbose)
                 
                 
                 print(f"Finished sub-{sub_N:02d}...")
@@ -228,26 +228,26 @@ def main():
             
             rsa_utils.calculate_similarity_maps_by_class(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict,
                                         specie=specie, model=model, comparison_model=comparison_model, model_dict=model_dict, task=task, radius=radius,
-                                            method=method, mask=mask,
+                                            dis_method=dis_method, mask=mask,
                                             replace_file=False, min_percentage_available=1.0,
                                             verbose=True, avoid_pairs_by_label='actor')
         if step == 3:  # Calculate group model similarity map by stim list
             print("### Step 3: Computing group model difference map###")
             rsa_utils.calculate_difference_map(datafolder, dataset, specie, model,
-                                            comparison_model, radius, method,
+                                            comparison_model, radius, dis_method,
                                             replace_file=False, verbose=True)
 
 
             # rsa_utils.calculate_similarity_maps_by_list(datafolder, dataset, session_and_run_all_dict,
             #                         specie, model, stim_list, category_name, mask_img, task, radius,
-            #                         method, replace_file=False, min_percentage_available=1.0,
+            #                         dis_method, replace_file=False, min_percentage_available=1.0,
             #                         verbose=False)
             print("### Done computing group model similarity map ###")
         if step == 4: # Calculate permutations for group model similarity map
             print("### Step 4: Computing group similarity map permutations ###")
             rsa_utils.calculate_similarity_maps_by_group_rnd(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict,
                                         specie=specie, model=model, comparison_model=comparison_model, model_dict=model_dict, task=task, radius=radius,
-                                            stim_types=stim_types, method=method, mask_img=mask_img,
+                                            stim_types=stim_types, dis_method=dis_method, mask_img=mask_img,
                                             replace_file=False, min_percentage_available=1.0,
                                             verbose=True, avoid_pairs_by_label='actor')
             print("### Done computing group similarity map permutations ###")

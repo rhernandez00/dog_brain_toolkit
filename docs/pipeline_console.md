@@ -44,7 +44,7 @@ python tools/pipeline_console.py --dataset EmoC --rsa_model test-model --specie 
 | `--model` | `basic-block` | GLM model. |
 | `--rsa_model` | picker | RSA model CSV name; omit for the interactive picker. |
 | `--specie` | `D` | `D` or `H`. |
-| `--method` | `mahalanobis` | Pairwise method — part of every filename. |
+| `--dis_method` | `mahalanobis` | Pairwise similarity method — part of every filename. |
 | `--mah_fold` | `stim-wise` | Mahalanobis folding (`stim-wise`, `stim-wise-multiple-folds`, `stim-wise-all-runs`, `run-wise`). Sets which/where the step-1 pairwise maps are expected, so models/folds sharing a subject folder aren't mixed. |
 | `--rsa_method` | `kendall` | Model-comparison method. |
 | `--radius` | 3 (D) / 4 (H) | Searchlight radius. |
@@ -64,7 +64,7 @@ python tools/pipeline_console.py --dataset EmoC --rsa_model test-model --specie 
 | Step | Verdict source |
 |---|---|
 | 0 Beta maps (D only) | GLM `pe*.nii.gz` per participant/run |
-| 1 Pairwise similarity | per-participant maps (`r-{radius}_{method}_*`) |
+| 1 Pairwise similarity | per-participant maps (`r-{radius}_{dis_method}_*`) |
 | 2 Model similarity | one map per direct-subject fold result, or one per run for `stim-wise-all-runs` |
 | 3 Group similarity map | `mean/{...}_mean.nii.gz` |
 | 4 RND permuted model | `--reps` permutations per direct result, or per run for `stim-wise-all-runs` |

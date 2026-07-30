@@ -27,8 +27,8 @@ Key options (all optional except --dataset):
     --model        GLM model               (default: basic-block)
     --rsa_model    RSA model CSV name       (interactive picker if omitted)
     --specie       D or H                   (default: D)
-    --method       pairwise method          (default: mahalanobis)
-    --rsa_method   model-comparison method  (default: kendall)
+    --dis_method       pairwise dis_method          (default: mahalanobis)
+    --rsa_method   model-comparison dis_method  (default: kendall)
     --radius       searchlight radius       (default: 3 for D, 4 for H)
     --z_threshold  z threshold              (default: 3.1)
     --mask_type    mask selector            (default: b_GreyMatter2mmB)
@@ -122,7 +122,7 @@ _VERDICT_STYLE = {
 class Ctx:
     """Everything a probe needs to locate a model's files."""
 
-    def __init__(self, datafolder, dataset, model, rsa_model, specie, method,
+    def __init__(self, datafolder, dataset, model, rsa_model, specie, dis_method,
                  rsa_method, radius, z_threshold, mask_type, reps, reps_group,
                  mah_fold='stim-wise'):
         self.datafolder = datafolder
@@ -130,14 +130,14 @@ class Ctx:
         self.model = model
         self.rsa_model = rsa_model
         self.specie = specie
-        self.method = method
+        self.dis_method = dis_method
         self.rsa_method = rsa_method
         self.radius = radius
         self.z_threshold = z_threshold
         self.mask_type = mask_type
         self.reps = reps
         self.reps_group = reps_group
-        # Mahalanobis folding strategy. Only relevant when method == 'mahalanobis';
+        # Mahalanobis folding strategy. Only relevant when dis_method == 'mahalanobis';
         # it decides *where* the per-pair pairwise maps land (see mah_direct below)
         # and, together with the model's own categories, *which* files to expect —
         # so two mahalanobis models run under different folds are probed apart
@@ -178,10 +178,10 @@ class Ctx:
     def core(self, with_mask):
         """The filename stem shared by group/final maps.
 
-        With mask:  ``{mask}-{specie}-r-{radius}_{method}_{rsa_method}``
-        Without:    ``{specie}-r-{radius}_{method}_{rsa_method}``
+        With mask:  ``{mask}-{specie}-r-{radius}_{dis_method}_{rsa_method}``
+        Without:    ``{specie}-r-{radius}_{dis_method}_{rsa_method}``
         """
-        base = f"{self.specie}-r-{self.radius}_{self.method}_{self.rsa_method}"
+        base = f"{self.specie}-r-{self.radius}_{self.dis_method}_{self.rsa_method}"
         if with_mask and self.mask_type:
             return f"{self.mask_type}-{base}"
         return base
@@ -196,7 +196,7 @@ class Ctx:
         ``stim-wise-multiple-folds`` pools repeated EmoC stimuli across their
         metadata-defined partitions before writing one map per exact pair.
         """
-        return (self.method == 'mahalanobis' and
+        return (self.dis_method == 'mahalanobis' and
             self.mah_fold != 'stim-wise-all-runs')
 
 
@@ -207,7 +207,7 @@ def build_ctx(args, datafolder):
         model=args.model,
         rsa_model=args.rsa_model,
         specie=args.specie,
-        method=args.method,
+        dis_method=args.dis_method,
         rsa_method=args.rsa_method,
         radius=args.radius,
         z_threshold=args.z_threshold,
@@ -369,7 +369,7 @@ def _pair_present(ctx, files, a, b):
     Step-1 maps are shared and written once, using whichever model's category
     order created them — that order need not match this model's CSV column order —
     so ``a_b`` and ``b_a`` are the same map and either spelling counts."""
-    pre = f"r-{ctx.radius}_{ctx.method}_"
+    pre = f"r-{ctx.radius}_{ctx.dis_method}_"
     return f"{pre}{a}_{b}.nii.gz" in files or f"{pre}{b}_{a}.nii.gz" in files
 
 
@@ -382,14 +382,14 @@ def _run_folder(ctx, session, run_N):
 def _model_result_root(ctx, rnd=False):
     root = ctx.rsa_rnd_dir if rnd else ctx.rsa_dir
     root = os.path.join(root, ctx.rsa_model)
-    if (ctx.method == 'mahalanobis' and
+    if (ctx.dis_method == 'mahalanobis' and
             ctx.mah_fold not in (None, 'stim-wise')):
         root = os.path.join(root, ctx.mah_fold)
     return root
 
 
 def _model_result_is_per_run(ctx):
-    return ctx.method != 'mahalanobis' or ctx.mah_fold == 'stim-wise-all-runs'
+    return ctx.dis_method != 'mahalanobis' or ctx.mah_fold == 'stim-wise-all-runs'
 
 
 def _model_result_folders(ctx, sub, rnd=False):
@@ -404,7 +404,7 @@ def _model_result_folders(ctx, sub, rnd=False):
 
 
 def _model_result_candidates(ctx, folder):
-    filename = f"r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}.nii.gz"
+    filename = f"r-{ctx.radius}_{ctx.dis_method}_{ctx.rsa_method}.nii.gz"
     if not ctx.mask_type:
         return [os.path.join(folder, filename)]
     return [
@@ -465,7 +465,7 @@ def _step1_expected(ctx, sub):
     Non-mahalanobis: one map per stim-type pair **per run**, in the run subfolders.
     """
     sub_dir = os.path.join(ctx.rsa_dir, ctx.sub_folder(sub))
-    is_mah = ctx.method == 'mahalanobis'
+    is_mah = ctx.dis_method == 'mahalanobis'
 
     if is_mah:
         fold = ctx.mah_fold
@@ -530,14 +530,14 @@ def probe_step1(ctx, verbose=False):
         return _result(UNKNOWN, "participant list unavailable")
     per_sub, done, partial = [], 0, 0
     detail = [] if verbose else None
-    pre = f"r-{ctx.radius}_{ctx.method}_"
+    pre = f"r-{ctx.radius}_{ctx.dis_method}_"
     for sub in ctx.participants:
         exp_map = _step1_expected(ctx, sub)
         if exp_map is None:
             # Can't resolve the expected set exactly — fall back to a fold-aware
             # wildcard so the row is still informative (expected count unknown).
             sub_dir = os.path.join(ctx.rsa_dir, ctx.sub_folder(sub))
-            pat = f"r-{ctx.radius}_{ctx.method}_*.nii.gz"
+            pat = f"r-{ctx.radius}_{ctx.dis_method}_*.nii.gz"
             glob_pat = (os.path.join(sub_dir, pat) if ctx.mah_direct
                         else os.path.join(sub_dir, 'ses-*run-*', pat))
             matches = sorted(glob.glob(glob_pat))
@@ -667,7 +667,7 @@ def probe_step5(ctx, verbose=False):
     """RND group permutation maps — one per group permutation (0..reps_group-1)."""
     mean_dir = os.path.join(ctx.rsa_rnd_dir, ctx.rsa_model, 'mean')
     pattern = os.path.join(
-        mean_dir, f"{ctx.specie}-r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_mean_*.nii.gz"
+        mean_dir, f"{ctx.specie}-r-{ctx.radius}_{ctx.dis_method}_{ctx.rsa_method}_mean_*.nii.gz"
     )
     matches = sorted(glob.glob(pattern))
     n = len(matches)
@@ -721,7 +721,7 @@ def probe_step8(ctx, verbose=False):
     """Cluster-size distribution (.npy, no mask prefix)."""
     p = os.path.join(
         ctx.model_dist_dir,
-        f"{ctx.specie}-r-{ctx.radius}_{ctx.method}_{ctx.rsa_method}_dist.npy",
+        f"{ctx.specie}-r-{ctx.radius}_{ctx.dis_method}_{ctx.rsa_method}_dist.npy",
     )
     detail = [{'sub': None, 'path': p, 'status': DONE if _exists(p) else MISSING}] if verbose else None
     if _exists(p):
@@ -834,9 +834,9 @@ def render_header(ctx):
     print(f"  dataset   : {ctx.dataset}")
     print(f"  model     : {ctx.model}")
     print(f"  rsa_model : {cyan(ctx.rsa_model)}")
-    print(f"  specie    : {ctx.specie}   radius: {ctx.radius}   method: {ctx.method}   "
+    print(f"  specie    : {ctx.specie}   radius: {ctx.radius}   dis_method: {ctx.dis_method}   "
           f"rsa_method: {ctx.rsa_method}")
-    if ctx.method == 'mahalanobis':
+    if ctx.dis_method == 'mahalanobis':
         print(f"  mah_fold  : {ctx.mah_fold}")
     print(f"  mask_type : {ctx.mask_type}   z_threshold: {ctx.z_threshold}   "
           f"reps: {ctx.reps}   reps_group: {ctx.reps_group}")
@@ -981,7 +981,7 @@ def interactive(args, datafolder):
             continue
         if cmd.lower() == 's':
             args.specie = _prompt("specie (D/H)", args.specie) or args.specie
-            args.method = _prompt("method", args.method) or args.method
+            args.dis_method = _prompt("dis_method", args.dis_method) or args.dis_method
             args.mah_fold = _prompt("mah_fold", getattr(args, 'mah_fold', 'stim-wise')) \
                 or getattr(args, 'mah_fold', 'stim-wise')
             args.rsa_method = _prompt("rsa_method", args.rsa_method) or args.rsa_method
@@ -1019,7 +1019,7 @@ def parse_args():
     p.add_argument('--model', default='basic-block')
     p.add_argument('--rsa_model', default=None)
     p.add_argument('--specie', default='D', choices=['D', 'H'])
-    p.add_argument('--method', default='mahalanobis')
+    p.add_argument('--dis_method', default='mahalanobis')
     p.add_argument('--mah_fold', default='stim-wise',
                    help="Mahalanobis folding (decides pairwise-map layout): "
                         "stim-wise, stim-wise-multiple-folds, stim-wise-all-runs, "

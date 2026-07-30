@@ -13,10 +13,10 @@ are also mirrored when present.
 Naming convention (must stay in sync with rsa_utils.create_tables)
 ------------------------------------------------------------------
 Source (per model):
-    {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z.nii.gz   (unthresholded)
-    {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_mean.nii.gz
-    {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_z_corrected.nii.gz
-    {mean}/{mask_type}-{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.csv
+    {mean}/{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_z.nii.gz   (unthresholded)
+    {mean}/{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_mean.nii.gz
+    {mean}/{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_z_corrected.nii.gz
+    {mean}/{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}.csv
 Destination (mask_type present); thresholded artifacts record zt{z_threshold}:
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_z.nii.gz
     {drive_root}/{dataset}/current-results/RSA/{specie}/{mask_type}/{specie}_{rsa_model}_mean.nii.gz
@@ -56,7 +56,7 @@ except Exception:  # pragma: no cover - allow running from elsewhere
 # segment so a mask_type that itself contains separators is captured correctly.
 _Z_RE = re.compile(
     r"^(?:(?P<mask>.+)-)?(?P<specie>[DH])-r-(?P<radius>\d+)_"
-    r"(?P<method>[A-Za-z0-9]+)_(?P<rsa_method>[A-Za-z0-9]+)_z\.nii\.gz$"
+    r"(?P<dis_method>[A-Za-z0-9]+)_(?P<rsa_method>[A-Za-z0-9]+)_z\.nii\.gz$"
 )
 
 

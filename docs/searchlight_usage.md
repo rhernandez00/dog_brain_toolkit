@@ -131,7 +131,7 @@ upstream outputs already exist.
 
 | Argument | Default | Description |
 |---|---|---|
-| `--method` | `mahalanobis` | Pairwise similarity method (step 1). Also `pearson`, `correlation`, `euclidean`, `kendall`. |
+| `--dis_method` | `mahalanobis` | Pairwise similarity method (step 1). Also `pearson`, `correlation`, `euclidean`, `kendall`. |
 | `--rsa_method` | `kendall` | Method comparing similarity maps to the model (step 2). |
 | `--mah_fold` | `stim-wise` | Mahalanobis folding: `stim-wise`, `stim-wise-multiple-folds`, `stim-wise-all-runs`, or `run-wise`. `stim-wise-multiple-folds` uses EmoC `stim_file` labels and repeated metadata partitions, producing direct-subject maps for exact repeatable stimulus pairs. EmoC-only `stim-wise-all-runs` computes each run independently, collapses exemplars such as `DogA1`--`DogA4` to `DogA`, and uses their exemplar IDs as within-run cross-validation folds. Steps 2/4 retain the legacy direct model-output path for `stim-wise`; other folds use a fold-specific result directory (with run folders for `stim-wise-all-runs`) before steps 3/5 aggregate to the usual group paths. |
 
@@ -258,8 +258,8 @@ Results are written under `{datafolder}/{dataset}/results/`:
 **Filenames encode the parameters** so runs with different settings do not
 overwrite each other:
 
-- Step 9: `{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz`
-- Step 10: `{specie}-r-{radius}_{method}_{rsa_method}_zt{z_threshold}.xlsx`
+- Step 9: `{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz`
+- Step 10: `{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}.xlsx`
 
 ---
 
@@ -304,7 +304,7 @@ the step function reports success, `searchlight.py` writes a
 - **Missing `--rsa_model`** — steps 2 and later need it; step 1 does not.
 - **Running step 7 without steps 3 and 6** — z-maps need both the real group map
   and the null distribution.
-- **Changing `--method` mid-analysis** — the method is baked into filenames and
+- **Changing `--dis_method` mid-analysis** — the value is baked into filenames and
   job IDs; a mismatched method silently reads/writes the wrong files.
 - **`--z_threshold` mismatch** — steps 8, 9, 10 must share the same threshold, or
   step 9/10 will not find the step 8 distribution.
