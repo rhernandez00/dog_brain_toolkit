@@ -248,6 +248,58 @@ def beta_manifest_path(datafolder, dataset, model, specie, sub_N, session, run_N
     )
 
 
+#: Extensions a NIfTI file can carry; the first one is what we write.
+NII_EXTENSIONS = ('.nii.gz', '.nii')
+
+
+def with_nii_extension(name):
+    '''Return ``name`` as a NIfTI filename, leaving an extension already there.
+
+    Mask and atlas names travel through the pipeline as bare stems
+    (``b_GreyMatter2mmB``) because they are also used as filename prefixes for
+    the results. Every place that turns such a name into a path goes through
+    here, so a caller that happens to pass ``b_GreyMatter2mmB.nii.gz`` cannot
+    produce either a missing or a doubled extension.
+    '''
+    if name is None:
+        return None
+    name = str(name)
+    if name.endswith(NII_EXTENSIONS):
+        return name
+    return name + NII_EXTENSIONS[0]
+
+
+def strip_nii_extension(name):
+    '''Return ``name`` without its NIfTI extension -- the form used as a stem.
+
+    The inverse of :func:`with_nii_extension`. Use it on values that are both a
+    filename and a filename *prefix* (``mask_type``), so the prefix never ends
+    up carrying ``.nii.gz``.
+    '''
+    if name is None:
+        return None
+    name = str(name)
+    for ext in NII_EXTENSIONS:
+        if name.endswith(ext):
+            return name[:-len(ext)]
+    return name
+
+
+def roi_mask_path(datafolder, dataset, specie, mask_type):
+    '''Path of the ROI mask named ``mask_type``, or None when there is no mask.
+
+    This is the dataset-local mask tree (``{dataset}/ROI/{specie}/``), which is
+    where the human masks and both species' ``cope13`` masks live. Dog atlas
+    masks are resolved against the toolkit's ``Atlas/`` folder instead, by
+    ``searchlight.py`` -- so prefer passing the mask path a caller already
+    holds and use this only as a fallback.
+    '''
+    if mask_type is None:
+        return None
+    return os.path.join(datafolder, dataset, 'ROI', specie,
+                        with_nii_extension(mask_type))
+
+
 def pe_index_for_stim(stim_index):
     '''FSL pe number for the ``stim_index``-th EV (0-based), skipping derivatives.'''
     return (int(stim_index) + 1) * 2 - 1
@@ -3630,11 +3682,7 @@ def calculate_beta_mapsH(datafolder, dataset, model, specie, sub_N, session, run
     # shutil.copy(design_template, design_template_modified)
     # Create an appropiate design for the number of stim types
     utils.generate_fsf(len(stim_types), design_template, design_template_modified)
-    # print(f"Design template modified {design_template_modified}.")
-    ## stop program here
-    # trigger error
-    # raise NotImplementedError("Stopping execution for testing purposes.")
-
+    
     
     ## Determine if this model/sub/run should be run or skipped
     # Output directory for FSL
@@ -5072,7 +5120,7 @@ def calculate_pairwise_similarity_maps(datafolder, dataset, sub_N, session,
 def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model,
                                           task, radius, rsa_model, rsa_method,
                                           dis_method, replace_file, min_percentage_available=1.0, verbose=False,
-                                          mask_type=None, mah_fold='stim-wise'):
+                                          mask_type=None, mah_fold='stim-wise', mask=None):
     '''Calculate the group model similarity map.
     Inputs:
         datafolder: str. Path to data folder.
@@ -5089,7 +5137,9 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
         replace_file: bool. Whether to replace existing files.
         verbose: bool. Whether to print verbose output.
         min_percentage_available: float. Minimum percentage of available data to process.
-        mask_type: str. Type of brain mask to use.
+        mask_type: str. Type of brain mask to use (also prefixes the output filenames).
+        mask: str, optional. Full path to the mask file. When omitted it is
+            resolved from mask_type against {dataset}/ROI/{specie}/.
     outputs:
         mean_model_map_path: str. Path to mean model similarity map.
         std_model_map_path: str. Path to standard deviation model similarity map.
@@ -5225,9 +5275,21 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
     log_json['output_mean_file'] = mean_model_map_path
     log_json['output_std_file'] = std_model_map_path
     
-    # get mask
-    mask = os.path.join(datafolder, dataset, 'ROI', specie, mask_type)
-    mask_img = nib.load(mask).get_fdata().astype(bool)
+    # get mask -- prefer the path the caller already resolved (searchlight.py
+    # picks the Atlas tree for dog masks, the ROI tree for human/cope13 ones);
+    # fall back to the ROI tree for callers that only know the mask_type.
+    mask_file = mask if mask is not None else roi_mask_path(datafolder, dataset, specie, mask_type)
+    if mask_file is None:
+        mask_img = None
+    else:
+        if not os.path.exists(mask_file):
+            raise FileNotFoundError(
+                f"Mask not found: {mask_file} (mask_type={mask_type!r}). "
+                "Pass the mask path explicitly or place the mask under "
+                f"{os.path.join(dataset, 'ROI', specie)}."
+            )
+        mask_img = nib.load(mask_file).get_fdata().astype(bool)
+    log_json['mask_file'] = mask_file
 
     # calculate mean model similarity map by averaging all files in files_list
     nifti_mean(files_list, mean_model_map_path, std_model_map_path, mask_img=mask_img)
@@ -5251,12 +5313,16 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
                                             dis_method='pearson', verbose=False, 
                                             min_percentage_available=1.0,
                                             reps=1000, replace_rnd_files=False, wait_time=300,reps_group=1000,
-                                            mah_fold='stim-wise', mask_type=None
+                                            mah_fold='stim-wise', mask_type=None, shuffle_participants=False
                                             ):
     # print the variable rsa_model
     print(f"rsa_model: {rsa_model}")
     # 
     participants = list(session_and_run_all_dict.keys())
+    # if shuffle_participants is True, shuffle the participants list
+    if shuffle_participants:
+        random.shuffle(participants)
+    
     print("Checking for existing output files...")
     # check that outptut folder exists
     output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
@@ -5275,6 +5341,8 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
     prefix_mask = f"{mask_type}-" if mask_type else ""
     rnd_file_prefix = f"{prefix_mask}r-{radius}_{dis_method}_{rsa_method}_"
     per_run = dis_method != 'mahalanobis' or mah_fold == 'stim-wise-all-runs'
+    
+
     for sub_N in participants:
         entries = session_and_run_all_dict[sub_N] if per_run else [None]
         for entry in entries:

@@ -355,6 +355,12 @@ def main():
     # Must come after reload(), which resets the module-level policy.
     rsa_utils.set_space_check(strict=not args.allow_space_mismatch)
 
+    # mask_type is a bare stem everywhere: it names a mask file *and* prefixes the
+    # result filenames. Strip an extension a caller may have included, so the two
+    # uses cannot disagree (a mask read as "...B.nii.gz" but results written under
+    # the prefix "...B.nii.gz-" would land in a second, invisible set of files).
+    mask_type = rsa_utils.strip_nii_extension(mask_type)
+
 
     project_dict = {
         "Dataset": config["dataset"],
@@ -456,7 +462,8 @@ def main():
             ## ----mask should match with the beta maps (GLM space) ---
             mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
         else:
-            mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, mask_type + '.nii.gz')
+            mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type,
+                                rsa_utils.with_nii_extension(mask_type))
         
     elif specie == 'H':
         print(f"specie is H, mask_type: {mask_type}")
@@ -470,7 +477,7 @@ def main():
         else:
             print('not getting cope 13')
             # get path
-            mask = datafolder + os.sep + dataset + os.sep + 'ROI' + os.sep + specie + os.sep + mask_type + '.nii.gz'
+            mask = rsa_utils.roi_mask_path(datafolder, dataset, specie, mask_type)
     print(f"Using mask: {mask}")
     # if participants_forced is not empty, use only those participants
     if len(participants_forced) > 0:
@@ -663,7 +670,7 @@ def main():
                                                 rsa_method=rsa_method,
                                                 dis_method=dis_method, replace_file=True, verbose=verbose,
                                                 min_percentage_available=min_percentage_available, mask_type=mask_type,
-                                                mah_fold=mah_fold
+                                                mah_fold=mah_fold, mask=mask
                                                 )
             print("### Done computing group model similarity map ###")
             if result:
@@ -700,7 +707,7 @@ def main():
                                                 rsa_method=rsa_method,
                                                 dis_method=dis_method, verbose=verbose,
                                                 min_percentage_available=min_percentage_available,
-                                                reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300,
+                                                reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300, shuffle_participants=args.shuffle_participants,
                                                 reps_group=reps_group, mah_fold=mah_fold, mask_type=mask_type)
             print("### Done computing group rnd mean model similarity maps ###")
             if result:

@@ -8,6 +8,12 @@ Usage:
   python run_jobs.py                      # run one pending job and stop
   python run_jobs.py --max_jobs 0 --loop  # run all jobs, keep polling for more
   python run_jobs.py --loop               # run jobs one at a time, keep polling
+  python run_jobs.py --verbose            # force --verbose on every job it runs
+  python run_jobs.py --no_verbose         # force verbose off, whatever the job says
+  python run_jobs.py --quiet              # log only, do not echo job output here
+
+Job output is written to the job's log file and mirrored to this terminal as it
+is produced (use --quiet to suppress the terminal copy).
 """
 import argparse
 import subprocess
@@ -22,7 +28,7 @@ from scheduler.paths import get_paths, get_queue_dir
 from scheduler.jobs import claim_job, complete_job, fail_job
 
 
-def build_command(job, git_folder, python_exe, marker_dir):
+def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None):
     searchlight = os.path.join(git_folder, "dog_brain_toolkit", "searchlight.py")
     cmd = [
         python_exe,
@@ -60,21 +66,49 @@ def build_command(job, git_folder, python_exe, marker_dir):
         # in a different order rather than racing the other instance
         # file-by-file.
         cmd.append("--shuffle_participants")
-    if job.get("verbose", True):
-        # verbose defaults to True on jobs built via scheduler/dag.py; older
-        # queued job files without the field also get --verbose via this default.
+    # verbose defaults to True on jobs built via scheduler/dag.py; older queued
+    # job files without the field also get --verbose via this default.
+    # run_jobs.py --verbose / --no_verbose overrides whatever the job says, so a
+    # worker can be made (non-)chatty without re-scheduling the queue.
+    verbose = job.get("verbose", True) if verbose_override is None else verbose_override
+    if verbose:
         cmd.append("--verbose")
     return cmd
 
 
-def run_job(job, git_folder, python_exe, log_dir, marker_dir):
-    cmd = build_command(job, git_folder, python_exe, marker_dir)
+def run_job(job, git_folder, python_exe, log_dir, marker_dir, verbose_override=None,
+            echo=True):
+    cmd = build_command(job, git_folder, python_exe, marker_dir, verbose_override)
     log_path = Path(log_dir) / f"{job['job_id']}_{int(time.time())}.log"
     print(f"  cmd : {' '.join(cmd)}")
     print(f"  log : {log_path}")
-    with open(log_path, "w") as log_f:
-        result = subprocess.run(cmd, stdout=log_f, stderr=subprocess.STDOUT, text=True)
-    return result.returncode, str(log_path)
+
+    # Child prints (searchlight.py --verbose) go to the log file and, unless
+    # --quiet, to this terminal as well. Force UTF-8 in the child so non-ASCII
+    # output does not blow up on the Windows console codepage.
+    env = dict(os.environ, PYTHONIOENCODING="utf-8")
+
+    with open(log_path, "w", encoding="utf-8") as log_f:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,          # line buffered, so the tee streams live
+            env=env,
+        )
+        for line in proc.stdout:
+            log_f.write(line)
+            log_f.flush()
+            if echo:
+                sys.stdout.write(line)
+                sys.stdout.flush()
+        proc.stdout.close()
+        returncode = proc.wait()
+
+    return returncode, str(log_path)
 
 
 def main():
@@ -87,6 +121,13 @@ def main():
                         help="Keep polling for new jobs when queue is empty")
     parser.add_argument("--poll_interval", type=int, default=60,
                         help="Seconds between polls when --loop is active (default: 60)")
+    parser.add_argument("--verbose", dest="verbose", action="store_true", default=None,
+                        help="Force --verbose on searchlight.py for every job this worker runs, "
+                             "ignoring the job's own 'verbose' field")
+    parser.add_argument("--no_verbose", dest="verbose", action="store_false",
+                        help="Force verbose OFF for every job this worker runs")
+    parser.add_argument("--quiet", action="store_true",
+                        help="Do not echo job output to this terminal (it still goes to the log file)")
     args = parser.parse_args()
 
     datafolder, git_folder, python_exe = get_paths()
@@ -117,7 +158,9 @@ def main():
         marker_dir = markers_root / job["job_id"]
         expected_marker = marker_dir / f"{job['step']}.done"
 
-        returncode, log_path = run_job(job, git_folder, python_exe, log_dir, marker_dir)
+        returncode, log_path = run_job(job, git_folder, python_exe, log_dir, marker_dir,
+                                       verbose_override=args.verbose,
+                                       echo=not args.quiet)
 
         if returncode == 0 and expected_marker.exists():
             complete_job(queue_dir, path, job)

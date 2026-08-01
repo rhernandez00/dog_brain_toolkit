@@ -2,21 +2,17 @@
 """Schedule an ARBITRARY set of pipeline steps for many RSA models at once.
 
 Why this exists: ``schedule_rsa.py`` can only queue a *contiguous* range
-(``--start_step`` .. ``--target_step``), because ``build_job_graph`` walks the
-dependency graph backwards from the target and then drops everything below the
-floor. A request like "steps 3 and 5-10" (step 4 already ran, or is running) is
-not expressible there.
+(``--start_step`` .. ``--target_step``), because it walks the dependency graph
+backwards from the target. A request like "steps 3 and 5-10" (step 4 already
+ran, or is running) is not expressible there.
 
-This script builds the full graph via the tested ``build_job_graph`` and then
-prunes it to the requested steps, rewiring dependencies so that:
-
-  * a dep on a step you did NOT ask for is dropped, and
-  * any job left with no in-set deps starts as ``pending`` instead of ``waiting``.
-
-That is the intended behaviour when the skipped step's outputs already exist on
-disk. It also means a pruned step is *assumed done* -- if step 4 has not
-actually run, step 5 will start immediately and read missing inputs. Prune only
-steps you know are complete (or already queued/running elsewhere).
+This script does not compute or wire dependencies at all. Each requested
+(model, species, step) is created as an independent job, ``status=pending``,
+``deps=[]``, via ``build_single_job`` -- the caller is assumed to already know
+the dependency graph and is asking for exactly these steps. If a step's real
+inputs are missing on disk, ``searchlight.py`` raises and the job lands in
+``failed/`` with the error -- that failure is the signal that a dependency was
+missed, not a queue-side check.
 
 Models come from the ``_models.csv`` registry: one row per hypothesis, with a
 ``groupings_possible`` column holding a stringified list, so the RSA model files
@@ -47,7 +43,7 @@ while _root != os.path.dirname(_root):
 sys.path.insert(0, _root)
 
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
-from scheduler.dag import build_job_graph, STEP_LABELS  # noqa: E402
+from scheduler.dag import build_single_job  # noqa: E402
 from scheduler.jobs import create_job  # noqa: E402
 
 
@@ -76,22 +72,6 @@ def parse_steps(spec):
         elif part:
             steps.append(int(part))
     return sorted(set(steps))
-
-
-def build_pruned_graph(steps, **kw):
-    """build_job_graph restricted to `steps`, with deps rewired.
-
-    Dep lists hold job *ids*, so map id -> step from the unpruned graph before
-    filtering, then keep only deps whose step survived.
-    """
-    keep = set(steps)
-    full = build_job_graph(target_step=max(steps), start_step=min(steps), **kw)
-    id2step = {j['job_id']: j['step'] for j in full}
-    kept = [j for j in full if j['step'] in keep]
-    for j in kept:
-        j['deps'] = [d for d in j['deps'] if id2step.get(d) in keep]
-        j['status'] = 'pending' if not j['deps'] else 'waiting'
-    return kept
 
 
 def main():
@@ -127,45 +107,37 @@ def main():
 
     steps = parse_steps(args.steps)
     species = [s.strip() for s in args.specie.split(',') if s.strip()]
-    pruned = [s for s in range(min(steps), max(steps) + 1) if s not in steps]
 
     print('queue   : %s' % queue_dir)
     print('models  : %d   species: %s' % (len(entries), species))
-    print('steps   : %s' % steps)
-    if pruned:
-        print('skipped : %s  (assumed already complete on disk)' % pruned)
+    print('steps   : %s  (no dependency check -- each job is independent, status=pending)' % steps)
     print('params  : dis=%s rsa=%s mah=%s zt=%s r=%s rg=%s verbose=True'
           % (args.dis_method, args.rsa_method, args.mah_fold,
              args.z_threshold, args.reps, args.reps_group))
     print('total   : %d jobs\n' % (len(entries) * len(species) * len(steps)))
 
     made = 0
-    by_status = {}
     for e in entries:
         for sp in species:
-            jobs = build_pruned_graph(
-                steps,
-                dataset=args.dataset, model=args.model,
-                rsa_model=e['rsa_model'], specie=sp,
-                z_threshold=args.z_threshold, reps=args.reps,
-                reps_group=args.reps_group, rsa_method=args.rsa_method,
-                dis_method=e['dis_method'], mah_fold=e['mah_fold'],
-                replace_rnd_files=args.replace_rnd_files,
-                verbose=True,
-            )
-            for j in jobs:
-                by_status[j['status']] = by_status.get(j['status'], 0) + 1
+            for step in steps:
+                j = build_single_job(
+                    dataset=args.dataset, model=args.model,
+                    rsa_model=e['rsa_model'], specie=sp, step=step,
+                    z_threshold=args.z_threshold, reps=args.reps,
+                    reps_group=args.reps_group, rsa_method=args.rsa_method,
+                    dis_method=e['dis_method'], mah_fold=e['mah_fold'],
+                    replace_rnd_files=args.replace_rnd_files,
+                    verbose=True,
+                )
                 if not args.dry_run:
                     create_job(queue_dir, j)
                 made += 1
-            if args.dry_run and made <= len(steps) * 2:
-                for j in jobs:
-                    print('  [%s] %-46s %s step%02d -> %s'
-                          % ('dry', j['rsa_model'], j['specie'], j['step'],
-                             j['status']))
+                if args.dry_run and made <= len(steps) * 2:
+                    print('  [dry] %-46s %s step%02d -> %s'
+                          % (j['rsa_model'], j['specie'], j['step'], j['status']))
 
     verb = 'would create' if args.dry_run else 'created'
-    print('\n%s %d job(s): %s' % (verb, made, by_status))
+    print('\n%s %d job(s), all pending' % (verb, made))
     if not args.dry_run:
         print("Run 'python run_jobs.py --max_jobs 0 --loop' to execute them.")
 
