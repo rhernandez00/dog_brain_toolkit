@@ -11,3 +11,5 @@ CLAUDE.md
 /tools/package_batch_logs
 /viz/__pycache__
 /viz/__pycache__
+/scheduler/__pycache__
+/viz/__pycache__
