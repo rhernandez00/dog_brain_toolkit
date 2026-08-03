@@ -2,11 +2,13 @@
 """unpack_results.py -- merge Colab result zips back onto the pipeline data disk.
 
 The Colab GPU run (see tools/colab_gpu/) writes one ``result_*.zip`` per finished
-part, each holding niftis whose arc-paths are already pipeline-relative to the data
+part, each holding files whose arc-paths are already pipeline-relative to the data
 folder (e.g. ``EmoC/results/RSA/basic-block/H-sub-40/r-4_mahalanobis_DogA_DogF.nii.gz``).
 Unpacking is therefore a validated merge: extract each member to
-``{datafolder}/{arcname}``. Afterwards steps 3-10 of ``searchlight.py`` run exactly
-as if the maps had been computed on the workstation.
+``{datafolder}/{arcname}``. Afterwards the remaining steps of ``searchlight.py``
+run exactly as if the maps had been computed on the workstation -- steps 3-10
+after a per-participant run (``result_step1_*.zip`` / ``result_<model>_*.zip``),
+steps 8-10 after a group run (``result_group_<model>_<specie>.zip``).
 
 Usage (from the repo root, full Anaconda interpreter -- see CLAUDE.md):
 
@@ -64,6 +66,10 @@ from scheduler.paths import get_paths  # noqa: E402
 DEFAULT_WORKERS = 16
 COPY_CHUNK = 1 << 20  # 1 MiB -- keep the SMB pipe full on large niftis
 
+# What a result zip is allowed to put on the data disk. Everything the pipeline
+# itself writes for these steps, and nothing else.
+MERGEABLE_SUFFIXES = (".nii.gz", ".json", ".txt", ".npy")
+
 # The listing is a dict lookup where the old code called os.path.exists, so it
 # has to reproduce that call's case rules: Windows resolves case-variant
 # filenames, Linux does not (the same split make_mask.py warns about). Without
@@ -92,13 +98,20 @@ def collect_zips(inputs):
 
 
 def _safe_member(name):
-    """Reject absolute paths and parent-directory escapes; keep only .nii.gz."""
+    """Reject absolute paths and parent-directory escapes; keep pipeline outputs.
+
+    Steps 1/2/4 emit only niftis, but the group steps (3/5/6/7) also write the
+    sidecars ``rsa_utils`` writes next to them: step 3's ``*_mean.json`` -- which
+    ``calculate_group_model_similarity_map`` reads back to decide whether the map
+    must be recomputed -- and the ``*_log.txt`` files of steps 6 and 7. Dropping
+    those would leave a merged run subtly different from a local one.
+    """
     norm = name.replace("\\", "/")
     if norm.endswith("/"):
         return None
     if os.path.isabs(norm) or ".." in norm.split("/"):
         raise ValueError(f"Unsafe path in zip: {name!r}")
-    if not norm.endswith(".nii.gz"):
+    if not norm.endswith(MERGEABLE_SUFFIXES):
         return None
     return norm
 

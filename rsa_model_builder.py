@@ -1,6 +1,17 @@
 """
 RSA Model Builder — interactive editor for RSA dissimilarity matrices.
 
+Building a new model is a four-step pick:
+    1. config file  — <dataset>/config_files/<D|H>_<glm model>.yaml, the same file
+                      the pipeline reloads in rsa_utils.py; `stim_types` is the
+                      pool of stimuli everything else is derived from
+    2. dis_method   — 'mahalanobis' (default) or 'correlation'
+    3. mah_fold     — 'stim-wise' | 'stim-wise-multiple-folds' | 'stim-wise-all-runs'
+                      (Mahalanobis only), the folding used in step 2 of the
+                      searchlight by calculate_pairwise_similarity_maps2
+    4. rows/columns — derived from 1–3 so the matrix holds exactly the stimulus
+                      pairs that combination can produce, and no others
+
 Launch:  python rsa_model_builder.py   →   http://127.0.0.1:8051
 Requires: dash, plotly>=5.0, pandas, numpy, pyyaml
 """
@@ -16,7 +27,7 @@ import pandas as pd
 import yaml
 import plotly.graph_objects as go
 import plotly.colors as pc
-from dash import Dash, html, dcc, dash_table, no_update, ctx
+from dash import Dash, html, dcc, no_update, ctx
 from dash.dependencies import Input, Output, State, ALL
 from dash.exceptions import PreventUpdate
 
@@ -24,14 +35,58 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from viz import datasource, dash_kwargs
 
 # Resolve the dataset root (Google Drive -> network -> $DBT_RESULTS_ROOT).
-_DATAFOLDER        = datasource.resolve_datafolder("EmoC", must_have_results=False)
-DEFAULT_YAML       = os.path.join(_DATAFOLDER, "EmoC", "config_files", "D_basic-block.yaml")
-DEFAULT_EXPORT_DIR = os.path.join(_DATAFOLDER, "EmoC", "rsa_models")
+DEFAULT_DATASET    = "EmoC"
+_DATAFOLDER        = datasource.resolve_datafolder(DEFAULT_DATASET, must_have_results=False)
+DEFAULT_CONFIG_DIR = os.path.join(_DATAFOLDER, DEFAULT_DATASET, "config_files")
+DEFAULT_CONFIG     = "D_basic-block.yaml"
+DEFAULT_EXPORT_DIR = os.path.join(_DATAFOLDER, DEFAULT_DATASET, "rsa_models")
 MAX_UNDO = 50
 
 HIDDEN_ATTRS   = {"color"}
 ALL_RUNS_KEY   = "__all__"
 NAN_SENTINEL   = "NaN"
+
+# Config files are named <specie>_<glm model>.yaml — see rsa_utils.py, where the
+# pipeline rebuilds the same path from `specie` and `model`.
+SPECIE_NAMES = {"D": "Dog", "H": "Human"}
+
+# Step 2 of searchlight (calculate_pairwise_similarity_maps2 in rsa_utils.py).
+DIS_METHOD_OPTIONS = [
+    {"label": " Mahalanobis (crossnobis)", "value": "mahalanobis"},
+    {"label": " Correlation distance",     "value": "correlation"},
+]
+
+EMOC_ONLY_FOLDS = {"stim-wise-multiple-folds", "stim-wise-all-runs"}
+
+MAH_FOLD_HELP = {
+    "stim-wise": ("Collapses every exemplar of the same stimulus type across runs and uses "
+                  "the runs themselves as cross-validation folds. One subject-level map per "
+                  "category pair: <sub>/r-<radius>_mahalanobis_<A>_<B>.nii.gz"),
+    "stim-wise-multiple-folds": ("EmoC only. Folds are the repeated `partition` values of each exact "
+                  "stimulus (config `stim_file`); only stimuli seen in ≥2 partitions qualify. "
+                  "One subject-level map per exact-stimulus pair."),
+    "stim-wise-all-runs": ("EmoC only. A separate class-level crossnobis inside each run, using the "
+                  "exemplar numbers (DogA1…DogA4) as the folds. One map per class pair per run: "
+                  "<sub>/ses-XX_task-<task>_run-XX/r-<radius>_mahalanobis_<A>_<B>.nii.gz"),
+}
+
+MAH_FOLD_OPTIONS = [
+    {"label": " stim-wise",                "value": "stim-wise"},
+    {"label": " stim-wise-multiple-folds", "value": "stim-wise-multiple-folds"},
+    {"label": " stim-wise-all-runs",       "value": "stim-wise-all-runs"},
+]
+
+# Right-click menu on the matrix. `value` None means NaN (pair left out of the
+# model); every other value must stay inside [0, 1] — that is the range the
+# colorbar and step 2 of the searchlight assume.
+DISSIM_MIN, DISSIM_MAX = 0.0, 1.0
+
+DISSIM_PRESETS = [
+    {"label": "0",   "value": 0.0,  "desc": "identical stimuli — no difference at all"},
+    {"label": "0.5", "value": 0.5,  "desc": "partially different — alike on some attributes, not others"},
+    {"label": "1",   "value": 1.0,  "desc": "completely different — maximally dissimilar"},
+    {"label": "NaN", "value": None, "desc": "excluded — this pair is dropped from the model fit"},
+]
 
 SEPARATOR_OPTIONS = [
     {"label": "none  ('')",        "value": ""},
@@ -81,21 +136,322 @@ def load_yaml(yaml_path: str) -> dict:
     with open(yaml_path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
-def list_runs(cfg: dict) -> list:
-    return list((cfg.get("model_dict") or {}).keys())
+def scan_config_files(folder: str) -> list:
+    """YAML configs in `folder`, species-prefixed ones (D_*/H_*) first."""
+    try:
+        names = [f for f in os.listdir(folder)
+                 if f.lower().endswith((".yaml", ".yml"))]
+    except Exception:
+        return []
+    return sorted(names, key=lambda n: (specie_from_filename(n) is None, n.lower()))
 
-def load_stims(cfg: dict, run_key: str) -> list:
-    md = cfg.get("model_dict") or {}
-    run_keys = list(md.keys()) if run_key == ALL_RUNS_KEY else [run_key]
-    stims = []
-    for rk in run_keys:
-        for stim_name, attrs in (md.get(rk) or {}).items():
-            entry = {"name": stim_name, "run": rk}
-            for k, v in (attrs or {}).items():
-                entry[k] = v
-            entry.setdefault("color", "#cccccc")
-            stims.append(entry)
-    return stims
+def specie_from_filename(name: str):
+    """'D_basic-block.yaml' -> 'D'.  Returns None when the name is not prefixed."""
+    base = os.path.basename(name or "")
+    if len(base) >= 2 and base[0].upper() in SPECIE_NAMES and not base[1].isalnum():
+        return base[0].upper()
+    return None
+
+def config_file_label(name: str) -> str:
+    specie = specie_from_filename(name)
+    return f"{name}   ·   {SPECIE_NAMES[specie]}" if specie else name
+
+def export_dir_for_config(config_path: str) -> str:
+    """<root>/<dataset>/config_files/x.yaml  ->  <root>/<dataset>/rsa_models."""
+    dataset_dir = os.path.dirname(os.path.dirname(os.path.abspath(config_path)))
+    return os.path.join(dataset_dir, "rsa_models")
+
+# ---------------------------------------------------------------------------
+# Axis derivation — which rows/columns a (dis_method, mah_fold) pair allows
+#
+# These mirror rsa_utils.calculate_pairwise_similarity_maps2 (step 2 of the
+# searchlight) and check_existing_similarity_maps, so the labels here are
+# exactly the labels the pipeline will use in its output filenames and will
+# look up in the exported model CSV.
+# ---------------------------------------------------------------------------
+
+def _uniq(seq):
+    out, seen = [], set()
+    for item in seq:
+        if item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+def _model_dict_is_run_keyed(model_dict: dict) -> bool:
+    return any(isinstance(v, dict) and any(isinstance(x, dict) for x in v.values())
+               for v in (model_dict or {}).values())
+
+def stim_meta_index(cfg: dict) -> dict:
+    """{stim name: [metadata dicts]} collected from every run of model_dict."""
+    model_dict = cfg.get("model_dict") or {}
+    index = {}
+    if _model_dict_is_run_keyed(model_dict):
+        for run_key, run_dict in model_dict.items():
+            if not isinstance(run_dict, dict):
+                continue
+            for stim, meta in run_dict.items():
+                if isinstance(meta, dict):
+                    index.setdefault(stim, []).append({**meta, "run": run_key})
+    else:
+        for stim, meta in model_dict.items():
+            if isinstance(meta, dict):
+                index.setdefault(stim, []).append(dict(meta))
+    return index
+
+def _merge_attrs(metas: list) -> dict:
+    """Keep only the attributes every member agrees on — the rest vary."""
+    metas = [m for m in metas if isinstance(m, dict)]
+    if not metas:
+        return {}
+    shared = set(metas[0])
+    for meta in metas[1:]:
+        shared &= set(meta)
+    out = {}
+    for key in shared:
+        values = [meta[key] for meta in metas]
+        try:
+            if len(set(values)) == 1:
+                out[key] = values[0]
+        except TypeError:  # unhashable value — skip it
+            continue
+    return out
+
+def stim_attrs(index: dict, stim: str) -> dict:
+    """Attributes for one raw stimulus name, exact match first."""
+    if stim in index:
+        return _merge_attrs(index[stim])
+    # Flat model_dicts key on the bare label (P, H, …) while stim_types carry a
+    # prefix (Dog-P) — fall back to the longest matching suffix.
+    for key in sorted(index, key=len, reverse=True):
+        if key and stim.endswith(key):
+            return _merge_attrs(index[key])
+    return {}
+
+def _entity(name: str, attrs: dict, run: str = "", extra: dict = None) -> dict:
+    entity = {"name": name, "run": run}
+    for key, value in (attrs or {}).items():
+        if key in ("name", "run"):
+            continue
+        entity[key] = value
+    entity.update(extra or {})
+    entity.setdefault("color", "#cccccc")
+    return entity
+
+def config_run_dicts(cfg: dict) -> list:
+    """Ordered (run key, run dict) pairs — mirrors the pipeline's run loop."""
+    model_dict = cfg.get("model_dict") or {}
+    runs = cfg.get("runs") or []
+    if not runs:
+        raise ValueError("Config has no 'runs'.")
+    pairs = []
+    for run in runs:
+        run_key = f"run{int(run):02d}"
+        run_dict = model_dict.get(run_key)
+        if not isinstance(run_dict, dict):
+            raise ValueError(f"model_dict is missing metadata for {run_key}.")
+        pairs.append((run_key, run_dict))
+    return pairs
+
+def _stim_wise_key(dataset: str, stim: str):
+    """Category a stimulus collapses into under mah_fold='stim-wise'."""
+    if dataset == "EmoB":
+        return stim.split("-")[0] if "-" in stim else None
+    if dataset == "EmoC":
+        return stim[:-1]
+    raise ValueError(
+        f"mah_fold 'stim-wise' derives categories for EmoB and EmoC only, not {dataset!r}."
+    )
+
+def _strip_exemplar(stim: str):
+    """'DogA4' -> 'DogA'.  None when the name has no trailing exemplar number."""
+    cut = len(stim)
+    while cut > 0 and stim[cut - 1].isdigit():
+        cut -= 1
+    return stim[:cut] if 0 < cut < len(stim) else None
+
+def multiple_fold_stim_files(cfg: dict):
+    """Exact EmoC stimuli repeated across ≥2 partitions, plus their shared folds."""
+    stim_files, partitions = [], {}
+    for run_key, run_dict in config_run_dicts(cfg):
+        for stim, meta in run_dict.items():
+            if not isinstance(meta, dict):
+                raise ValueError(f"model_dict[{run_key!r}][{stim!r}] must be a dictionary.")
+            stim_file = meta.get("stim_file")
+            if not stim_file or "partition" not in meta:
+                raise ValueError(
+                    f"model_dict[{run_key!r}][{stim!r}] requires 'stim_file' and 'partition'."
+                )
+            if stim_file not in partitions:
+                partitions[stim_file] = set()
+                stim_files.append(stim_file)
+            partitions[stim_file].add(meta["partition"])
+    repeated = [s for s in stim_files if len(partitions[s]) >= 2]
+    if len(repeated) < 2:
+        raise ValueError("EmoC stim-wise-multiple-folds requires at least two repeated stimuli.")
+    folds = set.intersection(*(partitions[s] for s in repeated))
+    if len(folds) < 2:
+        raise ValueError(
+            "Repeated EmoC stimuli do not share at least two partitions for cross-validation."
+        )
+    return repeated, folds
+
+def within_run_classes(run_key: str, run_dict: dict, stim_types: list):
+    """Class labels and their exemplar folds for one run (mah_fold='stim-wise-all-runs')."""
+    known = set(stim_types)
+    class_members = {}
+    for stim in run_dict:
+        if stim not in known:
+            raise ValueError(
+                f"{run_key}: condition {stim!r} is not present in the GLM stimulus list."
+            )
+        class_label = _strip_exemplar(stim)
+        if class_label is None:
+            raise ValueError(
+                f"EmoC condition {stim!r} must end with its exemplar number "
+                "for within-run class folding."
+            )
+        partition = int(stim[len(class_label):])
+        members = class_members.setdefault(class_label, {})
+        if partition in members:
+            raise ValueError(
+                f"Class {class_label!r} has multiple conditions for exemplar fold {partition}."
+            )
+        members[partition] = stim
+    if len(class_members) < 2:
+        raise ValueError("Within-run class folding requires at least two stimulus classes.")
+    common = set.intersection(*(set(m) for m in class_members.values()))
+    if len(common) < 2:
+        raise ValueError(
+            "Within-run class folding requires at least two shared exemplar folds "
+            "for every stimulus class."
+        )
+    return class_members, common
+
+def fold_run_options(cfg: dict) -> list:
+    """Run keys that yield valid within-run class folds, for the run-scope picker."""
+    options = []
+    try:
+        run_dicts = config_run_dicts(cfg)
+    except ValueError:
+        return options
+    stim_types = cfg.get("stim_types") or []
+    for run_key, run_dict in run_dicts:
+        try:
+            within_run_classes(run_key, run_dict, stim_types)
+        except ValueError:
+            continue
+        options.append(run_key)
+    return options
+
+def derive_axis(cfg: dict, dis_method: str, mah_fold: str, run_scope: str = ALL_RUNS_KEY):
+    """Rows/columns allowed by this (dis_method, mah_fold) pair.
+
+    Returns (entities, note).  Raises ValueError with the pipeline's own message
+    when the config cannot support the requested combination.
+    """
+    dataset    = cfg.get("dataset")
+    stim_types = list(cfg.get("stim_types") or [])
+    if not stim_types:
+        raise ValueError("Config has no 'stim_types' — nothing to build a model from.")
+    index = stim_meta_index(cfg)
+
+    if dis_method != "mahalanobis":
+        entities = [_entity(s, stim_attrs(index, s)) for s in stim_types]
+        note = (f"Every pair of the {len(stim_types)} config stim_types, one map per run: "
+                f"<sub>/ses-XX_task-<task>_run-XX/r-<radius>_{dis_method}_<A>_<B>.nii.gz")
+        return entities, note
+
+    if mah_fold == "stim-wise":
+        members = {}
+        for stim in stim_types:
+            key = _stim_wise_key(dataset, stim)
+            if key is not None:
+                members.setdefault(key, []).append(stim)
+        if len(members) < 2:
+            raise ValueError(
+                f"'stim-wise' collapses the {len(stim_types)} stim_types of this config into "
+                f"{len(members)} categor{'y' if len(members) == 1 else 'ies'} — at least two are "
+                "needed. This config is probably already at category level."
+            )
+        entities = [
+            _entity(category, _merge_attrs([a for a in (stim_attrs(index, s) for s in stims) if a]))
+            for category, stims in members.items()
+        ]
+        note = (f"{len(entities)} categories collapsed from {len(stim_types)} stim_types "
+                f"({'strip the trailing exemplar digit' if dataset == 'EmoC' else 'text before the first hyphen'}); "
+                "runs are the folds. One subject-level map per pair.")
+        return entities, note
+
+    if mah_fold in EMOC_ONLY_FOLDS and dataset != "EmoC":
+        raise ValueError(
+            f"mah_fold option {mah_fold!r} is only implemented for dataset 'EmoC'. "
+            "For dataset 'EmoB', use 'stim-wise'."
+        )
+
+    if mah_fold == "stim-wise-multiple-folds":
+        stim_files, folds = multiple_fold_stim_files(cfg)
+        repeated = set(stim_files)
+        by_stim_file = {}
+        for run_key, run_dict in config_run_dicts(cfg):
+            for stim, meta in run_dict.items():
+                stim_file = meta.get("stim_file")
+                if stim_file in repeated:
+                    by_stim_file.setdefault(stim_file, []).append({**meta, "run": run_key,
+                                                                   "__stim__": stim})
+        entities = []
+        for stim_file in stim_files:
+            metas = by_stim_file.get(stim_file, [])
+            attrs = _merge_attrs([{k: v for k, v in m.items() if k != "__stim__"} for m in metas])
+            classes = _uniq([c for c in (_strip_exemplar(m["__stim__"]) for m in metas) if c])
+            extra = {"class": classes[0]} if len(classes) == 1 else {}
+            entities.append(_entity(stim_file, attrs, extra=extra))
+        note = (f"{len(entities)} exact stimuli repeated across partitions "
+                f"{sorted(folds)}; those partitions are the folds. One subject-level map per pair. "
+                "The pipeline also accepts a model written at class level.")
+        return entities, note
+
+    if mah_fold == "stim-wise-all-runs":
+        run_dicts = config_run_dicts(cfg)
+        if run_scope and run_scope != ALL_RUNS_KEY:
+            run_dicts = [(k, d) for k, d in run_dicts if k == run_scope]
+            if not run_dicts:
+                raise ValueError(f"Config has no metadata for {run_scope}.")
+        per_run, metas_by_class = [], {}
+        for run_key, run_dict in run_dicts:
+            class_members, common = within_run_classes(run_key, run_dict, stim_types)
+            per_run.append((run_key, list(class_members)))
+            for class_label, members in class_members.items():
+                for partition, stim in members.items():
+                    if partition in common:
+                        metas_by_class.setdefault(class_label, []).extend(index.get(stim, []))
+        labels = _uniq([c for _, classes in per_run for c in classes])
+        entities = [_entity(c, _merge_attrs(metas_by_class.get(c, []))) for c in labels]
+        scope = "every run" if len(run_dicts) > 1 else run_dicts[0][0]
+        note = (f"{len(entities)} classes ({scope}); the exemplar numbers are the folds. "
+                "One map per class pair per run.")
+        return entities, note
+
+    raise ValueError(
+        f"Invalid mah_fold option: {mah_fold!r}. Supported: 'stim-wise', "
+        "'stim-wise-multiple-folds', 'stim-wise-all-runs'."
+    )
+
+def carry_over_matrix(old_matrix_json, old_labels, new_labels):
+    """Re-use values from the previous axis for labels that survived the change."""
+    fresh = fresh_matrix(len(new_labels))
+    if not old_matrix_json or not old_labels:
+        return fresh
+    old = matrix_from_json(old_matrix_json)
+    positions = {label: i for i, label in enumerate(old_labels)}
+    if old.shape[0] != len(old_labels):
+        return fresh
+    for i, row_label in enumerate(new_labels):
+        for j, col_label in enumerate(new_labels):
+            if i == j or row_label not in positions or col_label not in positions:
+                continue
+            fresh[i, j] = old[positions[row_label], positions[col_label]]
+    return fresh
 
 def discover_attrs(stims: list) -> list:
     seen = ["stim"]
@@ -545,6 +901,31 @@ def _ctrl(label, control):
     return html.Div([_lbl(label), control],
                     style={"marginRight": "14px", "marginBottom": "6px"})
 
+STEP_TITLE = {"fontWeight": "bold", "fontSize": "15px"}
+
+def _step_no(n):
+    return html.Span(n, style={
+        "display": "inline-flex", "alignItems": "center", "justifyContent": "center",
+        "width": "20px", "height": "20px", "borderRadius": "50%",
+        "background": "#6b8dbd", "color": "#fff", "fontSize": "12px",
+        "fontWeight": "bold", "marginRight": "8px", "flexShrink": "0"})
+
+def _chips(labels, color="#eef4ff", border="#9ab", limit=None):
+    shown = labels if limit is None else labels[:limit]
+    out = [html.Span(str(l), style={
+        "display": "inline-block", "border": f"1px solid {border}", "borderRadius": "10px",
+        "padding": "1px 7px", "margin": "2px", "background": color,
+        "fontFamily": "monospace", "fontSize": "11px"}) for l in shown]
+    if limit is not None and len(labels) > limit:
+        out.append(html.Span(f"+{len(labels) - limit} more",
+                             style={"fontSize": "11px", "color": "#888", "margin": "2px"}))
+    return out
+
+def _err(msg):
+    return html.Div(msg, style={"color": "#a33", "fontSize": "12px", "background": "#fff4f4",
+                                "border": "1px solid #ecc", "borderRadius": "4px",
+                                "padding": "6px 8px"})
+
 # ── style panel ─────────────────────────────────────────────────────────────
 def _style_panel():
     DS = DEFAULT_STYLE
@@ -675,6 +1056,70 @@ def _style_panel():
     ], style={**CBOX})
 
 
+# ── Right-click dissimilarity menu ──────────────────────────────────────────
+CTX_MENU_BASE = {
+    "position": "fixed", "zIndex": 3000, "minWidth": "290px",
+    "background": "#ffffff", "border": "1px solid #bbb", "borderRadius": "7px",
+    "boxShadow": "0 6px 20px rgba(0,0,0,0.18)", "padding": "6px 0",
+    "fontFamily": "Segoe UI, Arial, sans-serif",
+}
+CTX_MENU_HIDDEN = {**CTX_MENU_BASE, "display": "none"}
+
+def _ctx_menu():
+    items = []
+    for i, p in enumerate(DISSIM_PRESETS):
+        items.append(html.Button(
+            [html.Span(p["label"], style={"fontWeight": "700", "fontSize": "13px",
+                                          "minWidth": "34px", "display": "inline-block"}),
+             html.Span("— " + p["desc"], style={"fontSize": "11px", "color": "#666"})],
+            id={"type": "ctx-preset", "idx": i}, n_clicks=0,
+            className="ctx-menu-item",
+            style={"display": "flex", "alignItems": "baseline", "gap": "6px",
+                   "width": "100%", "textAlign": "left", "border": "none",
+                   "background": "transparent", "padding": "5px 12px",
+                   "cursor": "pointer"}))
+    return html.Div([
+        html.Div(id="ctx-menu-title",
+                 style={"fontSize": "11px", "fontWeight": "700", "color": "#333",
+                        "padding": "4px 12px 6px 12px", "borderBottom": "1px solid #eee",
+                        "marginBottom": "4px"}),
+        html.Div(items),
+        html.Div([
+            html.Div(f"Custom value — clamped to {DISSIM_MIN:g}–{DISSIM_MAX:g}:",
+                     style={"fontSize": "11px", "color": "#555", "marginBottom": "3px"}),
+            html.Div([
+                # No min/max attributes on purpose: dcc.Input silently refuses to
+                # propagate an out-of-range number, so the user would type 2.5,
+                # press Set, and see nothing happen. The clamp callback below
+                # snaps the box to [0, 1] instead, visibly.
+                dcc.Input(id="ctx-manual", type="number", value=None, step=0.01,
+                          placeholder="0.00 – 1.00", debounce=False,
+                          style={"width": "110px", "marginRight": "6px", "fontSize": "12px"}),
+                html.Button("Set", id="btn-ctx-manual", n_clicks=0,
+                            style={**_B, "padding": "3px 12px"}),
+            ], style={"display": "flex", "alignItems": "center"}),
+        ], style={"borderTop": "1px solid #eee", "marginTop": "4px",
+                  "padding": "7px 12px 3px 12px"}),
+    ], id="ctx-menu", style=CTX_MENU_HIDDEN)
+
+
+# Inline styles cannot express :hover, and a repo-level assets/ folder would be
+# picked up by every Dash app in this directory — so scope the rule to this app.
+app.index_string = """<!DOCTYPE html>
+<html>
+    <head>
+        {%metas%}<title>{%title%}</title>{%favicon%}{%css%}
+        <style>
+            .ctx-menu-item:hover { background: #eef4ff; }
+        </style>
+    </head>
+    <body>
+        {%app_entry%}
+        <footer>{%config%}{%scripts%}{%renderer%}</footer>
+    </body>
+</html>"""
+
+
 app.layout = html.Div([
     dcc.Store(id="store-cfg"),
     dcc.Store(id="store-stims"),
@@ -689,32 +1134,81 @@ app.layout = html.Div([
     dcc.Store(id="store-kbd",        data=None),
     dcc.Store(id="store-last-model", storage_type="local", data=None),
     dcc.Store(id="store-app-mode",   data="edit"),
+    dcc.Store(id="store-ctxmenu",    data=None),
+    dcc.Store(id="store-ctxhover",   data=None),
     dcc.Download(id="download-csv"),
 
     html.H2("RSA Model Builder", style={"marginBottom": "4px"}),
-    html.Div("Build dissimilarity matrices from experiment YAML stim definitions.",
+    html.Div("Build a dissimilarity model whose rows and columns match exactly what "
+             "step 2 of the searchlight will produce.",
              style={"color": "#666", "marginBottom": "10px"}),
 
-    # ── Top bar ──────────────────────────────────────────────────────────────
+    # ── ① Config file ────────────────────────────────────────────────────────
     html.Div([
-        html.Div([html.Label("YAML config path"),
-                  dcc.Input(id="input-yaml", type="text", value=DEFAULT_YAML,
-                            style={"width": "100%"})],
-                 style={"flex": "3", "marginRight": "10px"}),
-        html.Div([html.Label(" "),
-                  html.Button("Load YAML", id="btn-load", n_clicks=0,
-                              style={"width": "100%", "height": "32px"})],
-                 style={"flex": "1", "marginRight": "10px"}),
-        html.Div([html.Label("Run"),
-                  dcc.Dropdown(id="dd-run", options=[], value=None, clearable=False)],
-                 style={"flex": "1", "marginRight": "10px"}),
-        html.Div([html.Label("View"),
-                  dcc.RadioItems(id="radio-view",
-                                 options=[{"label": "Full",    "value": "full"},
-                                          {"label": "Grouped", "value": "grouped"}],
-                                 value="grouped", inline=True)],
-                 style={"flex": "1"}),
-    ], style={"display": "flex", "alignItems": "flex-end", **CBOX}),
+        html.Div([_step_no("1"), html.Span("Config file", style=STEP_TITLE)],
+                 style={"display": "flex", "alignItems": "center", "marginBottom": "8px"}),
+        html.Div([
+            html.Div([_lbl("Config folder"),
+                      dcc.Input(id="input-config-dir", type="text", value=DEFAULT_CONFIG_DIR,
+                                debounce=True,
+                                style={"width": "100%", "fontSize": "12px"})],
+                     style={"flex": "3", "marginRight": "8px"}),
+            html.Div([_lbl(" "),
+                      html.Button("⟳ Scan", id="btn-scan-configs", n_clicks=0,
+                                  style={**_B, "height": "30px"},
+                                  title="Re-scan the folder for .yaml configs")],
+                     style={"marginRight": "12px"}),
+            html.Div([_lbl("Config (D… = dog, H… = human)"),
+                      dcc.Dropdown(id="dd-config", options=[], value=None,
+                                   placeholder="Select a config…", clearable=False,
+                                   style={"fontSize": "12px"})],
+                     style={"flex": "4"}),
+        ], style={"display": "flex", "alignItems": "flex-end"}),
+        html.Div(id="config-summary", style={"marginTop": "8px", "fontSize": "12px"}),
+    ], style={**CBOX}),
+
+    # ── ② Dissimilarity method ───────────────────────────────────────────────
+    html.Div([
+        html.Div([_step_no("2"), html.Span("Dissimilarity method", style=STEP_TITLE)],
+                 style={"display": "flex", "alignItems": "center", "marginBottom": "8px"}),
+        dcc.RadioItems(id="radio-dis-method", options=DIS_METHOD_OPTIONS,
+                       value="mahalanobis", inline=True,
+                       labelStyle={"marginRight": "24px", "fontSize": "13px"}),
+    ], style={**CBOX}),
+
+    # ── ③ Mahalanobis folding ────────────────────────────────────────────────
+    html.Div([
+        html.Div([_step_no("3"), html.Span("Mahalanobis folding (mah_fold)", style=STEP_TITLE)],
+                 style={"display": "flex", "alignItems": "center", "marginBottom": "8px"}),
+        dcc.RadioItems(id="radio-mah-fold", options=MAH_FOLD_OPTIONS, value="stim-wise",
+                       inline=True, labelStyle={"marginRight": "24px", "fontSize": "13px"}),
+        html.Div(id="mah-fold-help",
+                 style={"fontSize": "11px", "color": "#666", "marginTop": "6px",
+                        "fontStyle": "italic", "maxWidth": "900px"}),
+        html.Div([
+            _lbl("Run scope"),
+            dcc.Dropdown(id="dd-run", options=[], value=ALL_RUNS_KEY, clearable=False,
+                         style={"width": "260px", "fontSize": "12px"}),
+        ], id="section-run-scope", style={"marginTop": "8px", "display": "none"}),
+    ], id="section-mah-fold", style={**CBOX}),
+
+    # ── ④ Rows / columns ─────────────────────────────────────────────────────
+    html.Div([
+        html.Div([
+            html.Div([_step_no("4"), html.Span("Rows and columns", style=STEP_TITLE)],
+                     style={"display": "flex", "alignItems": "center"}),
+            html.Div([
+                html.Span("View:", style={"fontSize": "12px", "color": "#555",
+                                          "marginRight": "8px"}),
+                dcc.RadioItems(id="radio-view",
+                               options=[{"label": " Full",    "value": "full"},
+                                        {"label": " Grouped", "value": "grouped"}],
+                               value="full", inline=True,
+                               labelStyle={"marginRight": "12px", "fontSize": "12px"}),
+            ], style={"display": "flex", "alignItems": "center", "marginLeft": "auto"}),
+        ], style={"display": "flex", "alignItems": "center", "marginBottom": "8px"}),
+        html.Div(id="axis-summary", style={"fontSize": "12px"}),
+    ], style={**CBOX}),
 
     # ── Model loader panel ───────────────────────────────────────────────────
     html.Div([
@@ -784,9 +1278,17 @@ app.layout = html.Div([
     # ── Main ─────────────────────────────────────────────────────────────────
     html.Div([
         html.Div([
-            dcc.Graph(id="heatmap", config={"displayModeBar": True,
-                                             "toImageButtonOptions": {"format": "png",
-                                                                       "scale": 2}}),
+            # clear_on_unhover keeps the right-click menu honest: without it the
+            # last hovered cell would linger and a right-click on empty canvas
+            # would edit whatever the mouse passed over last.
+            dcc.Graph(id="heatmap", clear_on_unhover=True,
+                      config={"displayModeBar": True,
+                              "toImageButtonOptions": {"format": "png",
+                                                       "scale": 2}}),
+            html.Div("Right-click a cell to set its dissimilarity.",
+                     id="ctx-hint",
+                     style={"fontSize": "11px", "color": "#888", "fontStyle": "italic",
+                            "marginTop": "2px"}),
             html.Div([
                 html.Label("Edit cell — value (blank/'NaN' clears):"),
                 html.Div([
@@ -870,18 +1372,10 @@ app.layout = html.Div([
         ], style={"flex": "1", **CBOX}),
     ], style={"display": "flex"}),
 
-    html.Div([
-        html.H4("Matrix table (editable)"),
-        dash_table.DataTable(
-            id="table", editable=True, columns=[], data=[],
-            style_table={"overflowX": "auto", "maxHeight": "380px", "overflowY": "auto"},
-            style_cell={"textAlign": "center", "minWidth": "60px", "maxWidth": "120px",
-                        "padding": "4px", "fontFamily": "monospace"},
-            style_header={"backgroundColor": "#f0f0f0", "fontWeight": "bold"},
-            fixed_rows={"headers": True},
-            fixed_columns={"headers": True, "data": 1},
-        ),
-    ], style={"marginTop": "12px"}),
+    # ── Right-click dissimilarity menu ───────────────────────────────────────
+    # Top level (not inside the graph column) so no ancestor's overflow can clip
+    # it; position:fixed is set from the click coordinates by the callback below.
+    _ctx_menu(),
 ], style={"fontFamily": "Segoe UI, Arial, sans-serif", "margin": "12px"})
 
 
@@ -910,6 +1404,87 @@ app.clientside_callback(
 )
 
 # ===========================================================================
+# Clientside — right-click cell menu
+# ===========================================================================
+
+# Plotly has no right-click event, so the cell under the cursor is taken from
+# the hover of the invisible marker trace build_cell_heatmap() draws on top of
+# the shapes. Kept on `window` because the contextmenu listener below is a plain
+# DOM handler and cannot read Dash state.
+app.clientside_callback(
+    """
+    function(hov, mode) {
+        window._rsa_edit_mode = (mode !== 'view');
+        var h = null;
+        if (hov && hov.points && hov.points.length) {
+            var cd = hov.points[0].customdata;
+            if (cd && cd.length >= 2) h = {row: cd[0], col: cd[1]};
+        }
+        window._rsa_hover = h;
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("store-ctxhover", "data"),
+    Input("heatmap", "hoverData"),
+    Input("radio-app-mode", "value"),
+)
+
+app.clientside_callback(
+    """
+    function(_ignore) {
+        if (!window._rsa_ctx_bound) {
+            window._rsa_ctx_bound = true;
+            var open = function(d) {
+                window.dash_clientside.set_props('store-ctxmenu', {data: d});
+            };
+            document.addEventListener('contextmenu', function(e) {
+                var plot = document.getElementById('heatmap');
+                if (!plot || !plot.contains(e.target)) return;
+                if (!window._rsa_edit_mode) return;       // View mode: read-only
+                var h = window._rsa_hover;
+                if (!h) return;                           // not over a cell
+                e.preventDefault();
+                open({row: h.row, col: h.col, x: e.clientX, y: e.clientY, ts: Date.now()});
+            });
+            // Any click outside the menu, Escape, or a scroll dismisses it.
+            document.addEventListener('mousedown', function(e) {
+                if (e.button === 2) return;   // right-click: let contextmenu re-open it
+                var m = document.getElementById('ctx-menu');
+                if (m && m.style.display !== 'none' && !m.contains(e.target)) open(null);
+            });
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape') open(null);
+            });
+            window.addEventListener('scroll', function() {
+                var m = document.getElementById('ctx-menu');
+                if (m && m.style.display !== 'none') open(null);
+            }, true);
+        }
+        return window.dash_clientside.no_update;
+    }
+    """,
+    Output("store-ctxmenu", "data"),
+    Input("heatmap", "id"),
+)
+
+# Hard-clamp the custom value to [0, 1] as it is typed — `min`/`max` on a number
+# input only mark it invalid in the browser, they do not stop the value arriving.
+app.clientside_callback(
+    """
+    function(v) {
+        if (v === null || v === undefined || v === '') return window.dash_clientside.no_update;
+        var n = parseFloat(v);
+        if (isNaN(n)) return null;
+        var c = Math.min(%s, Math.max(%s, n));
+        return (c === n) ? window.dash_clientside.no_update : c;
+    }
+    """ % (DISSIM_MAX, DISSIM_MIN),
+    Output("ctx-manual", "value"),
+    Input("ctx-manual", "value"),
+    prevent_initial_call=True,
+)
+
+# ===========================================================================
 # Callbacks
 # ===========================================================================
 
@@ -918,58 +1493,186 @@ app.clientside_callback(
     Output("section-bulk-rules",    "style"),
     Output("section-cell-edit",     "style"),
     Output("section-groupby-panel", "style"),
-    Output("table",                 "editable"),
+    Output("ctx-hint",              "style"),
     Input("radio-app-mode",         "value"),
 )
 def toggle_app_mode(mode):
+    hint = {"fontSize": "11px", "color": "#888", "fontStyle": "italic", "marginTop": "2px"}
     if mode == "view":
         hidden = {"display": "none"}
-        return hidden, hidden, hidden, False
-    return {"display": "block"}, {"marginTop": "6px", "display": "block"}, {**CBOX, "display": "block"}, True
+        return hidden, hidden, hidden, hidden
+    return ({"display": "block"},
+            {"marginTop": "6px", "display": "block"},
+            {**CBOX, "display": "block"},
+            {**hint, "display": "block"})
 
 
+# ── ① Config file ─────────────────────────────────────────────────────────
 @app.callback(
-    Output("store-cfg",    "data"),
-    Output("dd-run",       "options"),
-    Output("dd-run",       "value"),
-    Output("status",       "children"),
-    Input("btn-load",      "n_clicks"),
-    State("input-yaml",    "value"),
+    Output("dd-config",       "options"),
+    Output("dd-config",       "value"),
+    Input("btn-scan-configs", "n_clicks"),
+    Input("input-config-dir", "value"),
+    State("dd-config",        "value"),
     prevent_initial_call=False,
 )
-def load_yaml_cb(n, path):
-    path = (path or "").strip()
-    if not path or not os.path.exists(path):
-        return None, [], None, f"YAML not found: {path}"
-    try:
-        cfg = load_yaml(path)
-    except Exception as e:
-        return None, [], None, f"Failed to parse YAML: {e}"
-    runs = list_runs(cfg)
-    if not runs:
-        return None, [], None, "YAML has no model_dict / runs."
-    opts = [{"label": r, "value": r} for r in runs]
-    opts.append({"label": "All runs (combined)", "value": ALL_RUNS_KEY})
-    return cfg, opts, runs[0], f"Loaded {path} ({len(runs)} runs)."
+def scan_configs_cb(n, folder, current):
+    names = scan_config_files((folder or "").strip())
+    opts  = [{"label": config_file_label(f), "value": f} for f in names]
+    if current in names:
+        return opts, current
+    return opts, (DEFAULT_CONFIG if DEFAULT_CONFIG in names else (names[0] if names else None))
 
 
 @app.callback(
-    Output("store-stims",  "data"),
-    Output("store-matrix", "data"),
-    Output("store-meta",   "data"),
-    Input("store-cfg",     "data"),
-    Input("dd-run",        "value"),
-    State("input-yaml",    "value"),
-    prevent_initial_call=True,
+    Output("store-cfg",       "data"),
+    Output("config-summary",  "children"),
+    Output("export-folder",   "value"),
+    Output("status",          "children"),
+    Input("dd-config",        "value"),
+    Input("input-config-dir", "value"),
 )
-def build_stims(cfg, run_key, yaml_path):
-    if not cfg or not run_key:
-        return no_update, no_update, no_update
-    stims = load_stims(cfg, run_key)
-    if not stims:
-        return [], [[]], {"combined": False, "yaml_path": yaml_path}
-    return (stims, matrix_to_json(fresh_matrix(len(stims))),
-            {"combined": run_key == ALL_RUNS_KEY, "yaml_path": yaml_path})
+def load_config_cb(name, folder):
+    folder = (folder or "").strip()
+    if not name:
+        return None, _err(f"No .yaml config found in: {folder or '(no folder)'}"), \
+               no_update, "Select a config file to start."
+    path = os.path.join(folder, name)
+    if not os.path.exists(path):
+        # Transient while a folder change re-scans; the new options arrive next.
+        return None, _err(f"Config not found: {path}"), no_update, f"Config not found: {path}"
+    try:
+        cfg = load_yaml(path) or {}
+    except Exception as e:
+        return None, _err(f"Failed to parse YAML: {e}"), no_update, ""
+    cfg["__path__"] = path
+
+    specie  = specie_from_filename(name) or cfg.get("specie") or "?"
+    runs    = cfg.get("runs") or []
+    stims   = cfg.get("stim_types") or []
+    fact = lambda k, v: html.Span([
+        html.Span(f"{k} ", style={"color": "#777"}),
+        html.B(str(v))], style={"marginRight": "18px"})
+    summary = html.Div([
+        html.Div([
+            fact("dataset", cfg.get("dataset", "?")),
+            fact("specie", f"{specie} ({SPECIE_NAMES.get(specie, 'unknown')})"),
+            fact("GLM model", cfg.get("model", "?")),
+            fact("task", cfg.get("task", "?")),
+            fact("runs", len(runs)),
+            fact("participants", len(cfg.get("participants") or [])),
+        ], style={"marginBottom": "4px"}),
+        html.Div([
+            html.Span(f"stim_types ({len(stims)}): ",
+                      style={"color": "#777", "marginRight": "4px"}),
+            *_chips(stims, limit=24),
+        ]),
+    ])
+    return (cfg, summary, export_dir_for_config(path),
+            f"Loaded {path}")
+
+
+# ── ③ Mahalanobis folding ─────────────────────────────────────────────────
+@app.callback(
+    Output("section-mah-fold",  "style"),
+    Output("radio-mah-fold",    "options"),
+    Output("radio-mah-fold",    "value"),
+    Input("radio-dis-method",   "value"),
+    Input("store-cfg",          "data"),
+    State("radio-mah-fold",     "value"),
+)
+def sync_mah_fold(dis_method, cfg, current):
+    if dis_method != "mahalanobis":
+        return {"display": "none"}, MAH_FOLD_OPTIONS, current or "stim-wise"
+    dataset = (cfg or {}).get("dataset")
+    opts = []
+    for opt in MAH_FOLD_OPTIONS:
+        blocked = opt["value"] in EMOC_ONLY_FOLDS and dataset not in (None, "EmoC")
+        label = opt["label"] + (f"  (EmoC only — this config is {dataset})" if blocked else "")
+        opts.append({"label": label, "value": opt["value"], "disabled": blocked})
+    allowed = [o["value"] for o in opts if not o["disabled"]]
+    return {**CBOX, "display": "block"}, opts, (current if current in allowed else "stim-wise")
+
+
+@app.callback(
+    Output("mah-fold-help",   "children"),
+    Input("radio-mah-fold",   "value"),
+    Input("radio-dis-method", "value"),
+)
+def show_mah_fold_help(mah_fold, dis_method):
+    return MAH_FOLD_HELP.get(mah_fold, "") if dis_method == "mahalanobis" else ""
+
+
+@app.callback(
+    Output("section-run-scope", "style"),
+    Output("dd-run",            "options"),
+    Output("dd-run",            "value"),
+    Input("radio-dis-method",   "value"),
+    Input("radio-mah-fold",     "value"),
+    Input("store-cfg",          "data"),
+    State("dd-run",             "value"),
+)
+def sync_run_scope(dis_method, mah_fold, cfg, current):
+    # Only stim-wise-all-runs produces a different label set per run; every other
+    # combination aggregates over all runs.
+    if dis_method != "mahalanobis" or mah_fold != "stim-wise-all-runs" or not cfg:
+        return {"display": "none"}, [], ALL_RUNS_KEY
+    runs = fold_run_options(cfg)
+    opts = [{"label": "All runs (union of classes)", "value": ALL_RUNS_KEY}]
+    opts += [{"label": r, "value": r} for r in runs]
+    values = [o["value"] for o in opts]
+    return ({"marginTop": "8px", "display": "block"}, opts,
+            current if current in values else ALL_RUNS_KEY)
+
+
+# ── ④ Rows / columns ──────────────────────────────────────────────────────
+@app.callback(
+    Output("store-stims",     "data"),
+    Output("store-matrix",    "data"),
+    Output("store-meta",      "data"),
+    Output("axis-summary",    "children"),
+    Input("store-cfg",        "data"),
+    Input("radio-dis-method", "value"),
+    Input("radio-mah-fold",   "value"),
+    Input("dd-run",           "value"),
+    State("store-matrix",     "data"),
+    State("store-meta",       "data"),
+)
+def build_axis(cfg, dis_method, mah_fold, run_scope, matrix_data, meta):
+    if not cfg:
+        return [], [[]], {"combined": False}, _err("Load a config file first.")
+    fold = mah_fold if dis_method == "mahalanobis" else None
+    try:
+        entities, note = derive_axis(cfg, dis_method, fold, run_scope or ALL_RUNS_KEY)
+    except Exception as e:
+        combo = f"dis_method={dis_method!r}" + (f", mah_fold={fold!r}" if fold else "")
+        return ([], [[]], {"combined": False},
+                _err([html.B("This config cannot produce that combination "), f"({combo}). ",
+                      html.Br(), str(e)]))
+
+    labels = [e["name"] for e in entities]
+    matrix = carry_over_matrix(matrix_data, (meta or {}).get("labels"), labels)
+    n_pairs = len(labels) * (len(labels) - 1) // 2
+    summary = html.Div([
+        html.Div([html.B(f"{len(labels)} labels"),
+                  html.Span(f" · {n_pairs} pairs to fill", style={"color": "#777"})],
+                 style={"marginBottom": "4px"}),
+        html.Div(_chips(labels, color="#eaf6ea", border="#9c9")),
+        html.Div(note, style={"fontSize": "11px", "color": "#666", "marginTop": "6px",
+                              "fontStyle": "italic"}),
+    ])
+    new_meta = {
+        "combined":   False,
+        "labels":     labels,
+        "config":     cfg.get("__path__"),
+        "dataset":    cfg.get("dataset"),
+        "specie":     cfg.get("specie"),
+        "glm_model":  cfg.get("model"),
+        "dis_method": dis_method,
+        "mah_fold":   fold,
+        "run_scope":  (run_scope or ALL_RUNS_KEY) if fold == "stim-wise-all-runs" else None,
+    }
+    return entities, matrix_to_json(matrix), new_meta, summary
 
 
 # ── Undo / Redo ───────────────────────────────────────────────────────────
@@ -1016,12 +1719,14 @@ def reset_undo_on_new_stims(_stims):
     Output("dd-model-file", "options"),
     Output("dd-model-file", "value"),
     Input("btn-scan-models",   "n_clicks"),
+    Input("export-folder",     "value"),
     State("store-last-model",  "data"),
     prevent_initial_call=False,
 )
-def scan_models_cb(n, last_model):
-    files = scan_model_files(DEFAULT_EXPORT_DIR)
-    opts  = [{"label": f, "value": os.path.join(DEFAULT_EXPORT_DIR, f)} for f in files]
+def scan_models_cb(n, folder, last_model):
+    folder = (folder or DEFAULT_EXPORT_DIR).strip()
+    files = scan_model_files(folder)
+    opts  = [{"label": f, "value": os.path.join(folder, f)} for f in files]
     vals  = [o["value"] for o in opts]
     default = last_model if last_model in vals else (vals[0] if vals else None)
     return opts, default
@@ -1082,12 +1787,11 @@ def load_model_cb(n, fpath, stims, meta, matrix_data, undo_stack):
     prevent_initial_call=True,
 )
 def init_groupby(stims, cur):
+    # Default to no grouping: the exported CSV must carry the axis labels the
+    # pipeline looks up, and a grouped view exports the group labels instead.
     if not stims: return []
     attrs = discover_attrs(stims)
-    valid = [k for k in (cur or []) if k in attrs]
-    if not valid:
-        valid = [k for k in ("specie_shown", "label") if k in attrs] or attrs[:2]
-    return valid
+    return [k for k in (cur or []) if k in attrs]
 
 
 @app.callback(
@@ -1336,11 +2040,9 @@ def sync_preset_opts(presets):
     return [{"label": k, "value": k} for k in sorted(presets or {})]
 
 
-# ── Render heatmap + table ────────────────────────────────────────────────
+# ── Render heatmap ────────────────────────────────────────────────────────
 @app.callback(
     Output("heatmap",      "figure"),
-    Output("table",        "columns"),
-    Output("table",        "data"),
     Input("store-stims",   "data"),
     Input("store-matrix",  "data"),
     Input("radio-view",    "value"),
@@ -1351,27 +2053,14 @@ def sync_preset_opts(presets):
 )
 def render(stims, matrix_data, view_mode, group_by, sep, style, meta):
     if not stims or not matrix_data:
-        return go.Figure(), [], []
+        return go.Figure()
     mf       = matrix_from_json(matrix_data)
     combined = bool(meta and meta.get("combined"))
     S        = {**DEFAULT_STYLE, **(style or {})}
     labels, mapping, m, mixed = _current_view(stims, mf, view_mode,
                                               group_by or [], combined, "_" if sep is None else sep)
     axis_col = representative_color(stims, mapping, len(labels))
-    fig      = build_cell_heatmap(m, labels, S, mixed_mask=mixed, axis_colors=axis_col)
-
-    # Table
-    cols = [{"name": "", "id": "__row__", "editable": False}]
-    for c in labels:
-        cols.append({"name": c, "id": c, "editable": True})
-    rows = []
-    for i, lab in enumerate(labels):
-        row = {"__row__": lab}
-        for j, c in enumerate(labels):
-            v = m[i, j]
-            row[c] = "" if math.isnan(v) else (str(int(v)) if float(v).is_integer() else f"{v:.3g}")
-        rows.append(row)
-    return fig, cols, rows
+    return build_cell_heatmap(m, labels, S, mixed_mask=mixed, axis_colors=axis_col)
 
 
 # ── Click cell ────────────────────────────────────────────────────────────
@@ -1388,6 +2077,31 @@ def heatmap_click(click):
     if cd and len(cd) >= 2:
         return cd[0], cd[1]
     return p.get("y", ""), p.get("x", "")
+
+
+# ── Right-click menu: show / place / dismiss ──────────────────────────────
+@app.callback(
+    Output("ctx-menu",       "style"),
+    Output("ctx-menu-title", "children"),
+    Output("ctx-manual",     "value", allow_duplicate=True),
+    Input("store-ctxmenu",   "data"),
+    Input({"type": "ctx-preset", "idx": ALL}, "n_clicks"),
+    Input("btn-ctx-manual",  "n_clicks"),
+    prevent_initial_call=True,
+)
+def ctx_menu_toggle(ctxdata, _presets, _manual):
+    # Any of the menu's own buttons closes it; only store-ctxmenu opens it.
+    if ctx.triggered_id != "store-ctxmenu" or not ctxdata:
+        return CTX_MENU_HIDDEN, no_update, None
+    # Measured at ~350 × 215 px; clamp so a click near the right/bottom edge
+    # still lands the whole menu inside the window.
+    x = max(4, int(ctxdata.get("x", 0)))
+    y = max(4, int(ctxdata.get("y", 0)))
+    style = {**CTX_MENU_BASE, "display": "block",
+             "left": f"max(4px, min({x}px, 100vw - 360px))",
+             "top":  f"max(4px, min({y}px, 100vh - 230px))"}
+    title = f'{ctxdata.get("row", "?")}  ×  {ctxdata.get("col", "?")}'
+    return style, title, None
 
 
 # ── Quick value buttons ───────────────────────────────────────────────────
@@ -1415,7 +2129,8 @@ def quick_val(n0, n1, nn):
     Input("btn-reset",         "n_clicks"),
     Input("btn-reset-model",   "n_clicks"),
     Input("btn-mirror",        "n_clicks"),
-    Input("table",             "data"),
+    Input({"type": "ctx-preset", "idx": ALL}, "n_clicks"),
+    Input("btn-ctx-manual",    "n_clicks"),
     State("store-matrix",      "data"),
     State("store-stims",       "data"),
     State("store-meta",        "data"),
@@ -1431,16 +2146,17 @@ def quick_val(n0, n1, nn):
     State("bulk-rhs-val",      "value"),
     State("bulk-value",        "value"),
     State("bulk-only-nan",     "value"),
-    State("table",             "columns"),
+    State("store-ctxmenu",     "data"),
+    State("ctx-manual",        "value"),
     State("store-undo-stack",  "data"),
     prevent_initial_call=True,
 )
 def edit_matrix(n_set, n_bulk, n_fill, n_same0, n_reset, n_reset_model,
-                n_mirror, tbl_data,
+                n_mirror, n_ctx_presets, n_ctx_manual,
                 matrix_data, stims, meta, view_mode, group_by, sep,
                 cell_row, cell_col, cell_val,
                 lhs_attr, lhs_val, rhs_attr, rhs_val, bulk_val, only_nan_chk,
-                columns, undo_stack):
+                ctxdata, ctx_manual, undo_stack):
     if not stims or not matrix_data:
         return no_update, no_update, no_update
     trigger  = ctx.triggered_id
@@ -1495,19 +2211,29 @@ def edit_matrix(n_set, n_bulk, n_fill, n_same0, n_reset, n_reset_model,
                         set_pair(mf, i, j, 0.0)
         return _commit(mf)
 
-    if trigger == "table":
+    # Right-click menu — a preset button, or the custom 0–1 box next to it.
+    is_preset = isinstance(trigger, dict) and trigger.get("type") == "ctx-preset"
+    if is_preset or trigger == "btn-ctx-manual":
+        if not ctxdata:
+            return no_update, no_update, no_update
+        if is_preset:
+            idx = trigger.get("idx")
+            if not (0 <= idx < len(DISSIM_PRESETS)):
+                return no_update, no_update, no_update
+            val = DISSIM_PRESETS[idx]["value"]
+            val = np.nan if val is None else float(val)
+        else:
+            val = parse_value(ctx_manual)
+            if math.isnan(val):
+                return no_update, no_update, no_update   # empty box: nothing to set
+            val = float(np.clip(val, DISSIM_MIN, DISSIM_MAX))
         labels, mapping, _, _ = _current_view(stims, mf, view_mode, group_by or [], combined, sep)
-        if not tbl_data or not columns:
+        row, col = ctxdata.get("row"), ctxdata.get("col")
+        if row not in labels or col not in labels:
             return no_update, no_update, no_update
-        col_ids = [c["id"] for c in columns if c["id"] != "__row__"]
-        if col_ids != labels:
-            return no_update, no_update, no_update
-        for i, row in enumerate(tbl_data):
-            for j, c in enumerate(col_ids):
-                v = parse_value(row.get(c, ""))
-                if i == j: continue
-                if view_mode == "full" or not group_by: set_pair(mf, i, j, v)
-                else: broadcast_grouped_edit(mf, mapping, i, j, v)
+        gi, gj = labels.index(row), labels.index(col)
+        if view_mode == "full" or not group_by: set_pair(mf, gi, gj, val)
+        else: broadcast_grouped_edit(mf, mapping, gi, gj, val)
         return _commit(mf)
 
     return no_update, no_update, no_update
@@ -1532,13 +2258,31 @@ def edit_matrix(n_set, n_bulk, n_fill, n_same0, n_reset, n_reset_model,
 def do_export(n, stims, matrix_data, meta, view_mode, group_by, sep, style, fname, folder):
     if not stims or not matrix_data:
         return no_update, "Nothing to export."
+    meta     = meta or {}
     mf       = matrix_from_json(matrix_data)
-    combined = bool(meta and meta.get("combined"))
+    combined = bool(meta.get("combined"))
     S        = {**DEFAULT_STYLE, **(style or {})}
     labels, _, m, _ = _current_view(stims, mf, view_mode, group_by or [], combined, "_" if sep is None else sep)
     csv_text = dataframe_to_csv_string(to_export_dataframe(m, labels))
     fname = ((fname or "my-model.csv").strip())
     if not fname.lower().endswith(".csv"): fname += ".csv"
+
+    # The pipeline looks the model up by the labels it writes into the pairwise
+    # map filenames — warn loudly when a grouped view collapses them away.
+    warning = []
+    axis_labels = meta.get("labels") or []
+    if axis_labels and labels != axis_labels:
+        if meta.get("mah_fold") == "stim-wise-multiple-folds":
+            warning = [f"Grouped export: {len(labels)} labels instead of the "
+                       f"{len(axis_labels)} exact stimuli. The pipeline can resolve this only if "
+                       "every label is a class name (e.g. DogA) that each stim_file maps to."]
+        else:
+            warning = [f"⚠ Grouped export: this CSV has {len(labels)} labels but "
+                       f"dis_method={meta.get('dis_method')!r}"
+                       + (f" / mah_fold={meta.get('mah_fold')!r}" if meta.get("mah_fold") else "")
+                       + f" produces maps for {len(axis_labels)} labels — it will not match. "
+                         "Switch Group by to none before exporting."]
+
     saved_msg = ""
     if folder:
         try:
@@ -1551,12 +2295,23 @@ def do_export(n, stims, matrix_data, meta, view_mode, group_by, sep, style, fnam
             opts["view_mode"]   = view_mode
             opts["exported_at"] = str(pd.Timestamp.now())
             opts["labels"]      = labels
+            opts["build"]       = {k: meta.get(k) for k in
+                                   ("config", "dataset", "specie", "glm_model",
+                                    "dis_method", "mah_fold", "run_scope")}
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(opts, f, indent=2)
             saved_msg = f"Saved: {csv_path}  +  {os.path.basename(json_path)}"
+            # read_model_dict() caches a .npy next to the CSV and prefers it —
+            # a stale one would silently shadow this export.
+            npy_path = csv_path[:-4] + ".npy"
+            if os.path.exists(npy_path):
+                os.remove(npy_path)
+                saved_msg += f"  ·  removed stale {os.path.basename(npy_path)}"
         except Exception as e:
             saved_msg = f"Save failed: {e}"
-    return dict(content=csv_text, filename=fname), saved_msg
+    children = ([html.Div(w, style={"color": "#a33", "marginBottom": "4px"}) for w in warning]
+                + [html.Div(saved_msg)])
+    return dict(content=csv_text, filename=fname), children
 
 
 if __name__ == "__main__":

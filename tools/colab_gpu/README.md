@@ -1,8 +1,18 @@
-# colab_gpu/ — GPU acceleration for RSA steps 1, 2, 4
+# colab_gpu/ — GPU acceleration for RSA steps 1, 2, 4 and 3, 5, 6, 7
 
-Run the compute-heavy RSA steps for **one participant × many models** on a Colab
-GPU (L4/T4, High-RAM), then drop the results back onto the pipeline data disk so
-steps 3–10 of `searchlight.py` continue unchanged on the workstation.
+Two halves that chain:
+
+| Half | Scope | Package | Notebook | Writes |
+|---|---|---|---|---|
+| **participant** — steps 1, 2, 4 | one participant × many models | `tools/create_package.py` | `colab_rsa.ipynb` | `result_step1_*.zip`, `result_<model>_<specie>-sub-NN.zip` |
+| **group** — steps 3, 5, 6, 7 | all participants × many models | `tools/create_group_package.py` | `colab_rsa_group.ipynb` | `result_group_<model>_<specie>.zip` |
+
+The group half's input is the participant half's **output folder**: it reads the
+per-participant maps straight out of the `result_*.zip` files already sitting in
+OUT_DIR, so nothing has to come down to the workstation and go back up in
+between. Afterwards `tools/unpack_results.py` merges either kind of zip and
+`searchlight.py` continues — from step 3 after a participant run, from step 8
+after a group run.
 
 Two distance methods are supported (`--dis_method`, read from `_models.csv`):
 
@@ -25,9 +35,18 @@ memory.
   to matmuls. Kendall's tau-a factors into a signed upper-triangle matmul
   `data_sign(n_vox, 990) @ model_sign(990, n_perms)`, so a 50-model × 100-permutation
   battery is a handful of matmuls.
+- **Steps 3, 5, 6, 7** are I/O-bound on the CPU, not arithmetic-bound. Step 5 draws
+  one of each participant's `reps` permutation maps for each of `reps_group` group
+  permutations, i.e. `reps_group × n_participants` NIfTI loads (1000 × 16 = 16 000
+  reads of the same 1600 files), and step 6 then walks all 1000 group maps twice for
+  a mean and an std. Here those 1600 maps are read **once** into an
+  `(n_maps, n_mask_voxels)` matrix and the whole of steps 5–7 becomes one
+  voxel-chunked index-gather plus a mean along the participant axis. What is left is
+  writing the output volumes.
 
 Everything runs in **float64** to match the CPU (numpy) pipeline. Validated against
-the CPU to ~1e-12 (see `validate_gpu.py`).
+the CPU to ~1e-12 (`validate_gpu.py` for steps 1/2/4, `validate_group.py` for
+steps 3/5/6/7).
 
 ## Faithfulness note
 
@@ -37,6 +56,28 @@ collapse into one partition (see `_load_category_means`). Step-4 permutations us
 the same *scheme* as `rsa_utils.shuffle_vector` (permute category labels) with their
 own deterministic seed, so they are a valid draw from the same null, not
 bit-identical to a CPU rerun.
+
+The group steps are the same story one level up. Steps 3, 6 and 7 are exact; step 5
+draws its per-participant permutation with a seeded RNG where the CPU uses an
+unseeded `random.choice`, so it is a valid draw from the same null but not a
+reproduction of a particular CPU run. Feed `validate_group.py`'s CPU side the GPU's
+own step-5 maps and steps 6–7 agree to ~1e-16.
+
+Details that are easy to get wrong and are reproduced deliberately:
+
+- the group **rnd** maps carry **no** `{mask_type}-` prefix while the group **real**
+  maps do — step 8's glob depends on it;
+- `mah_fold` sub-foldering applies to the **participant** paths only, never to the
+  group `mean/` folder;
+- step 3 multiplies mean and std by the mask;
+- step 7's rnd z maps keep their non-finite values (outside the mask the CPU
+  computes `(0-0)/0`, so those voxels are NaN on disk), while the real z map zeroes
+  them and is cast to float32 *under the mean map's float64 header* — exactly what
+  `calculate_z_map_real_data` does;
+- step 3's `.json` sidecar is written too, because
+  `calculate_group_model_similarity_map` reads it back to decide whether the map has
+  to be recomputed. Its paths are rendered as **workstation** paths, from the
+  `datafolder` the package records.
 
 ## Output geometry
 
@@ -64,39 +105,81 @@ python tools/check_space.py --dataset EmoC --specie H --model basic-block
 | File | What it is |
 |---|---|
 | `gpu_rsa.py` | PyTorch step 1/2/4 kernels: `batched_ledoit_wolf`, `batched_crossnobis`, `crossnobis_searchlight`, `run_step1`, `run_model`, plus per-part zip helpers. Copied into every package. Depends only on torch/numpy/nibabel. |
-| `run_colab.py` | Orchestrator: step 1 once + steps 2/4 per model, one `result_*.zip` per part, resumable. Importable (`run_package`) or a CLI. |
-| `colab_rsa.ipynb` | The Colab notebook — check GPU, mount Drive, unzip package, run. |
+| `run_colab.py` | Orchestrator for steps 1/2/4: step 1 once + steps 2/4 per model, one `result_*.zip` per part, resumable. Importable (`run_package`) or a CLI. |
+| `colab_rsa.ipynb` | The Colab notebook for steps 1/2/4 — check GPU, mount Drive, unzip package, run. |
+| `gpu_group.py` | PyTorch step 3/5/6/7 kernels: `ResultStore` (reads participant maps out of the result zips), `draw_group_indices`, `group_permutation_stats`, `run_group_model`, `zip_group_result`. Also the pipeline path builders for every group output. Imports `gpu_rsa` for the voxel-grid check. |
+| `run_colab_group.py` | Orchestrator for steps 3/5/6/7: one `result_group_<model>_<specie>.zip` per model, resumable. Importable (`run_group_package`) or a CLI. |
+| `colab_rsa_group.ipynb` | The Colab notebook for steps 3/5/6/7. |
 | `validate_gpu.py` | Correctness harness vs the CPU pipeline (LW, crossnobis, kendall, step-1 vs disk maps, step-2). Run on the workstation. |
-| `packages/` | Default output folder for `tools/create_package.py` (git-ignored contents). |
+| `validate_group.py` | Correctness harness for the group steps: builds a synthetic dataset, runs both paths, compares steps 3/5/6/7, and checks that the result zip merges via `unpack_results.py` and that step 8's glob finds the z maps. |
+| `packages/` | Default output folder for `tools/create_package.py` and `tools/create_group_package.py` (git-ignored contents). |
 
 ## Workflow
 
 ```powershell
-# 1. Build a package (workstation). H-sub-40 with the whole mahalanobis battery:
+# 1. Build a per-participant package (workstation). H-sub-40, whole mahalanobis battery:
 & "C:\ProgramData\anaconda3\python.exe" tools\create_package.py H 40 --all-stim-wise
 #    ...or the whole correlation battery (41 models, run-wise):
 & "C:\ProgramData\anaconda3\python.exe" tools\create_package.py H 40 --dis_method correlation --all
 
 # 2. Upload the pkg_*.zip to a Google Drive folder, open colab_rsa.ipynb in Colab
-#    (GPU runtime), set PKG_ZIP + OUT_DIR, run all cells.
+#    (GPU runtime), set PKG_ZIP + OUT_DIR, run all cells. Repeat per participant.
 #    -> result_step1_*.zip once, then result_<model>_*.zip per model, in OUT_DIR.
 
-# 3. Download OUT_DIR and merge back onto the data disk (workstation):
+# 3. Once EVERY participant is done, build the group package (34 kB -- mask + manifest):
+& "C:\ProgramData\anaconda3\python.exe" tools\create_group_package.py H --all-stim-wise
+
+# 4. Upload it to the SAME Drive folder, open colab_rsa_group.ipynb, set
+#    PKG_ZIP + RESULTS_DIR + OUT_DIR, run all cells.
+#    -> result_group_<model>_<specie>.zip per model, in OUT_DIR.
+
+# 5. Download OUT_DIR and merge back onto the data disk (workstation):
 & "C:\ProgramData\anaconda3\python.exe" tools\unpack_results.py DOWNLOADS_DIR
 
-# 4. Continue the pipeline (steps 3-10) as usual, e.g. via the scheduler.
+# 6. Continue the pipeline (steps 8-10) as usual, e.g. via the scheduler.
 ```
+
+## Group steps — what to know before running them
+
+**Everyone has to be finished.** Step 5 averages one permutation map per
+participant, so the group half needs every participant's `result_<model>_*.zip` in
+`RESULTS_DIR`. A participant with no permutation maps is dropped and reported; if
+that pushes availability below `min_percentage_available` (default 1.0) the model
+is skipped with a message rather than silently averaged over fewer subjects.
+
+**Output volume.** Step 5 writes `reps_group` group mean maps and step 7 writes
+`reps_group` z maps — 2000 files per model at the default `reps_group=1000`. On
+the data disk a dog group map measures ~43 kB, so that is **~86 MB per model per
+species** (humans more). Only the z maps are read downstream,
+by step 8; the group means are inputs to steps 6 and 7, both of which run here. Set
+`WRITE_GROUP_MEANS = False` in the notebook (`--skip_group_means` on the CLI) to
+leave them out and roughly halve what you download.
+
+**`RESULTS_DIR` may also be an unpacked data root**, which is handy for a local
+test — but reading maps one file at a time off `P:` is *slow* (measured 2026-08-03:
+~7 s per map). The zip path reads each participant's 101 maps out of a single file
+and is what a real run should use.
+
+**Steps 3 and 7 travel together**: the real z map is `(group mean − null mean) /
+null std`, so step 7 needs step 3's output. Keep `3` in `STEPS`, or make sure the
+step-3 mean map is already in `RESULTS_DIR`.
 
 For a quick local smoke test without Colab (CPU torch is fine):
 
 ```powershell
 & "C:\ProgramData\anaconda3\python.exe" tools\create_package.py D 1 --models valence3__all valence3__cross --reps 10
 & "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\run_colab.py --pkg <unzipped-pkg> --out <scratch-out> --cpu
+
+& "C:\ProgramData\anaconda3\python.exe" tools\create_group_package.py D --models valence3__all --reps_group 20 --participants 1 3 4
+& "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\run_colab_group.py --pkg <unzipped-pkg> --results <dir-of-result-zips> --out <scratch-out> --cpu
 ```
 
 ## Validate
 
 ```powershell
 & "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\validate_gpu.py
+& "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\validate_group.py
 ```
-Exits non-zero if any kernel diverges from the CPU beyond tolerance.
+Each exits non-zero if any kernel diverges from the CPU beyond tolerance. Both need
+`KMP_DUPLICATE_LIB_OK=TRUE` on this machine (Anaconda and torch each ship an OpenMP
+runtime).
