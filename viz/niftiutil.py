@@ -40,10 +40,23 @@ LABEL_DICT_CSV = {
 
 # Warm sequential scale for stat overlays, readable on a white background.
 OVERLAY_COLORSCALE = "YlOrRd"
+# Slices are drawn radiology-style: the anatomy is bright on black, so the
+# grayscale atlas scale is *reversed* (plain "Greys" runs white→black, which
+# would paint tissue dark on a white field).
 ATLAS_COLORSCALE = "Greys"
+ATLAS_REVERSE = True
+SLICE_BG = "#000000"        # canvas behind a slice — paper *and* plot area
+SLICE_INK = "#ffffff"       # title / orientation labels on that canvas
 PANEL_BG = "#ffffff"
 INK = "#222222"
 SURFACE_COLOR = "#b9c4da"
+
+# Anatomical direction each in-plane axis should point in a rendered slice:
+# (towards the right edge, towards the top edge). Neurological convention
+# (subject's left on the image's left), superior up, and — on an axial slice —
+# **anterior up**, so the frontal pole is at the top of the picture.
+SLICE_ORIENT = {0: ("A", "S"), 1: ("R", "S"), 2: ("R", "A")}
+_OPPOSITE = {"R": "L", "L": "R", "A": "P", "P": "A", "S": "I", "I": "S"}
 
 
 # --- IO / geometry --------------------------------------------------------
@@ -128,14 +141,17 @@ def region_name_at(vox_overlay, overlay_affine, label_data, label_affine, label_
 
 # --- Figures --------------------------------------------------------------
 
-def empty_fig(title="", height=360):
+def empty_fig(title="", height=360, dark=False):
+    """Placeholder figure. ``dark=True`` matches the black slice canvas, so a card
+    that swaps a missing map for a real one doesn't flash white."""
+    bg, ink, ghost = (SLICE_BG, "#ffffff", "#666666") if dark else (PANEL_BG, INK, "#aaa")
     fig = go.Figure()
     fig.update_layout(
-        title=dict(text=title, font=dict(size=13, color=INK)),
+        title=dict(text=title, font=dict(size=13, color=ink)),
         margin=dict(l=5, r=5, t=30, b=5),
         xaxis=dict(visible=False), yaxis=dict(visible=False),
-        plot_bgcolor=PANEL_BG, paper_bgcolor=PANEL_BG, font_color=INK, height=height,
-        annotations=[dict(text="No data", showarrow=False, font=dict(size=15, color="#aaa"),
+        plot_bgcolor=bg, paper_bgcolor=bg, font_color=ink, height=height,
+        annotations=[dict(text="No data", showarrow=False, font=dict(size=15, color=ghost),
                           xref="paper", yref="paper", x=0.5, y=0.5)],
     )
     return fig
@@ -148,35 +164,98 @@ def _threshold(ov, z_threshold):
     return np.where(np.abs(ov) >= float(z_threshold), ov, np.nan)
 
 
+def slice_orientation(affine, axis):
+    """(transpose order, flip_rows, flip_cols, edge labels) for one slice axis.
+
+    Given the volume's ``affine``, work out how to lay the two in-plane array
+    axes on screen so the picture follows ``SLICE_ORIENT[axis]``. Without this,
+    a slice is drawn in whatever order the array happens to store its voxels —
+    which is how an axial slice ends up with the frontal pole at the *bottom*.
+
+    Returned ``order`` indexes the two remaining array axes (in ascending order)
+    as they should become (rows, cols); Plotly's y axis increases upward, so row
+    0 is the bottom of the image. ``labels`` is (left, right, bottom, top).
+    Returns ``None`` when the affine can't be read, so the caller can fall back.
+    """
+    if affine is None:
+        return None
+    try:
+        codes = nib.aff2axcodes(np.asarray(affine, dtype=float))
+    except Exception:
+        return None
+    want_right, want_up = SLICE_ORIENT[int(axis)]
+    in_axes = [a for a in range(3) if a != int(axis)]
+    place = {}
+    for pos, a in enumerate(in_axes):
+        c = codes[a]
+        for want in (want_right, want_up):
+            if c == want:
+                place[want] = (pos, False)
+            elif c == _OPPOSITE[want]:
+                place[want] = (pos, True)      # axis runs the wrong way → flip
+    if want_right not in place or want_up not in place:
+        return None                            # degenerate/oblique beyond rescue
+    (up_pos, up_flip), (right_pos, right_flip) = place[want_up], place[want_right]
+    if up_pos == right_pos:
+        return None
+    labels = (_OPPOSITE[want_right], want_right, _OPPOSITE[want_up], want_up)
+    return (up_pos, right_pos), up_flip, right_flip, labels
+
+
+def _oriented(vol, axis, idx, orient):
+    """Slice ``vol`` at ``idx`` and lay it out per ``slice_orientation``."""
+    if vol is None:
+        return None
+    sl = np.take(vol, idx, axis=int(axis))
+    if orient is None:
+        return np.rot90(sl)                    # legacy layout (no affine given)
+    order, up_flip, right_flip, _ = orient
+    sl = np.transpose(sl, order)
+    if up_flip:
+        sl = sl[::-1, :]
+    if right_flip:
+        sl = sl[:, ::-1]
+    return sl
+
+
 def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
                    vmin, vmax, show_crosshair=False, cross=None, title="", height=360,
-                   colorscale=None):
-    """One orthogonal slice: grayscale atlas + thresholded overlay.
+                   colorscale=None, affine=None):
+    """One orthogonal slice: grayscale atlas + thresholded overlay, on black.
+
+    The anatomy is drawn radiology-style — bright tissue on a black canvas (the
+    atlas scale is reversed, see ``ATLAS_REVERSE``) — because a stat overlay in
+    a warm colormap has to sit on a dark background to read.
+
+    ``affine`` is the voxel→world affine of *both* volumes (they share a grid).
+    It is what puts the slice the right way up: the layout follows
+    ``SLICE_ORIENT`` regardless of array storage order, and the edges are marked
+    with the corresponding anatomical letters (L/R, A/P, S/I). Passing ``None``
+    keeps the old unlabeled ``rot90`` layout.
 
     ``colorscale`` names the overlay colour map (any Plotly colorscale, e.g.
     ``"Hot"``); ``None`` falls back to the module default. Sub-threshold voxels
     are NaN'd (``_threshold``) so they render fully transparent — i.e. alpha=0
     below ``z_threshold`` — and everything at/above uses the chosen scale."""
     if atlas is None:
-        return empty_fig(title, height)
+        return empty_fig(title, height, dark=True)
+    axis = int(axis)
     idx = int(np.clip(slice_idx, 0, atlas.shape[axis] - 1))
-    if axis == 0:
-        bg = np.rot90(atlas[idx, :, :]); ov = overlay[idx, :, :] if overlay is not None else None
-    elif axis == 1:
-        bg = np.rot90(atlas[:, idx, :]); ov = overlay[:, idx, :] if overlay is not None else None
-    else:
-        bg = np.rot90(atlas[:, :, idx]); ov = overlay[:, :, idx] if overlay is not None else None
-    if ov is not None:
-        ov = np.rot90(ov)
+    orient = slice_orientation(affine, axis)
+    bg = _oriented(atlas, axis, idx, orient)
+    ov = _oriented(overlay, axis, idx, orient) if overlay is not None else None
 
     fig = go.Figure()
-    fig.add_trace(go.Heatmap(z=bg, colorscale=ATLAS_COLORSCALE, showscale=False, hoverinfo="skip"))
+    fig.add_trace(go.Heatmap(z=bg, colorscale=ATLAS_COLORSCALE, reversescale=ATLAS_REVERSE,
+                             showscale=False, hoverinfo="skip"))
     ov_t = _threshold(ov, z_threshold)
     if ov_t is not None and not np.all(np.isnan(ov_t)):
         fig.add_trace(go.Heatmap(
             z=ov_t, colorscale=(colorscale or OVERLAY_COLORSCALE), opacity=opacity,
             showscale=True, zmin=vmin, zmax=vmax,
-            colorbar=dict(title="z", len=0.6, thickness=10), hoverinfo="skip"))
+            colorbar=dict(title=dict(text="z", font=dict(color=SLICE_INK)), len=0.6,
+                          thickness=10, tickfont=dict(color=SLICE_INK), outlinewidth=0),
+            hoverinfo="skip"))
     if show_crosshair and cross:
         cx, cy = cross
         fig.add_shape(type="line", x0=cx, x1=cx, y0=0, y1=bg.shape[0] - 1,
@@ -184,12 +263,38 @@ def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
         fig.add_shape(type="line", x0=0, x1=bg.shape[1] - 1, y0=cy, y1=cy,
                       line=dict(color="cyan", width=1, dash="dot"))
     fig.update_layout(
-        title=dict(text=title, font=dict(size=12)),
+        title=dict(text=title, font=dict(size=12, color=SLICE_INK)),
         margin=dict(l=4, r=4, t=26, b=4),
         xaxis=dict(visible=False, scaleanchor="y", constrain="domain"),
         yaxis=dict(visible=False, constrain="domain"),
-        plot_bgcolor="black", paper_bgcolor=PANEL_BG, font_color="white", height=height)
+        plot_bgcolor=SLICE_BG, paper_bgcolor=SLICE_BG, font_color=SLICE_INK, height=height,
+        annotations=_orientation_annotations(orient, bg.shape))
     return fig
+
+
+def _orientation_annotations(orient, shape):
+    """L/R, A/P, S/I letters just inside the four edges of the slice.
+
+    Anchored in *data* coordinates rather than paper coordinates: the x axis is
+    scale-anchored with ``constrain="domain"``, so the plotting domain shrinks to
+    the brain's aspect ratio and paper-anchored labels would drift away from it.
+    """
+    if orient is None:
+        return []
+    nr, nc = shape
+    left, right, bottom, top = orient[3]
+    font = dict(size=13, color=SLICE_INK)
+    pad_x, pad_y = 0.02 * nc, 0.02 * nr
+    return [
+        dict(x=pad_x, y=(nr - 1) / 2, text=left, xanchor="left", yanchor="middle",
+             showarrow=False, font=font),
+        dict(x=nc - 1 - pad_x, y=(nr - 1) / 2, text=right, xanchor="right", yanchor="middle",
+             showarrow=False, font=font),
+        dict(x=(nc - 1) / 2, y=pad_y, text=bottom, xanchor="center", yanchor="bottom",
+             showarrow=False, font=font),
+        dict(x=(nc - 1) / 2, y=nr - 1 - pad_y, text=top, xanchor="center", yanchor="top",
+             showarrow=False, font=font),
+    ]
 
 
 def _brain_surface_trace(atlas_lowres, iso=0.12, max_dim=64):

@@ -21,7 +21,11 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     map; axis, slice position, a two-handle **range slider** (low/high threshold)
     and **colormap** are per-card. The colormap defaults to **Hot**: voxels below
     the range's low handle render transparent (alpha=0), everything at/above the
-    high handle is painted the top color of the scale.
+    high handle is painted the top color of the scale. Slices are drawn
+    radiology-style — **bright anatomy on a black canvas** — and are laid out from
+    the map's *affine* rather than its array order, so **anterior is up** on an
+    axial slice (Slice Z) and superior is up on a coronal/sagittal one, with the
+    four edges marked **L/R · A/P · S/I**.
   * **Next to the brain** sits a **histogram of that map's values inside the
     search mask** — only the voxels the searchlight actually visited, read from
     the ROI/mask file itself (dog masks from ``Atlas/Dog/Nitzsche/``, human ones
@@ -1241,20 +1245,26 @@ for _i in range(MAX_MODELS):
 # ``on`` checkbox) turns it off. Grouped Output/State lists let one callback fan
 # out over every slot.
 
-@app.callback([Output(f"pl-{i}-enable", "value", allow_duplicate=True) for i in range(MAX_MODELS)],
+@app.callback(*[Output(f"pl-{i}-enable", "value", allow_duplicate=True) for i in range(MAX_MODELS)],
               Output("ex-models-title", "children", allow_duplicate=True),
               Input("ex-addpanel", "n_clicks"),
               [State(f"pl-{i}-enable", "value") for i in range(MAX_MODELS)],
               prevent_initial_call=True)
 def cb_add_panel(_n, *enables):
     """Turn on the first currently-off card; no-op when all are already on. (Dash
-    passes the State list as separate positional args, hence ``*enables``.)"""
+    passes the State list as separate positional args, hence ``*enables``.)
+
+    The outputs are spread (``*[...]``) rather than passed as one list because a
+    grouped list *plus* a further positional Output flattens to MAX_MODELS + 1
+    separate outputs — so the return has to be that many flat values too, not
+    ``(list, message)``. Getting that wrong raises SchemaLengthValidationError
+    inside Dash and the click 500s silently."""
     out = [no_update] * MAX_MODELS
     for i, e in enumerate(enables):
         if "on" not in (e or []):
             out[i] = ["on"]
-            return out, f"Added model {i + 1}."
-    return out, f"All {MAX_MODELS} model slots are already in use."
+            return (*out, f"Added model {i + 1}.")
+    return (*out, f"All {MAX_MODELS} model slots are already in use.")
 
 
 def _register_panel_remove(i):
@@ -1435,7 +1445,7 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
                        specie, model, maptype, zt)
     label = {"D": "Dog", "H": "Human"}[specie]
     if loaded is None:
-        empty = niftiutil.empty_fig(f"{label}: no {maptype} map", height=view_height)
+        empty = niftiutil.empty_fig(f"{label}: no {maptype} map", height=view_height, dark=True)
         return empty, (niftiutil.empty_fig("no map", height=view_height) if want_hist else None), 0, 0
     data, aff = loaded
     atlas = _atlas_on_grid(specie, data.shape, aff)
@@ -1456,9 +1466,11 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
         vmax = auto_max
     if vmax <= vmin:
         vmax = vmin + 1e-6
+    # ``aff`` is the map's affine; the atlas has been resampled onto that same
+    # grid, so it orients both volumes and drives the L/R · A/P · S/I labels.
     fig = niftiutil.make_slice_fig(atlas, data, ax, idx, opacity=0.8, z_threshold=thr,
                                    vmin=vmin, vmax=vmax, title=f"{label} · {model}",
-                                   height=view_height, colorscale=colorscale)
+                                   height=view_height, colorscale=colorscale, affine=aff)
     # Counts (and the histogram) are restricted to the search mask — the voxels the
     # searchlight actually visited — so "how many survive this threshold" is out of
     # a meaningful denominator instead of the whole bounding box.
@@ -1523,7 +1535,7 @@ def _register_panel(i):
         model = _resolve_model(grouped, mahfold, stem, grouping)
         if not model:
             title = html.Span("— pick a fold, model + grouping —", style={"color": MUTED})
-            empty = niftiutil.empty_fig("select a model + grouping", height=vh)
+            empty = niftiutil.empty_fig("select a model + grouping", height=vh, dark=True)
             mat = _model_heatmap(datafolder, dataset, None) if show_matrix else no_update
             hist = niftiutil.empty_fig("no model", height=vh) if show_hist else no_update
             return (title, empty, gshow, hist, gshow, hist_wrap, mat,

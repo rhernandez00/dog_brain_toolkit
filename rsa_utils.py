@@ -6438,15 +6438,18 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
     results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,
                                          label_nii_data=label_nii_data)
-    # if results is empty
+    # if results is empty, create csv file that indicates there are no clusters found
     if not results:
-        print(f"No clusters found in {res_image}. No table will be created.")
+        # create empty csv file with a message
+        df_empty = pd.DataFrame({'message': ['No clusters found']})
+        df_empty.to_csv(out_path, index=False)
+        print(f"No clusters found in {res_image}. Empty table written to: {out_path}")
+
+        
         return False
-        
-        
-    
-    clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
-    print(f"Files written in: {out_path}")
+    else:
+        clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
+        print(f"Files written in: {out_path}")
 
     # Mirror the result image + table to the Google-Drive results tree. This is a
     # convenience for the Windows dashboard and must never fail the step: the Drive
