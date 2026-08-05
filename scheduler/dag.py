@@ -1,3 +1,5 @@
+from .jobs import DEFAULT_PRIORITY, normalize_priority
+
 STEP_LABELS = {
     0: "Beta maps",
     1: "Pairwise similarity",
@@ -48,12 +50,19 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
                     dis_method="mahalanobis",
                     mah_fold="stim-wise",
                     replace_rnd_files=False,
-                    verbose=True):
+                    verbose=True,
+                    priority=DEFAULT_PRIORITY):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.  Steps below start_step are never
     scheduled (their outputs are assumed to already exist on disk).
+
+    ``priority`` (1 = first, 3 = last, the default) is stamped on every job in
+    the graph and decides the order ``run_jobs.py`` claims *pending* jobs. It
+    does not reorder the graph itself: a step still waits for its deps whatever
+    its priority.
     """
+    priority = normalize_priority(priority)
     # Collect all needed steps via backwards walk from target_step
     needed = set()
     queue = [target_step]
@@ -110,6 +119,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "label": STEP_LABELS.get(step, f"Step {step}"),
             "status": "pending" if not dep_ids else "waiting",
             "deps": dep_ids,
+            "priority": priority,
             "rsa_method": rsa_method,
             "dis_method": dis_method,
             "mah_fold": mah_fold,
@@ -133,7 +143,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                      mah_fold="stim-wise", participant=None,
                      radius=None, mask_type=None,
                      replace_file=False, replace_rnd_files=False,
-                     verbose=True):
+                     verbose=True, priority=DEFAULT_PRIORITY):
     """Build a single, *independent* job dict (no dependencies, status=pending).
 
     Used by the dashboard's "schedule missing" / per-map buttons: the user has
@@ -146,6 +156,9 @@ def build_single_job(dataset, model, rsa_model, specie, step,
     The extra ``radius`` / ``mask_type`` / ``replace_file`` fields are honoured
     by ``run_jobs.build_command`` (they are absent from classic scheduler jobs,
     which read them with ``.get()`` and fall back to searchlight's defaults).
+
+    ``priority`` (1 = first, 3 = last, the default) decides the order
+    ``run_jobs.py`` claims this job relative to the rest of the pending queue.
     """
     job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold,
                          reps, reps_group, rsa_method, dis_method, mah_fold,
@@ -163,6 +176,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
         "label": label,
         "status": "pending",
         "deps": [],
+        "priority": normalize_priority(priority),
         "rsa_method": rsa_method,
         "dis_method": dis_method,
         "mah_fold": mah_fold,

@@ -23,6 +23,35 @@ def list_jobs_in_state(queue_dir, state):
 
 ALL_STATES = ('pending', 'waiting', 'running', 'completed', 'failed')
 
+# ---------------------------------------------------------------------------
+# Job priority: 1 = run first, 3 = run last (default).
+# ---------------------------------------------------------------------------
+# Priority is deliberately NOT part of the job id: the same analysis queued at a
+# different urgency is still the same analysis, so re-scheduling it at priority 1
+# must still be seen as a duplicate by create_job() and must still satisfy the
+# same dep ids in promote_waiting_jobs().
+MIN_PRIORITY = 1
+MAX_PRIORITY = 3
+DEFAULT_PRIORITY = 3
+PRIORITIES = (1, 2, 3)
+
+
+def normalize_priority(value, default=DEFAULT_PRIORITY):
+    """Coerce anything to a valid priority. Missing/garbage -> ``default``.
+
+    Job files written before priorities existed have no 'priority' field, so
+    they read back as the default (3, i.e. last).
+    """
+    try:
+        p = int(value)
+    except (TypeError, ValueError):
+        return default
+    return min(max(p, MIN_PRIORITY), MAX_PRIORITY)
+
+
+def job_priority(job):
+    return normalize_priority(job.get('priority'))
+
 
 def job_files(queue_dir, job_id, state):
     """Return every queue file for ``job_id`` in ``state``: the canonical
@@ -55,6 +84,7 @@ def create_job(queue_dir, job):
     """
     queue_dir = Path(queue_dir)
     job = dict(job)
+    job['priority'] = job_priority(job)
     job_id = job['job_id']
     existing = [f for state in ALL_STATES for f in job_files(queue_dir, job_id, state)]
     if existing:
@@ -74,22 +104,56 @@ def create_job(queue_dir, job):
     return True
 
 
+def _claim_path(queue_dir, path, machine):
+    """Try to move one pending job to running/. Returns (path, job) or None."""
+    target = queue_dir / 'running' / path.name
+    try:
+        path.rename(target)
+    except (FileNotFoundError, PermissionError):
+        return None  # another worker grabbed it first
+    job = load_job(target)
+    job['status'] = 'running'
+    job['started_at'] = datetime.utcnow().isoformat()
+    job['machine'] = machine
+    save_job(target, job)
+    return target, job
+
+
 def claim_job(queue_dir):
-    """Atomically claim one pending job. Returns (path, job) or (None, None)."""
+    """Atomically claim one pending job, highest priority first.
+
+    Jobs are ordered by ``priority`` (1 before 2 before 3; a job file without
+    the field counts as 3) and, within a priority, by filename — the same
+    deterministic order the queue used before priorities existed.
+
+    Deciding the order means reading the pending job files, which is not free on
+    the shared network disk, so the scan stops at the first ``MIN_PRIORITY`` job
+    it sees: nothing can outrank it. Only when no priority-1 job exists does the
+    whole pending folder get read.
+
+    Returns (path, job) or (None, None).
+    """
     queue_dir = Path(queue_dir)
     machine = socket.gethostname()
+    candidates = []
     for path in sorted((queue_dir / 'pending').glob('*.json')):
-        target = queue_dir / 'running' / path.name
         try:
-            path.rename(target)
-        except (FileNotFoundError, PermissionError):
-            continue  # another worker grabbed it first
-        job = load_job(target)
-        job['status'] = 'running'
-        job['started_at'] = datetime.utcnow().isoformat()
-        job['machine'] = machine
-        save_job(target, job)
-        return target, job
+            prio = job_priority(load_job(path))
+        except (OSError, ValueError):
+            # Unreadable/half-written file (or one another worker just claimed):
+            # treat as lowest priority and let the rename attempt decide.
+            prio = MAX_PRIORITY
+        if prio <= MIN_PRIORITY:
+            claimed = _claim_path(queue_dir, path, machine)
+            if claimed:
+                return claimed
+            continue  # lost the race — keep looking
+        candidates.append((prio, path.name, path))
+
+    for _prio, _name, path in sorted(candidates, key=lambda t: (t[0], t[1])):
+        claimed = _claim_path(queue_dir, path, machine)
+        if claimed:
+            return claimed
     return None, None
 
 

@@ -44,7 +44,7 @@ sys.path.insert(0, _root)
 
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
 from scheduler.dag import build_single_job  # noqa: E402
-from scheduler.jobs import create_job  # noqa: E402
+from scheduler.jobs import create_job, DEFAULT_PRIORITY, PRIORITIES  # noqa: E402
 
 
 def read_registry(models_csv, dis_method=None):
@@ -89,6 +89,10 @@ def main():
     p.add_argument('--z_threshold', type=float, default=3.1)
     p.add_argument('--reps', type=int, default=100)
     p.add_argument('--reps_group', type=int, default=1000)
+    p.add_argument('--priority', type=int, default=DEFAULT_PRIORITY,
+                   choices=list(PRIORITIES),
+                   help='Queue priority: 1 runs first, 3 last (default: %d)'
+                        % DEFAULT_PRIORITY)
     p.add_argument('--replace_rnd_files', action='store_true')
     p.add_argument('--dry_run', action='store_true',
                    help='Show what would be queued without writing anything')
@@ -111,9 +115,9 @@ def main():
     print('queue   : %s' % queue_dir)
     print('models  : %d   species: %s' % (len(entries), species))
     print('steps   : %s  (no dependency check -- each job is independent, status=pending)' % steps)
-    print('params  : dis=%s rsa=%s mah=%s zt=%s r=%s rg=%s verbose=True'
+    print('params  : dis=%s rsa=%s mah=%s zt=%s r=%s rg=%s verbose=True priority=%d'
           % (args.dis_method, args.rsa_method, args.mah_fold,
-             args.z_threshold, args.reps, args.reps_group))
+             args.z_threshold, args.reps, args.reps_group, args.priority))
     print('total   : %d jobs\n' % (len(entries) * len(species) * len(steps)))
 
     made = 0
@@ -128,6 +132,7 @@ def main():
                     dis_method=e['dis_method'], mah_fold=e['mah_fold'],
                     replace_rnd_files=args.replace_rnd_files,
                     verbose=True,
+                    priority=args.priority,
                 )
                 if not args.dry_run:
                     create_job(queue_dir, j)

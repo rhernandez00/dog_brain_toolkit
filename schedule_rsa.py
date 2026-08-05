@@ -6,6 +6,7 @@ Usage:
   python schedule_rsa.py --dataset EmoC --model basic-block --rsa_model test-model
   python schedule_rsa.py --dataset EmoC --model basic-block --rsa_model test-model \\
       --specie D --reps 10 --reps_group 50 --z_threshold 3.1
+  python schedule_rsa.py --dataset EmoC --rsa_model urgent-model --priority 1
 """
 import argparse
 import sys
@@ -15,7 +16,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from scheduler.paths import get_paths, get_queue_dir
 from scheduler.dag import build_job_graph
-from scheduler.jobs import create_job
+from scheduler.jobs import create_job, DEFAULT_PRIORITY, PRIORITIES
 
 
 def main():
@@ -48,6 +49,11 @@ def main():
                         help="Number of group permutations for step 5 (default: 1000; use fewer for testing)")
     parser.add_argument("--replace_rnd_files", action="store_true",
                         help="Force recompute/overwrite existing rnd output files (steps 4-5)")
+    parser.add_argument("--priority", type=int, default=DEFAULT_PRIORITY,
+                        choices=list(PRIORITIES),
+                        help=f"Queue priority: 1 runs first, 3 last "
+                             f"(default: {DEFAULT_PRIORITY}). run_jobs.py drains all "
+                             f"pending priority-1 jobs before any priority-2, and so on.")
     parser.add_argument("--mah_fold", default="stim-wise",
                         help="Folding strategy for Mahalanobis distance with cross-validation "
                              "(stim-wise [default], stim-wise-all-runs, run-wise-multiple-runs)")
@@ -60,7 +66,8 @@ def main():
 
     total_created = 0
     for specie in species:
-        print(f"\n--- Scheduling {specie} (steps {args.start_step}–{args.target_step}) ---")
+        print(f"\n--- Scheduling {specie} (steps {args.start_step}–{args.target_step}, "
+              f"priority {args.priority}) ---")
         jobs = build_job_graph(
             dataset=args.dataset,
             model=args.model,
@@ -75,6 +82,7 @@ def main():
             dis_method=args.dis_method,
             mah_fold=args.mah_fold,
             replace_rnd_files=args.replace_rnd_files,
+            priority=args.priority,
         )
         for job in jobs:
             created = create_job(queue_dir, job)
@@ -83,6 +91,7 @@ def main():
                 total_created += 1
             print(
                 f"  [{marker}] step {job['step']:02d} ({job['label']:<26}) -> {job['status']}"
+                f"  [p{job['priority']}]"
             )
 
     print(f"\nCreated {total_created} new job(s) in {queue_dir}")

@@ -4,6 +4,12 @@
 Both the local Windows machine and the remote Linux server can run this script
 simultaneously. Each job is claimed atomically so no job runs twice.
 
+Pending jobs are claimed by priority: every pending priority-1 job runs before
+any priority-2 job, and those before priority-3 (the default, and what jobs
+queued before priorities existed count as). Within one priority the order is by
+job id, as before. Priority only orders the *pending* pool — a waiting job still
+has to have its dependencies complete before it can be claimed at all.
+
 Usage:
   python run_jobs.py                      # run one pending job and stop
   python run_jobs.py --max_jobs 0 --loop  # run all jobs, keep polling for more
@@ -25,7 +31,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from scheduler.paths import get_paths, get_queue_dir
-from scheduler.jobs import claim_job, complete_job, fail_job
+from scheduler.jobs import claim_job, complete_job, fail_job, job_priority
 
 
 def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None):
@@ -154,6 +160,7 @@ def main():
         print(f"\n[JOB] {job['job_id']}")
         print(f"  step  : {job['step']} ({job['label']})")
         print(f"  specie: {job['specie']}")
+        print(f"  prio  : {job_priority(job)}")
 
         marker_dir = markers_root / job["job_id"]
         expected_marker = marker_dir / f"{job['step']}.done"

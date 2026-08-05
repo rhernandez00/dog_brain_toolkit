@@ -22,6 +22,18 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     and **colormap** are per-card. The colormap defaults to **Hot**: voxels below
     the range's low handle render transparent (alpha=0), everything at/above the
     high handle is painted the top color of the scale.
+  * **Next to the brain** sits a **histogram of that map's values inside the
+    search mask** — only the voxels the searchlight actually visited, read from
+    the ROI/mask file itself (dog masks from ``Atlas/Dog/Nitzsche/``, human ones
+    from ``{dataset}/ROI/H/``, tried against both the active data folder and the
+    pipeline disk; a mask on a different grid is resampled onto the map's). It
+    shares the brain view's height and the card's colormap: bars below the range
+    slider's low handle are grey — exactly the voxels drawn transparent on the
+    slice — and bars at/above it are coloured on the same [low, high] scale, with
+    the two handles marked as vertical lines. Counts are on a log axis because a
+    statistical map is overwhelmingly near-zero voxels. Toggle **📊 histogram**
+    off to hide it and give the slice the full card width. The note under the
+    slider reports ``supra-threshold / in-mask`` voxel counts.
   * Toggle **🔗 sync** to mirror the view (slice, axis, range, colormap)
     across every *other synced card of the same species*: move the slice on one and
     the matching-species cards follow, scales included. Dog and Human sync
@@ -53,8 +65,8 @@ Brain-view height is adjustable in the top bar; the source mode, data folder,
 dataset, view height and the **card layout** (order + gap set in Edit mode) are
 saved to ``~/.rsa_hypothesis_explorer_settings.json`` and restored on the next
 launch. Each card's own selections (model, grouping, species, map type, axis,
-colormap, max, sync, on/off) are persisted by Dash's local persistence, so the
-cards come back as you left them.
+colormap, max, sync, histogram + matrix show/hide, on/off) are persisted by
+Dash's local persistence, so the cards come back as you left them.
 
 Auto-update / manual update
 ----------------------------
@@ -63,7 +75,7 @@ card's fold/model/grouping/species/map-type/axis/threshold/colormap/max
 re-renders that card's map immediately. Turn it off to batch several changes
 and apply them together with **🔄 Update now**. The **slice** slider always
 updates live regardless of this toggle (it's cheap and you want to scrub it),
-as do card on/off, the matrix show/hide toggle, and the top-bar
+as do card on/off, the histogram and matrix show/hide toggles, and the top-bar
 source/ROI/reload/view-height controls. A gated card shows a "pending
 changes" note until you click Update. The status line next to **Models** in
 the header (normally the fold/model-family count) doubles as a general
@@ -99,6 +111,7 @@ import sys
 
 import numpy as np
 import pandas as pd
+import plotly.graph_objects as go
 from dash import Dash, ctx, dcc, html, no_update
 from dash.dependencies import Input, Output, State
 
@@ -143,6 +156,8 @@ MAX_MODELS = 6             # total model-card slots, pre-registered; "Add model"
 DEFAULT_CARD_W = 360       # model-card base width (flex-basis, px); cards flex-grow to fill
 DEFAULT_GAP = 10           # space between model cards, px
 CORRECTED_ZT_TRIES = [3.1, 2.3, 3.9]
+HIST_BINS = 60             # bins in the in-mask value histogram drawn beside the brain
+HIST_SUB_COLOR = "#c9ced6"  # bar colour below the low handle (those voxels are transparent)
 
 # status -> (colour, human label) for the per-card results-availability dot
 STATUS_STYLE = {
@@ -158,6 +173,8 @@ _ATLAS = {}          # specie -> (hi, hi_aff, lo_aff, lo_shape)
 _ATLAS_ON_GRID = {}  # (specie, shape, aff_hash) -> atlas resampled onto overlay grid
 _MAP_CACHE = {}      # (source,datafolder,dataset,modality,roi,glm,specie,model,maptype,zt) -> (data,aff) | None
 _RESULT_SETS_CACHE = {}  # source-keyed {'D':set,'H':set} of models with results
+_MASK_CACHE = {}     # (datafolder,dataset,specie,roi) -> (data,aff,path) | None
+_MASK_ON_GRID = {}   # (datafolder,dataset,specie,roi,shape,aff_hash) -> bool array | None
 
 
 def _int(v, default):
@@ -292,6 +309,107 @@ def _atlas_on_grid(specie, shape, aff):
         hi, hi_aff, _lo_aff, _lo_shape = _atlas(specie)
         _ATLAS_ON_GRID[key] = niftiutil.resample_lowres_to_highres(hi, hi_aff, shape, aff)
     return _ATLAS_ON_GRID[key]
+
+
+# --- The search mask (which voxels the searchlight actually covered) --------
+# The card's "ROI / mask" selection names a mask *file*, and the histogram beside
+# the brain is computed over exactly those voxels. Where that file lives depends
+# on the species, mirroring how ``searchlight.py`` resolves ``mask_type``:
+#   * Dog  -> the toolkit's own atlas tree, ``Atlas/Dog/Nitzsche/{mask}.nii.gz``
+#   * Human-> the dataset's mask tree, ``{root}/{dataset}/ROI/H/{mask}.nii.gz``
+# and ``cope13``-style masks live under ``ROI/{specie}/`` for both. Because the
+# explorer may be pointed at the Google Drive mirror (which carries no ``ROI/``
+# tree), every dataset-relative candidate is tried against the active data folder
+# *and* the pipeline data disk, the same two roots ``_model_dirs`` searches.
+
+def _data_roots(datafolder):
+    """[active data folder, pipeline data disk], de-duplicated."""
+    roots = []
+    if datafolder:
+        roots.append(datafolder)
+    try:
+        roots.append(get_paths()[0])
+    except Exception:
+        pass
+    seen, out = set(), []
+    for r in roots:
+        key = os.path.normcase(os.path.abspath(r))
+        if key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _mask_candidates(datafolder, dataset, specie, roi):
+    """Ordered paths to try for the mask named ``roi``, species-appropriate first."""
+    name = roi if roi.endswith((".nii", ".nii.gz")) else f"{roi}.nii.gz"
+    cands = []
+    if specie == "D":
+        cands.append(os.path.join(_REPO_ROOT, "Atlas", "Dog", "Nitzsche", name))
+    for root in _data_roots(datafolder):
+        cands.append(os.path.join(root, dataset or "", "ROI", specie, name))
+        cands.append(os.path.join(root, dataset or "", "ROI", name))
+    if specie == "H":
+        cands.append(os.path.join(_REPO_ROOT, "Atlas", "Hum", name))
+    return cands
+
+
+def _load_mask(datafolder, dataset, specie, roi):
+    """(data, affine, path) for the ROI mask, or None when no candidate exists /
+    loads. Cached per (root, dataset, species, mask) — this reads the network disk."""
+    if not roi or roi in ("(none)",):
+        return None
+    key = (datafolder, dataset, specie, roi)
+    if key not in _MASK_CACHE:
+        found = None
+        for p in _mask_candidates(datafolder, dataset, specie, roi):
+            if not os.path.isfile(p):
+                continue
+            try:
+                data, aff, _hdr = niftiutil.load_nifti(p)
+            except Exception:
+                continue          # unreadable — keep looking
+            found = (data, aff, p)
+            break
+        _MASK_CACHE[key] = found
+    return _MASK_CACHE[key]
+
+
+def _mask_bool_for_grid(datafolder, dataset, specie, roi, shape, aff):
+    """(in-mask boolean selector **on the map's own voxel grid**, resampled?) — or
+    (None, False) when the mask file could not be resolved.
+
+    A mask that does not already sit on the map's grid is nearest-neighbour
+    resampled onto it (the same helper that puts the atlas there), so the
+    histogram never mixes grids. The flag is passed on to the caller because a
+    resample here is a *warning sign*, not routine: results and their search mask
+    are supposed to share one voxel grid (see the "hard invariant" in CLAUDE.md),
+    and when they don't, the map itself is suspect — not just this histogram."""
+    key = (datafolder, dataset, specie, roi, tuple(shape), hash(aff.tobytes()))
+    if key not in _MASK_ON_GRID:
+        loaded = _load_mask(datafolder, dataset, specie, roi)
+        out, resampled = None, False
+        if loaded is not None:
+            mdata, maff, _path = loaded
+            if tuple(mdata.shape) != tuple(shape) or not np.allclose(maff, aff):
+                mdata = niftiutil.resample_lowres_to_highres(mdata, maff, shape, aff)
+                resampled = True
+            out = np.isfinite(mdata) & (np.abs(mdata) > 0)
+        _MASK_ON_GRID[key] = (out, resampled)
+    return _MASK_ON_GRID[key]
+
+
+def _mask_values(data, datafolder, dataset, specie, roi, aff):
+    """(values, axis note) — the map's values inside the search mask, plus a short
+    label saying where they came from. Falls back to the map's own non-zero voxels
+    when no mask file can be found, and says so, rather than silently
+    histogramming the whole (mostly empty) bounding box."""
+    mb, resampled = _mask_bool_for_grid(datafolder, dataset, specie, roi, data.shape, aff)
+    if mb is None:
+        return data[np.abs(data) > 1e-6], "value · non-zero voxels (no mask file found)"
+    if resampled:
+        return data[mb], f"value · ⚠ {roi} resampled — mask and map are on different grids"
+    return data[mb], f"value · voxels in {roi}"
 
 
 # --- Drive (current-results) layout ---------------------------------------
@@ -933,6 +1051,9 @@ def card(i):
             dcc.Checklist(id=f"pl-{i}-sync", options=[{"label": " 🔗 sync", "value": "sync"}],
                           value=[], persistence=True,
                           labelStyle={"fontSize": "12px"}, style={"paddingBottom": "6px"}),
+            dcc.Checklist(id=f"pl-{i}-showhist", options=[{"label": " 📊 histogram", "value": "on"}],
+                          value=["on"], persistence=True,
+                          labelStyle={"fontSize": "12px"}, style={"paddingBottom": "6px"}),
             dcc.Checklist(id=f"pl-{i}-showmodel", options=[{"label": " show matrix", "value": "on"}],
                           value=["on"], persistence=True,
                           labelStyle={"fontSize": "12px"}, style={"paddingBottom": "6px"}),
@@ -960,8 +1081,19 @@ def card(i):
         ]),
         html.Div(id=f"pl-{i}-note", style={"fontSize": "11px", "color": ACCENT,
                  "minHeight": "16px", "marginTop": "4px"}),
-        # --- results map (single species, this card's column) ---
-        dcc.Graph(id=f"pl-{i}-map", style={"height": f"{vh}px"}),
+        # --- results map + in-mask histogram, side by side ---
+        # The histogram sits *next to* the brain and shares its height, so the
+        # slice and the distribution behind it are read together. ``minWidth: 0``
+        # on both halves keeps the Plotly graphs from forcing the row to wrap.
+        html.Div(style={"display": "flex", "gap": "6px", "alignItems": "stretch"}, children=[
+            html.Div(dcc.Graph(id=f"pl-{i}-map", style={"height": f"{vh}px"}),
+                     style={"flex": "3 1 0", "minWidth": 0}),
+            html.Div(id=f"pl-{i}-histwrap",
+                     children=dcc.Graph(id=f"pl-{i}-hist", figure=niftiutil.empty_fig(height=vh),
+                                        style={"height": f"{vh}px"},
+                                        config={"displayModeBar": False}),
+                     style={"flex": "2 1 0", "minWidth": 0}),
+        ]),
         # --- model dissimilarity matrix (toggled by "show matrix") ---
         html.Div(id=f"pl-{i}-matrixwrap", children=[
             html.Div("Model matrix (builder view)", style={"fontSize": "11px", "color": MUTED,
@@ -1049,9 +1181,11 @@ def cb_build_index(datafolder, dataset, _ver):
 @app.callback(Output("ex-dataver", "data"), Input("ex-reload", "n_clicks"),
               State("ex-dataver", "data"), prevent_initial_call=True)
 def cb_reload(_n, ver):
-    """Drop cached maps/result-sets so freshly-synced results are re-read."""
+    """Drop cached maps/masks/result-sets so freshly-synced results are re-read."""
     _MAP_CACHE.clear()
     _RESULT_SETS_CACHE.clear()
+    _MASK_CACHE.clear()
+    _MASK_ON_GRID.clear()
     return (ver or 0) + 1
 
 
@@ -1226,14 +1360,83 @@ for _i in range(MAX_MODELS):
 # Callbacks — card rendering (one per card)
 # ---------------------------------------------------------------------------
 
+def _hist_fig(values, lo, hi, colorscale, height, xtitle):
+    """Distribution of the map's values **inside the search mask**, drawn to sit
+    beside the brain slice and read as its legend: bars below the range slider's
+    low handle are grey (exactly the voxels the overlay renders transparent), bars
+    at/above it carry the card's colormap over the same [low, high] scale.
+
+    Counts are on a log axis on purpose — a statistical map is overwhelmingly
+    near-zero voxels, and on a linear axis the supra-threshold tail you actually
+    came to look at is a flat line on the baseline."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return niftiutil.empty_fig("no voxels in mask", height=height)
+    lo, hi = float(lo), float(hi)
+    # Always keep the low handle inside the axis so its cut line is visible, even
+    # when it sits past the data (e.g. z-threshold 3.1 on an all-sub-threshold map).
+    left, right = min(float(np.min(v)), lo), max(float(np.max(v)), lo)
+    if right <= left:
+        right = left + 1e-6
+    # Put a bin boundary exactly on the low handle (splitting the bin budget in
+    # proportion) so no single bar straddles the cut: with ``np.histogram``'s
+    # half-open bins, "left edge >= lo" then selects precisely the voxels the
+    # slice paints, and the coloured bars sum to the count in the title.
+    if left < lo < right:
+        n_below = int(round(HIST_BINS * (lo - left) / (right - left)))
+        n_below = min(max(n_below, 1), HIST_BINS - 1)
+        edges = np.concatenate([np.linspace(left, lo, n_below + 1),
+                                np.linspace(lo, right, HIST_BINS - n_below + 1)[1:]])
+    else:
+        edges = np.linspace(left, right, HIST_BINS + 1)
+    counts, edges = np.histogram(v, bins=edges)
+    centers = (edges[:-1] + edges[1:]) / 2.0
+    widths = np.diff(edges)
+    supra = edges[:-1] >= lo
+    n_supra = int(np.sum(v >= lo))
+
+    fig = go.Figure()
+    if np.any(~supra):
+        fig.add_trace(go.Bar(x=centers[~supra], y=counts[~supra], width=widths[~supra],
+                             marker=dict(color=HIST_SUB_COLOR), showlegend=False,
+                             hovertemplate="%{x:.3g} → %{y} vx<extra>below threshold</extra>"))
+    if np.any(supra):
+        fig.add_trace(go.Bar(
+            x=centers[supra], y=counts[supra], width=widths[supra], showlegend=False,
+            marker=dict(color=centers[supra], colorscale=(colorscale or DEFAULT_CMAP),
+                        cmin=lo, cmax=max(hi, lo + 1e-6)),
+            hovertemplate="%{x:.3g} → %{y} vx<extra>shown on the slice</extra>"))
+    for x, dash in ((lo, "solid"), (hi, "dot")):
+        if left <= x <= right:
+            fig.add_vline(x=x, line=dict(color=ACCENT, width=1, dash=dash))
+    fig.update_layout(
+        title=dict(text=f"{v.size} vx in mask · {n_supra} ≥ {lo:g}",
+                   font=dict(size=11, color=INK)),
+        margin=dict(l=38, r=6, t=26, b=30), height=height, bargap=0,
+        paper_bgcolor=PANEL, plot_bgcolor="#ffffff", font_color=INK,
+        xaxis=dict(title=dict(text=xtitle, font=dict(size=9, color=MUTED)),
+                   tickfont=dict(size=9), gridcolor=LINE,
+                   zeroline=True, zerolinecolor=LINE, range=[left, right]),
+        yaxis=dict(type="log", title=dict(text="voxels (log)", font=dict(size=9, color=MUTED)),
+                   tickfont=dict(size=9), gridcolor=LINE))
+    return fig
+
+
 def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
                       specie, model, maptype, axis, frac, zt, view_height,
-                      colorscale=None, vmax_override=None):
+                      colorscale=None, vmax_override=None, want_hist=True):
+    """(slice figure, histogram figure | None, n supra-threshold in mask, n in mask).
+
+    The histogram is computed from the *same* loaded volume as the slice, so the
+    two always describe one map; it is skipped entirely (None) when the card has
+    its histogram hidden."""
     loaded = _load_map(source, datafolder, dataset, modality, roi, glm_model,
                        specie, model, maptype, zt)
     label = {"D": "Dog", "H": "Human"}[specie]
     if loaded is None:
-        return niftiutil.empty_fig(f"{label}: no {maptype} map", height=view_height), 0
+        empty = niftiutil.empty_fig(f"{label}: no {maptype} map", height=view_height)
+        return empty, (niftiutil.empty_fig("no map", height=view_height) if want_hist else None), 0, 0
     data, aff = loaded
     atlas = _atlas_on_grid(specie, data.shape, aff)
     ax = int(axis)
@@ -1253,11 +1456,17 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
         vmax = auto_max
     if vmax <= vmin:
         vmax = vmin + 1e-6
-    supra = int(np.sum(np.abs(data) >= thr))
     fig = niftiutil.make_slice_fig(atlas, data, ax, idx, opacity=0.8, z_threshold=thr,
                                    vmin=vmin, vmax=vmax, title=f"{label} · {model}",
                                    height=view_height, colorscale=colorscale)
-    return fig, supra
+    # Counts (and the histogram) are restricted to the search mask — the voxels the
+    # searchlight actually visited — so "how many survive this threshold" is out of
+    # a meaningful denominator instead of the whole bounding box.
+    vals, xtitle = _mask_values(data, datafolder, dataset, specie, roi, aff)
+    vals = vals[np.isfinite(vals)]
+    supra = int(np.sum(vals >= thr))
+    hist = _hist_fig(vals, thr, vmax, colorscale, view_height, xtitle) if want_hist else None
+    return fig, hist, supra, int(vals.size)
 
 
 def _register_panel(i):
@@ -1268,11 +1477,14 @@ def _register_panel(i):
     @app.callback(
         Output(f"pl-{i}-title", "children"),
         Output(f"pl-{i}-map", "figure"), Output(f"pl-{i}-map", "style"),
+        Output(f"pl-{i}-hist", "figure"), Output(f"pl-{i}-hist", "style"),
+        Output(f"pl-{i}-histwrap", "style"),
         Output(f"pl-{i}-matrix", "figure"), Output(f"pl-{i}-matrixwrap", "style"),
         Output(f"pl-{i}-note", "children"),
         Input(f"pl-{i}-enable", "value"), Input(f"pl-{i}-mahfold", "value"),
         Input(f"pl-{i}-stem", "value"),
         Input(f"pl-{i}-grouping", "value"), Input(f"pl-{i}-maps", "value"),
+        Input(f"pl-{i}-showhist", "value"),
         Input(f"pl-{i}-showmodel", "value"), Input(f"pl-{i}-maptype", "value"),
         Input(f"pl-{i}-axis", "value"), Input(f"pl-{i}-frac", "value"), Input(f"pl-{i}-range", "value"),
         Input(f"pl-{i}-cmap", "value"),
@@ -1281,16 +1493,19 @@ def _register_panel(i):
         Input("ex-view-height", "value"), Input("ex-grouped", "data"),
         Input("ex-update-trigger", "data"), State("ex-autoupdate", "value"),
         State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-modality", "value"))
-    def _cb(enable, mahfold, stem, grouping, maps, showmodel, maptype, axis, frac, rng, cmap,
-            roi, _ver, source, glm_model, view_h, grouped, _update_trig, autoupdate,
+    def _cb(enable, mahfold, stem, grouping, maps, showhist, showmodel, maptype, axis, frac,
+            rng, cmap, roi, _ver, source, glm_model, view_h, grouped, _update_trig, autoupdate,
             datafolder, dataset, modality):
         vh = _int(view_h, DEFAULT_SETTINGS["view_height"])
         gshow = {"height": f"{vh}px"}
         wrap_show = {}
         wrap_hide = {"display": "none"}
         show_matrix = "on" in (showmodel or [])
+        show_hist = "on" in (showhist or [])
+        hist_wrap = {"flex": "2 1 0", "minWidth": 0} if show_hist else wrap_hide
         if "on" not in (enable or []):        # card off — block hidden anyway
-            return (no_update, no_update, no_update, no_update, wrap_hide, "")
+            return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
+                    no_update, wrap_hide, "")
 
         # Auto-update off: only the slice slider, card on/off, matrix show/hide and
         # the top-bar source/ROI/reload/view-height controls (plus the Update button
@@ -1298,18 +1513,20 @@ def _register_panel(i):
         # leaves the current map/matrix in place until Update is clicked.
         trig = ctx.triggered_id
         live_triggers = {f"pl-{i}-frac", f"pl-{i}-enable", f"pl-{i}-showmodel",
+                         f"pl-{i}-showhist",
                          "ex-update-trigger", "ex-roi", "ex-dataver", "ex-source-mode",
                          "ex-glm-model", "ex-view-height", "ex-grouped"}
         if trig is not None and trig not in live_triggers and "auto" not in (autoupdate or []):
-            return (no_update, no_update, no_update, no_update, no_update,
-                    "⏸ change pending — click 🔄 Update")
+            return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
+                    no_update, no_update, "⏸ change pending — click 🔄 Update")
 
         model = _resolve_model(grouped, mahfold, stem, grouping)
         if not model:
             title = html.Span("— pick a fold, model + grouping —", style={"color": MUTED})
             empty = niftiutil.empty_fig("select a model + grouping", height=vh)
             mat = _model_heatmap(datafolder, dataset, None) if show_matrix else no_update
-            return (title, empty, gshow, mat,
+            hist = niftiutil.empty_fig("no model", height=vh) if show_hist else no_update
+            return (title, empty, gshow, hist, gshow, hist_wrap, mat,
                     wrap_show if show_matrix else wrap_hide, "no model")
 
         # header: results-availability dot + resolved model name
@@ -1327,15 +1544,16 @@ def _register_panel(i):
             zt, vmax = 0.0, 1.0
         specie = maps if maps in ("D", "H") else "D"
         label = {"D": "Dog", "H": "Human"}[specie]
-        fig, n = _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
-                                   specie, model, maptype, axis, frac, zt, vh,
-                                   colorscale=cmap, vmax_override=vmax)
-        note = f"{label}: {n} vx"
+        fig, hist, n, n_mask = _card_species_fig(
+            source, datafolder, dataset, modality, roi, glm_model,
+            specie, model, maptype, axis, frac, zt, vh,
+            colorscale=cmap, vmax_override=vmax, want_hist=show_hist)
+        note = f"{label}: {n} / {n_mask} vx ≥ {zt:g} in mask"
 
         # model matrix (only re-rendered / shown when the toggle is on)
         mat = _model_heatmap(datafolder, dataset, model) if show_matrix else no_update
-        return (title, fig, gshow, mat,
-                wrap_show if show_matrix else wrap_hide, note)
+        return (title, fig, gshow, (hist if show_hist else no_update), gshow, hist_wrap,
+                mat, wrap_show if show_matrix else wrap_hide, note)
     return _cb
 
 

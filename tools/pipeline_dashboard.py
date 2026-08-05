@@ -58,20 +58,21 @@ import pipeline_console as pc  # noqa: E402  (reuse the probe logic; sibling in 
 import models_manifest as mm  # noqa: E402  (central _models.csv reader; sibling in tools/)
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
 from scheduler.dag import build_single_job, build_job_graph  # noqa: E402
-from scheduler.jobs import create_job  # noqa: E402
+from scheduler.jobs import (create_job, normalize_priority,  # noqa: E402
+                            DEFAULT_PRIORITY, PRIORITIES)
 
 # ---------------------------------------------------------------------------
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "2.0.0"
-LAST_CHANGE = ("Renamed the ambiguous param 'method' to 'dis_method' everywhere "
-               "(PARAM_KEYS, DEFAULTS, the p-method dropdown id, and every callback "
-               "signature), matching searchlight.py --dis_method and pipeline_console's "
-               "ctx.dis_method. Because 'method' was part of PARAM_KEYS it was part of the "
-               "cache signature, so every existing "
-               "~/.rsa_pipeline_dashboard_cache.json entry is invalidated and will be "
-               "re-probed on first load — hence the major bump.")
+VERSION = "2.1.0"
+LAST_CHANGE = ("Added a 'priority' selector (1/2/3, default 3) to the parameter panel. "
+               "Every job scheduled from this UI — Sched missing, Sched from here, and "
+               "the per-participant / group Schedule buttons in the detail panel — is "
+               "stamped with the selected priority, and run_jobs.py drains all pending "
+               "priority-1 jobs before any priority-2, then priority-3. Priority is not "
+               "part of the cache signature (it changes nothing on disk), so existing "
+               "cache entries stay valid.")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10
@@ -91,6 +92,11 @@ PARAM_KEYS = [
     'radius', 'z_threshold', 'mask_type', 'reps', 'reps_group',
 ]
 
+# 'priority' is deliberately NOT in PARAM_KEYS: it only decides the order
+# run_jobs.py claims queued jobs, so it changes nothing about which files a probe
+# looks for. Keeping it out of the signature means changing it does not invalidate
+# any cached scan result.
+
 DEFAULTS = {
     'dataset': 'EmoC',
     'model': 'basic-block',
@@ -104,7 +110,11 @@ DEFAULTS = {
     'mask_type': 'b_GreyMatter2mmB',
     'reps': 100,
     'reps_group': 1000,
+    'priority': DEFAULT_PRIORITY,
 }
+
+# Queue priority for jobs scheduled from this UI: 1 runs first, 3 last (default).
+PRIORITY_LABELS = {1: '1 — highest (runs first)', 2: '2 — normal', 3: '3 — lowest (default)'}
 
 # Pairwise dissimilarity methods (searchlight.py --dis_method). Only
 # 'mahalanobis' uses mah_fold — see MAH_FOLD_OPTIONS and populate_models below.
@@ -163,7 +173,13 @@ def signature(params):
 
 
 def params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
-                       radius, z_threshold, mask_type, reps, reps_group):
+                       radius, z_threshold, mask_type, reps, reps_group,
+                       priority=DEFAULT_PRIORITY):
+    """Collect the panel inputs into the params dict used everywhere below.
+
+    ``priority`` is only read by the scheduling helpers, so the read-only
+    callbacks (table/detail rendering) leave it at its default.
+    """
     def _int_or_none(v):
         try:
             return int(v)
@@ -182,6 +198,7 @@ def params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold, 
         'mask_type': (mask_type or '').strip(),
         'reps': _int_or_none(reps) or 100,
         'reps_group': _int_or_none(reps_group) or 1000,
+        'priority': normalize_priority(priority),
     }
 
 
@@ -252,7 +269,9 @@ def _schedule_jobs(params, step, participants, overwrite):
     """Create one independent pending job per entry in ``participants``.
 
     ``participants`` is a list of subject ints, or ``[None]`` for the single
-    group-map jobs. Returns the list of scheduled entries. ``create_job``
+    group-map jobs. Every job is stamped with ``params['priority']`` (1 = run
+    first, 3 = last), which is what orders the pending queue in
+    ``run_jobs.py``. Returns the list of scheduled entries. ``create_job``
     always succeeds — if a job with the same id already exists anywhere in
     the queue (still in flight, or a previous completed/failed run), it's
     scheduled again under a disambiguated filename with
@@ -273,6 +292,7 @@ def _schedule_jobs(params, step, participants, overwrite):
             mah_fold=params['mah_fold'],
             participant=sub, radius=params['radius'], mask_type=params['mask_type'],
             replace_file=bool(overwrite), replace_rnd_files=replace_rnd,
+            priority=params['priority'],
         )
         create_job(queue_dir, job)
         created.append(sub)
@@ -292,6 +312,7 @@ def _msg_span(text, ok=True):
 def _schedule_result_msg(params, step, created, overwrite):
     label = pc.STEP_LABELS.get(step, f'Step {step}')
     tag = ' [overwrite]' if overwrite else ''
+    tag += f" [priority {params['priority']}]"
     txt = (f"Step {step} ({label}), specie {params['specie']}{tag}: "
            f"scheduled {len(created)} job(s)")
     if created:
@@ -346,6 +367,7 @@ def _schedule_from_here(params, start_step, overwrite):
         reps_group=params['reps_group'],
         rsa_method=params['rsa_method'], dis_method=params['dis_method'],
         mah_fold=params['mah_fold'],
+        priority=params['priority'],
     )
     created = []
     for job in jobs:
@@ -368,6 +390,7 @@ def _steps_list(steps):
 
 def _schedule_from_here_msg(params, start_step, created, overwrite):
     tag = ' [overwrite]' if overwrite else ''
+    tag += f" [priority {params['priority']}]"
     txt = (f"Schedule steps {start_step}→{FINAL_STEP} (dependent DAG), "
            f"specie {params['specie']}{tag}: created {len(created)} job(s)")
     if created:
@@ -428,6 +451,17 @@ def param_panel():
             html.Label('mask_type'), _input('p-mask_type', DEFAULTS['mask_type'], '160px'),
             html.Label('reps'), _input('p-reps', DEFAULTS['reps'], '70px', 'number'),
             html.Label('reps_group'), _input('p-reps_group', DEFAULTS['reps_group'], '80px', 'number'),
+            html.Label('priority'),
+            dcc.Dropdown(id='p-priority',
+                         options=[{'label': PRIORITY_LABELS[p], 'value': p}
+                                  for p in PRIORITIES],
+                         value=DEFAULTS['priority'], clearable=False,
+                         style={'width': '200px', 'display': 'inline-block',
+                                'verticalAlign': 'middle', 'marginRight': '10px'}),
+            html.Span('workers run all pending priority-1 jobs before any '
+                      'priority-2, then priority-3',
+                      style={'color': '#57606a', 'fontStyle': 'italic',
+                             'fontSize': '12px'}),
         ]),
     ], style={'padding': '12px', 'background': '#f6f8fa', 'borderRadius': '8px',
               'border': '1px solid #d0d7de'})
@@ -502,6 +536,14 @@ app.layout = html.Div([
             "again under a `__dup{N}` filename with `--shuffle_participants` set, so a "
             "duplicate run walks participants/permutations in a different order than "
             "the other instance instead of racing it file-by-file.\n"
+            "* **priority** (parameter panel) is stamped on every job scheduled from "
+            "this page — by any of the buttons. `run_jobs.py` claims all pending "
+            "priority-1 jobs before any priority-2, and those before priority-3 (the "
+            "default, and what jobs queued before priorities existed count as). It "
+            "orders the *pending* pool only: a job in `waiting/` still has to have its "
+            "dependencies complete before it can run at all, whatever its priority. "
+            "Priority is not part of the parameter signature, so changing it does not "
+            "invalidate any cached scan.\n"
             "* Tick **overwrite** (above the detail panel) before scheduling to add "
             "`--replace_file` (and `--replace_rnd_files` for steps 4/5) so existing "
             "files are recomputed instead of skipped.\n"
@@ -637,12 +679,13 @@ def show_model_why(rsa_model, dataset):
     State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
+    State('p-priority', 'value'),
     prevent_initial_call=True,
 )
 def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite_val,
               verbose_val,
               dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
-              radius, z_threshold, mask_type, reps, reps_group):
+              radius, z_threshold, mask_type, reps, reps_group, priority):
     trig = callback_context.triggered
     if not trig or trig[0]['value'] in (None, 0):
         return no_update, no_update, no_update
@@ -661,7 +704,8 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     verbose = 'v' in (verbose_val or [])
 
     params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
-                                rsa_method, radius, z_threshold, mask_type, reps, reps_group)
+                                rsa_method, radius, z_threshold, mask_type, reps, reps_group,
+                                priority)
     if not params['rsa_model']:
         _log(f"button pressed ({prop}) but no rsa_model selected — ignoring")
         return no_update, no_update, _msg_span('⚠ pick an rsa_model first', ok=False)
@@ -711,7 +755,8 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
         step = idd.get('index')
         if step is not None:
             _log(f"'Sched missing' pressed for step {step} "
-                 f"(overwrite={overwrite}, verbose={verbose}) — {sig}")
+                 f"(overwrite={overwrite}, verbose={verbose}, "
+                 f"priority={params['priority']}) — {sig}")
             # probe fresh so we schedule exactly what is missing right now, and
             # remember the result so the table/detail reflect it.
             result = run_probe(params, step, verbose=verbose)
@@ -721,21 +766,24 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
     elif ttype == 'step-schedule-from-here':
         step = idd.get('index')
         if step is not None:
-            _log(f"'Sched from here' pressed at step {step} (overwrite={overwrite}) — {sig}")
+            _log(f"'Sched from here' pressed at step {step} (overwrite={overwrite}, "
+                 f"priority={params['priority']}) — {sig}")
             created = _schedule_from_here(params, step, overwrite)
             msg = _schedule_from_here_msg(params, step, created, overwrite)
             selected = step
     elif ttype == 'detail-schedule-sub':
         step, sub = idd.get('step'), idd.get('sub')
         if step is not None and sub is not None:
-            _log(f"'Schedule' pressed for step {step} sub-{sub} (overwrite={overwrite}) — {sig}")
+            _log(f"'Schedule' pressed for step {step} sub-{sub} (overwrite={overwrite}, "
+                 f"priority={params['priority']}) — {sig}")
             created = _schedule_jobs(params, step, [int(sub)], overwrite)
             msg = _schedule_result_msg(params, step, created, overwrite)
             selected = step
     elif ttype == 'detail-schedule-group':
         step = idd.get('index')
         if step is not None:
-            _log(f"'Schedule step' (group) pressed for step {step} (overwrite={overwrite}) — {sig}")
+            _log(f"'Schedule step' (group) pressed for step {step} (overwrite={overwrite}, "
+                 f"priority={params['priority']}) — {sig}")
             created = _schedule_jobs(params, step, [None], overwrite)
             msg = _schedule_result_msg(params, step, created, overwrite)
             selected = step
