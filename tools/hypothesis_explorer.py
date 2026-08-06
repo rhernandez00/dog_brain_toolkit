@@ -1,19 +1,34 @@
 #!/usr/bin/env python
 """
-hypothesis_explorer.py — EmoC RSA model explorer (standalone Dash app).
+hypothesis_explorer.py — RSA model explorer (standalone Dash app, any dataset).
 
 This app is a **row of self-contained model cards** — no hypothesis tree. You
 **add** and **remove** cards, and each card is one RSA model you want to look at:
 
-  * Pick a **Mahalanobis fold** (``mah_fold``: stim-wise / run-wise / …) first —
-    that decides which model families and groupings the card offers. Then pick a
-    **model** (a hypothesis *stem*) and a **grouping** (all / collapse / within /
-    cross / dog / hum). Together they resolve to a concrete ``{stem}__{grouping}``
-    model. The fold → models → groupings menu is driven by the dataset's central
-    ``rsa_models/_models.csv`` manifest (built by ``tools/build_models_manifest.py``);
-    edit that one file to add, retire, or re-group models. When the manifest is
-    absent the card falls back to scanning the folder and offering every valid
-    ``__{grouping}`` model under one synthetic fold.
+  * The card's model is chosen with one cascade, in the order the analysis is
+    actually organised: **distance method → (Mahalanobis fold) → model →
+    grouping**.
+
+      1. **Distance method** (``dis_method``: mahalanobis / correlation / …) is the
+         first filter — it decides which models exist at all, because models built
+         for one pairwise-similarity method are not comparable with another's.
+      2. **Mahalanobis fold** (``mah_fold``: stim-wise / run-wise / …) is asked for
+         **only under mahalanobis**, where it names how the crossnobis folds are
+         cut. For every other method the fold dropdown is hidden and all of that
+         method's models are offered together.
+      3. **Model** — a hypothesis *stem*, listed for the method (+ fold) above.
+      4. **Grouping** — all / collapse / within / cross / dog / hum, restricted to
+         the ones that stem declares.
+
+    Stem + grouping resolve to the concrete ``{stem}__{grouping}`` model. The whole
+    cascade is driven by the dataset's central ``rsa_models/_models.csv`` manifest
+    (built by ``tools/build_models_manifest.py``), read from
+    ``{data folder}/{dataset}/rsa_models/`` — both taken from the top bar, so
+    pointing the app at another project reads that project's manifest and models;
+    the resolved path is printed in the status line beside **Models**. Edit that
+    one file to add, retire, or re-group models. When the manifest is absent the
+    card falls back to scanning the folder and offering every valid
+    ``__{grouping}`` model under one synthetic method.
   * Each card is **one species** — its own column: the **Species** control picks
     **Dog** or **Human** and the card draws that species' results map as a 2D atlas
     slice (put Dog and Human side by side in two cards). The map type defaults to
@@ -26,6 +41,18 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     the map's *affine* rather than its array order, so **anterior is up** on an
     axial slice (Slice Z) and superior is up on a coronal/sagittal one, with the
     four edges marked **L/R · A/P · S/I**.
+  * **Scroll the mouse wheel over a slice** to step through it one slice per
+    notch (wheel up = higher slice index); the slice slider follows and the page
+    itself does not scroll while the pointer is over the brain.
+  * **Click a slice to plant a crosshair**, and the strip under the brain reads
+    out that voxel the way any MR viewer does: **voxel index**, **world (mm)
+    coordinate** and the map's **intensity** there — so clicking inside a cluster
+    tells you exactly where you clicked and how strong it is. The crosshair is
+    kept as a *voxel*, so it survives an axis switch, and its out-of-plane
+    coordinate always follows the slice on screen: scroll through the slices and
+    the read-out sweeps the same in-plane column, giving the value profile
+    through the cluster. Values below the card's low threshold are still reported
+    (flagged as not painted) — they are transparent on the slice, not absent.
   * **Next to the brain** sits a **histogram of that map's values inside the
     search mask** — only the voxels the searchlight actually visited, read from
     the ROI/mask file itself (dog masks from ``Atlas/Dog/Nitzsche/``, human ones
@@ -38,12 +65,30 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     statistical map is overwhelmingly near-zero voxels. Toggle **📊 histogram**
     off to hide it and give the slice the full card width. The note under the
     slider reports ``supra-threshold / in-mask`` voxel counts.
-  * Toggle **🔗 sync** to mirror the view (slice, axis, range, colormap)
-    across every *other synced card of the same species*: move the slice on one and
-    the matching-species cards follow, scales included. Dog and Human sync
+  * Toggle **🔗 sync** to mirror the view (slice, axis, range, colormap **and the
+    crosshair**) across every *other synced card of the same species*: move the
+    slice on one and the matching-species cards follow, scales included; click a
+    voxel on one and every synced card of that species plants the crosshair on the
+    same voxel, each reading out its *own* map's value there. Dog and Human sync
     independently.
   * The card also shows the **model's dissimilarity matrix**, rendered exactly as
     in the RSA Model Builder. Toggle **show matrix** off to hide it.
+  * **Beside the matrix** sits the **model-comparison bar plot** — the transpose of
+    the brain view. Where the slice asks "where does *this* model fit?", the bars
+    ask "at *this voxel*, how do all the models compare?": one bar per model,
+    sampled at the crosshair, in menu order (not sorted — a sorted plot would
+    reshuffle every time you move the crosshair), with the card's own model in the
+    accent colour and its low threshold marked. **Group average** maps carry
+    **±SEM** error bars, computed from the ``_std.nii.gz`` map beside each mean and
+    the number of maps averaged into it (``file_list`` in the ``_mean.json``
+    sidecar); z-maps have no std twin, so they get no error bars. The scope menu
+    chooses who takes part: the card's method/fold + grouping (one bar per
+    hypothesis, the only fully controlled comparison), that whole method/fold, or
+    every model of every distance method.
+
+    It is computed **on demand** — press **📶 Compare**; a scope can be dozens of
+    maps on a network disk, so it never rides along with a slider. Toggle **📶
+    model bars** off to hide it and give the matrix the full card width.
 
 Use **➕ Add model** to bring on another card and a card's ✕ to remove it (up to
 6 slots). Toggle **✏️ Edit** in the top bar to **reorder** the row by dragging a
@@ -63,26 +108,45 @@ The maps can be read from **either** of two on-disk layouts:
     e.g. ``P:\\userdata\\raulh87\\data\\EmoC\\results\\RSA``. This lets you inspect
     results that exist on the pipeline disk before they are synced to the mirror.
 
+Model bars: how the maps are read (top bar)
+-------------------------------------------
+The bar plot has to touch every model in scope, so the **Model bars** menu picks
+how those maps are read — the difference is memory, not much else:
+
+  * **On request (low memory)** — each map is opened and *only the crosshair
+    voxel* is read through nibabel's array proxy; the volume never enters memory.
+    Nothing is held between clicks, so every 📶 Compare re-reads.
+  * **Preloaded (fast, uses RAM)** — the maps in scope are loaded once and every
+    later sample comes from RAM, which is also what lets the plot **follow the
+    crosshair live** instead of waiting for the button. The note under the plot
+    reports how much is held; **🧹 Free** drops it, as does switching the mode or
+    reloading results.
+
+Measured on EmoC/Human (13 models, 2 mm MNI, over the ``P:`` network disk): ~18 s
+per Compare on request, versus ~18 s once and then instant — for ~90 MB held.
+
 Display + persistence
 ---------------------
 Brain-view height is adjustable in the top bar; the source mode, data folder,
-dataset, view height and the **card layout** (order + gap set in Edit mode) are
-saved to ``~/.rsa_hypothesis_explorer_settings.json`` and restored on the next
-launch. Each card's own selections (model, grouping, species, map type, axis,
-colormap, max, sync, histogram + matrix show/hide, on/off) are persisted by
-Dash's local persistence, so the cards come back as you left them.
+dataset, view height, model-bar read mode and the **card layout** (order + gap set
+in Edit mode) are saved to ``~/.rsa_hypothesis_explorer_settings.json`` and
+restored on the next launch. Each card's own selections (distance method, fold,
+model, grouping, species, map type, axis, colormap, max, sync, histogram + matrix
+show/hide, on/off) are persisted by Dash's local persistence, so the cards come
+back as you left them.
 
 Auto-update / manual update
 ----------------------------
 The top-bar **Auto-update** toggle (on by default) controls whether changing a
-card's fold/model/grouping/species/map-type/axis/threshold/colormap/max
+card's method/fold/model/grouping/species/map-type/axis/threshold/colormap/max
 re-renders that card's map immediately. Turn it off to batch several changes
 and apply them together with **🔄 Update now**. The **slice** slider always
 updates live regardless of this toggle (it's cheap and you want to scrub it),
 as do card on/off, the histogram and matrix show/hide toggles, and the top-bar
 source/ROI/reload/view-height controls. A gated card shows a "pending
 changes" note until you click Update. The status line next to **Models** in
-the header (normally the fold/model-family count) doubles as a general
+the header (normally the method/fold/model-family count plus the resolved
+``_models.csv`` path) doubles as a general
 feedback line: it also reports reloads, add/remove-card, layout-reset and
 update actions as they happen.
 
@@ -91,13 +155,18 @@ Threshold (per card)
 A single two-handle **range slider** sets both bounds: the **low** handle
 filters voxels below it out (rendered transparent, alpha=0); the **high**
 handle caps the color scale — voxels at or above it are painted the top color
-of the palette. The slider's meaning and limits depend on the card's map
-type: for **Z-map** / **Cluster-corrected** it's a z-range (0-8, default
-[3.1, 8]); for **Group average** it's an average-similarity range, typically
-Kendall's tau (-1 to 1, default [0, 1]) since that's this pipeline's default
-RSA method. Switching map type updates the slider's limits and marks; a
-still-valid current [low, high] is kept, otherwise it resets to that mode's
-default.
+of the palette. The slider's meaning and limits depend on the card's map type.
+
+For **Z-map** / **Cluster-corrected** it is a z-range whose default is
+**[3.1, the map's own maximum]** — the conventional cluster-forming threshold at
+the low end, the brightest voxel actually in the image at the high end, so the
+palette spends its full range on the data. That default is recomputed whenever
+the image changes (map type, model, grouping, species, source, reload), and the
+slider's upper limit grows with it when a map reaches past 8.
+
+For **Group average** it is an average-similarity range, typically Kendall's tau
+(-1 to 1, default [0, 1]) since that's this pipeline's default RSA method; a
+still-valid current [low, high] survives a switch back to it.
 
 Standalone only (own port, default 8055):
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py
@@ -112,6 +181,7 @@ import json
 import os
 import re
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -131,6 +201,15 @@ import models_manifest as mm   # central _models.csv reader (fold → models →
 # model is shown here exactly as it looks in the builder (with its saved style).
 import rsa_model_builder as rmb
 
+# The group-mean sidecar written by step 3 is named ``*_mean.json`` but is dumped
+# with ``yaml.dump`` — so it is YAML text under a .json extension. PyYAML is a
+# pipeline dependency, but this app is meant to run anywhere, so its absence only
+# costs the error bars, not the app.
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
 # --- palette (matches the other viz apps) ---------------------------------
 BG, PANEL, INK, MUTED, LINE, ACCENT = "#ffffff", "#f3f5f9", "#222222", "#667085", "#d5dbe5", "#4472C4"
 INPUT_STYLE = {"backgroundColor": "#ffffff", "color": INK,
@@ -139,6 +218,11 @@ BTN = {"height": "32px", "padding": "0 14px", "backgroundColor": ACCENT, "color"
        "border": "none", "borderRadius": "6px", "cursor": "pointer", "fontWeight": "bold"}
 BTN2 = {**BTN, "backgroundColor": "#eef1f6", "color": INK, "border": f"1px solid {LINE}",
         "fontWeight": "normal"}
+# Crosshair read-out under the brain view (voxel / mm / intensity), ITK-SNAP-ish.
+CROSS_PANEL_STYLE = {"fontSize": "11px", "backgroundColor": "#ffffff",
+                     "border": f"1px solid {LINE}", "borderRadius": "6px",
+                     "padding": "4px 7px", "marginTop": "4px", "minHeight": "17px",
+                     "display": "flex", "flexWrap": "wrap", "alignItems": "baseline"}
 
 DEFAULT_DATASET = "EmoC"
 DEFAULT_GLM_MODEL = "basic-block"
@@ -154,14 +238,42 @@ MAPS_OPTIONS = [("D", "Dog"), ("H", "Human")]
 COLORMAPS = ["Hot", "YlOrRd", "Reds", "Viridis", "Cividis", "Jet", "Turbo", "Greys", "Blues"]
 DEFAULT_CMAP = "Hot"
 # Per-card view controls that the "sync" toggle shares across same-species cards.
-SYNC_CONTROLS = ["axis", "frac", "range", "cmap"]
+# Two kinds, because they live on different props: ordinary dcc controls carry
+# their state in ``value``, the crosshair in a dcc.Store's ``data``. The crosshair
+# is synced too, so clicking a cluster in one card plants the same voxel in every
+# other synced card of that species and their read-outs line up.
+SYNC_CONTROLS = ["axis", "frac", "range", "cmap"]   # dcc controls -> .value
+SYNC_STORES = ["cross"]                             # dcc.Store    -> .data
+SYNC_KEYS = SYNC_CONTROLS + SYNC_STORES
 MAX_MODELS = 6             # total model-card slots, pre-registered; "Add model" turns the
                            # next one on and its own ✕ turns it off (add / remove)
 DEFAULT_CARD_W = 360       # model-card base width (flex-basis, px); cards flex-grow to fill
 DEFAULT_GAP = 10           # space between model cards, px
+# The matrix and the model-bar plot share one flex row at the bottom of a card:
+# each takes half, and whichever is toggled off hands its half to the other.
+# ``minWidth: 0`` keeps the Plotly graphs from forcing the row to wrap.
+MATRIX_WRAP_SHOW = {"flex": "1 1 0", "minWidth": 0}
+BAR_WRAP_SHOW = {"flex": "1 1 0", "minWidth": 0}
+WRAP_HIDE = {"display": "none"}
 CORRECTED_ZT_TRIES = [3.1, 2.3, 3.9]
 HIST_BINS = 60             # bins in the in-mask value histogram drawn beside the brain
 HIST_SUB_COLOR = "#c9ced6"  # bar colour below the low handle (those voxels are transparent)
+
+# --- model-comparison bar plot (beside the dissimilarity matrix) -----------
+# "What does every model say at *this* voxel?" — one bar per model, sampled at the
+# card's crosshair. Which models take part is the card's ``scope``:
+BAR_SCOPES = [("fold-grouping", "this method/fold + grouping"),
+              ("fold", "this method/fold, all groupings"),
+              ("all", "every model, every method")]
+# How the maps behind those bars are read. This is the difference between one
+# network read per model per click and one read per model per *session*:
+BAR_MODES = [("request", "On request (low memory)"),
+             ("preload", "Preloaded (fast, uses RAM)")]
+BAR_ROW_H = 15             # px of bar-plot height per model
+BAR_MIN_H = 170
+BAR_MAX_MODELS = 80        # cap, so the "every model" scope can't fire off a huge scan
+BAR_COLOR = "#9db8e8"      # ordinary model bar
+BAR_COLOR_CUR = ACCENT     # the card's own model, so it is findable at a glance
 
 # status -> (colour, human label) for the per-card results-availability dot
 STATUS_STYLE = {
@@ -175,10 +287,13 @@ STATUS_STYLE = {
 # --- caches (module-level; keyed so re-selecting is instant) --------------
 _ATLAS = {}          # specie -> (hi, hi_aff, lo_aff, lo_shape)
 _ATLAS_ON_GRID = {}  # (specie, shape, aff_hash) -> atlas resampled onto overlay grid
+_PATH_CACHE = {}     # same key as _MAP_CACHE -> resolved map path | None
 _MAP_CACHE = {}      # (source,datafolder,dataset,modality,roi,glm,specie,model,maptype,zt) -> (data,aff) | None
 _RESULT_SETS_CACHE = {}  # source-keyed {'D':set,'H':set} of models with results
 _MASK_CACHE = {}     # (datafolder,dataset,specie,roi) -> (data,aff,path) | None
 _MASK_ON_GRID = {}   # (datafolder,dataset,specie,roi,shape,aff_hash) -> bool array | None
+_MEANLOG_CACHE = {}  # path of a *_mean.json sidecar -> len(file_list) | None
+_BAR_PRELOAD = {}    # bar-plot "preloaded" mode: ctx key -> {map path: (data, aff)}
 
 
 def _int(v, default):
@@ -254,6 +369,7 @@ DEFAULT_SETTINGS = {
     "dataset": DEFAULT_DATASET,
     "modality": "RSA",
     "view_height": 230,        # brain-view (2D slice) graph height, px
+    "bar_mode": "request",     # model-comparison bar plot: read on demand vs preload
     "layout": _default_layout(),    # model-card order + gap (edit mode)
 }
 
@@ -543,9 +659,20 @@ def _raw_map_path(datafolder, dataset, glm_model, roi, specie, model, maptype, z
 
 def _map_path_for(source, datafolder, dataset, modality, roi, glm_model,
                   specie, model, maptype, zt):
-    if source == "raw":
-        return _raw_map_path(datafolder, dataset, glm_model, roi, specie, model, maptype, zt)
-    return _drive_map_path(datafolder, dataset, modality, roi, specie, model, maptype, zt)
+    """Resolved file for one model's map, or None. Cached — resolving is not free
+    on the network disk (the raw layout lists a directory, the drive layout stats
+    several candidates), and the model-bar plot resolves *every model in scope* on
+    every recompute, which is what that cost is actually paid for. Dropped by
+    "Reload results" along with the loaded maps."""
+    key = (source, datafolder, dataset, modality, roi, glm_model, specie, model,
+           maptype, round(float(zt), 2))
+    if key not in _PATH_CACHE:
+        if source == "raw":
+            p = _raw_map_path(datafolder, dataset, glm_model, roi, specie, model, maptype, zt)
+        else:
+            p = _drive_map_path(datafolder, dataset, modality, roi, specie, model, maptype, zt)
+        _PATH_CACHE[key] = p
+    return _PATH_CACHE[key]
 
 
 def resolve_result_sets(source, datafolder, dataset, modality, roi, glm_model):
@@ -645,27 +772,25 @@ _NON_MODEL_CSVS = {"_MODEL_BATTERY_MANIFEST.csv"}
 
 
 def _model_dirs(datafolder, dataset):
-    """``rsa_models`` folders to search for model CSVs / the manifest: the active
-    results root first, then the canonical pipeline data disk where
-    ``build_rsa_models.py`` writes (``P:\\userdata\\raulh87\\data`` on Windows /
-    the network mount on Linux), de-duplicated. The pipeline-disk entry is what
-    lets models authored there (e.g. the ``all-categories_*`` battery) show up in
-    the explorer even when results are being viewed from the Google Drive mirror,
-    which may not have those CSVs synced yet."""
-    dirs = []
-    if datafolder:
-        dirs.append(os.path.join(datafolder, dataset or "", "rsa_models"))
-    try:
-        dirs.append(os.path.join(get_paths()[0], dataset or "", "rsa_models"))
-    except Exception:
-        pass
-    seen, out = set(), []
-    for d in dirs:
-        key = os.path.normcase(os.path.abspath(d))
-        if key not in seen:
-            seen.add(key)
-            out.append(d)
-    return out
+    """``rsa_models`` folders to search for model CSVs / the manifest, for **this**
+    data folder and **this** dataset: ``{datafolder}/{dataset}/rsa_models`` first,
+    then the same folder on the canonical pipeline data disk (where
+    ``build_rsa_models.py`` writes). Nothing here is project-specific — point the
+    top bar at another dataset and its own ``_models.csv`` and model CSVs are what
+    the menus are built from.
+
+    The pipeline-disk entry is what lets models authored there show up in the
+    explorer even when results are being viewed from the Google Drive mirror, which
+    may not have those CSVs synced yet. ``models_manifest`` owns the resolution so
+    every reader of the manifest looks in exactly the same places."""
+    return mm.rsa_models_dirs(datafolder, dataset)
+
+
+def manifest_file(datafolder, dataset):
+    """The ``_models.csv`` actually in use for this (datafolder, dataset), or None.
+    Shown in the header so it is never a guess which project's manifest is driving
+    the menus."""
+    return mm.manifest_path(_model_dirs(datafolder, dataset))
 
 
 def _find_model_csv(datafolder, dataset, model):
@@ -767,24 +892,32 @@ def ordered_valid_stems(datafolder, dataset):
     return hyps
 
 
-FALLBACK_FOLD = "(all models)"
+FALLBACK_DIS = "(all models)"
+FOLD_ANY = mm.FOLD_ANY      # the pooled entry used whenever the fold level is skipped
 
 
 def build_index(datafolder, dataset):
-    """The fold-aware menu backing every card::
+    """The menu backing every card, **distance method first**::
 
-        {'folds': [fold, ...],
-         'by_fold': {fold: {'stems': [...], 'index': {stem: {grouping: model}},
-                            'why': {stem: why}, 'groupings': {stem: [...]}}}}
+        {'dis_methods': [dis_method, ...],
+         'by_dis': {dis_method: {'uses_fold': bool, 'folds': [fold, ...],
+                                 'by_fold': {fold: {'stems': [...],
+                                                    'index': {stem: {grouping: model}},
+                                                    'why': {stem: why},
+                                                    'groupings': {stem: [...]}},
+                                             FOLD_ANY: {...}}}}}
 
     Driven by the dataset's central ``rsa_models/_models.csv`` (via
-    ``models_manifest``). Serialised into the ``ex-grouped`` store and rebuilt
-    whenever the data folder / dataset changes or results are reloaded. When no
-    manifest is present it falls back to scanning the folder and offering every
-    valid ``__{grouping}`` model under one synthetic ``(all models)`` fold, so the
-    explorer still works before ``_models.csv`` exists."""
-    idx = mm.fold_index(_model_dirs(datafolder, dataset))
-    if idx["folds"]:
+    ``models_manifest``), resolved from the *current* data folder + dataset — so
+    another project's explorer session reads that project's manifest. Serialised
+    into the ``ex-grouped`` store and rebuilt whenever the data folder / dataset
+    changes or results are reloaded.
+
+    When no manifest is present it falls back to scanning the folder and offering
+    every valid ``__{grouping}`` model under one synthetic ``(all models)`` method,
+    so the explorer still works before ``_models.csv`` exists."""
+    idx = mm.dis_index(_model_dirs(datafolder, dataset))
+    if idx["dis_methods"]:
         return idx
     # Fallback: no _models.csv — discover models by scanning the rsa_models folder.
     grouped = grouped_valid_models(datafolder, dataset)     # {stem: {grouping: model}}
@@ -792,23 +925,43 @@ def build_index(datafolder, dataset):
     why = {s: model_description(datafolder, dataset, next(iter(grouped[s].values()), None))
            for s in stems}
     groupings = {s: [g for g in GROUPINGS if g in grouped[s]] for s in stems}
-    return {"folds": [FALLBACK_FOLD],
-            "by_fold": {FALLBACK_FOLD: {"stems": stems, "index": grouped,
-                                        "why": why, "groupings": groupings}}}
+    return {"dis_methods": [FALLBACK_DIS],
+            "by_dis": {FALLBACK_DIS: {
+                "uses_fold": False, "folds": [],
+                "by_fold": {FOLD_ANY: {"stems": stems, "index": grouped,
+                                       "why": why, "groupings": groupings}}}}}
 
 
-def _fold_data(grouped, fold):
-    """The ``by_fold`` entry for one fold, or an empty skeleton."""
-    by_fold = (grouped or {}).get("by_fold", {}) if isinstance(grouped, dict) else {}
-    return by_fold.get(fold or "", {}) if isinstance(by_fold, dict) else {}
+def _dis_data(grouped, dis):
+    """The ``by_dis`` entry for one distance method, or an empty skeleton."""
+    by_dis = (grouped or {}).get("by_dis", {}) if isinstance(grouped, dict) else {}
+    return by_dis.get(dis or "", {}) if isinstance(by_dis, dict) else {}
 
 
-def _resolve_model(grouped, fold, stem, grouping):
+def _dis_folds(grouped, dis):
+    """(folds to offer, is the fold menu meaningful) for one distance method. A
+    method that does not fold offers the single pooled ``FOLD_ANY`` entry, and its
+    fold menu is hidden rather than shown with one meaningless option."""
+    dd = _dis_data(grouped, dis)
+    if dd.get("uses_fold") and dd.get("folds"):
+        return list(dd["folds"]), True
+    return [FOLD_ANY], False
+
+
+def _fold_data(grouped, dis, fold):
+    """The ``by_fold`` entry for one (distance method, fold), or an empty skeleton."""
+    by_fold = _dis_data(grouped, dis).get("by_fold", {})
+    if not isinstance(by_fold, dict):
+        return {}
+    return by_fold.get(fold or "", {})
+
+
+def _resolve_model(grouped, dis, fold, stem, grouping):
     """Concrete ``{stem}__{grouping}`` model for a card, or None if any part is
-    unset / unknown in the current fold index."""
-    if not fold or not stem or not grouping:
+    unset / unknown in the current index."""
+    if not dis or not fold or not stem or not grouping:
         return None
-    return _fold_data(grouped, fold).get("index", {}).get(stem, {}).get(grouping)
+    return _fold_data(grouped, dis, fold).get("index", {}).get(stem, {}).get(grouping)
 
 
 # --- RSA model matrix, drawn with the RSA Model Builder's renderer ---------
@@ -837,6 +990,301 @@ def _model_heatmap(datafolder, dataset, model):
     return rmb.build_cell_heatmap(matrix, labels, style)
 
 
+# ---------------------------------------------------------------------------
+# Model comparison at one voxel — the bar plot beside the matrix
+# ---------------------------------------------------------------------------
+# The card's map answers "where does *this* model fit the data?". The bar plot
+# answers the transposed question — "at *this voxel*, how do all the models
+# compare?" — by sampling every model's group map at the crosshair.
+#
+# It is deliberately **button-driven**: a card's scope can span dozens of models
+# and each one is a separate file on a network disk, so it must never ride along
+# with a slider drag. Two read strategies are offered (top bar, ``ex-barmode``):
+#
+#   * **on request** — each map is opened and the single crosshair voxel is read
+#     through nibabel's array proxy, so the volume never enters memory. Cheap in
+#     RAM, one disk read per model per click.
+#   * **preloaded** — the maps in scope are loaded once into ``_BAR_PRELOAD`` and
+#     every later click samples RAM. Fast and it lets the plot follow the
+#     crosshair live, at the cost of holding the volumes (reported in the note).
+#
+# The two cost about the same wall time on a *cold* read — whichever runs first
+# pays the network, the second is served from the OS page cache — so the choice is
+# genuinely about memory and about whether repeat clicks are free. Measured on
+# EmoC/Human (13 models, 2 mm MNI, over ``P:``): ~18 s per Compare on request, vs
+# ~18 s once + ~0 s per click after, for ~90 MB held.
+#
+# Sampling goes through the **world (mm)** coordinate rather than the voxel index,
+# so a model whose map happens to sit on another grid is still read at the same
+# anatomical point instead of silently at the wrong one.
+
+def _std_and_log_paths(mean_path):
+    """(std map, mean-log sidecar) beside a ``*_mean.nii.gz`` group map — the two
+    files step 3 writes next to it — or (None, None) for anything else (a z-map
+    has no std twin)."""
+    tail = "_mean.nii.gz"
+    if not mean_path or not mean_path.endswith(tail):
+        return None, None
+    return mean_path[:-len(tail)] + "_std.nii.gz", mean_path[:-len(".nii.gz")] + ".json"
+
+
+def _mean_log_n(path):
+    """``len(file_list)`` from a group map's ``*_mean.json`` sidecar — how many
+    participant/run maps were averaged into it, i.e. the *n* behind the standard
+    error. None when the sidecar is missing or has no file list.
+
+    Despite the extension the file is YAML (step 3 writes it with ``yaml.dump``),
+    so JSON is tried first and YAML second. Cached per path: this is one network
+    read per model, and the sidecar lists every input file."""
+    if not path:
+        return None
+    if path not in _MEANLOG_CACHE:
+        n = None
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                text = f.read()
+        except OSError:
+            text = None
+        if text is not None:
+            doc = None
+            try:
+                doc = json.loads(text)
+            except ValueError:
+                if yaml is not None:
+                    try:
+                        doc = yaml.safe_load(text)
+                    except Exception:
+                        doc = None
+            if isinstance(doc, dict) and isinstance(doc.get("file_list"), (list, tuple)):
+                n = len(doc["file_list"]) or None
+        _MEANLOG_CACHE[path] = n
+    return _MEANLOG_CACHE[path]
+
+
+def _bar_model_list(grouped, dis, fold, grouping, scope):
+    """(models to compare, label mode) for a card's bar plot.
+
+    ``"fold-grouping"`` — one model per hypothesis stem in the card's distance
+    method + fold, all at the card's own grouping: the comparison that holds
+    everything but the hypothesis fixed, so the bars are directly comparable.
+    Labels drop the shared ``__{grouping}`` suffix. ``"fold"`` adds every grouping
+    of those stems and ``"all"`` spans every distance method; both label with the
+    full model name, and both mix settings that are *not* held constant — read them
+    accordingly. Note that models from two distance methods are not comparable at
+    all (different pairwise-similarity maps underneath), which is why ``"all"`` is
+    the widest and loosest scope."""
+    if scope == "all":
+        out = []
+        for d in (grouped or {}).get("dis_methods", []) if isinstance(grouped, dict) else []:
+            # the pooled entry already spans every fold of that method
+            for variants in _fold_data(grouped, d, FOLD_ANY).get("index", {}).values():
+                out.extend(variants.values())
+        return sorted(dict.fromkeys(out)), "model"
+    fd = _fold_data(grouped, dis, fold)
+    index = fd.get("index", {}) or {}
+    stems = fd.get("stems", []) or list(index)
+    if scope == "fold":
+        out = []
+        for s in stems:
+            out.extend((index.get(s) or {}).values())
+        return list(dict.fromkeys(out)), "model"
+    out = [(index.get(s) or {}).get(grouping) for s in stems]
+    return [m for m in out if m], "stem"
+
+
+def _preload_volume(store, path):
+    """The volume at ``path`` held in the preload store (loaded on first ask),
+    or None when it cannot be read. Kept as float32 — the maps are written as
+    float64, and halving them halves the memory a scope costs."""
+    if path not in store:
+        try:
+            data, aff, _hdr = niftiutil.load_nifti(path)
+        except Exception:
+            store[path] = None
+        else:
+            store[path] = (np.asarray(data, dtype=np.float32), aff)
+    return store[path]
+
+
+def _sample_at(path, world, store):
+    """Value of the map at ``path`` at world (mm) point ``world``, or None.
+
+    ``store`` None is the low-memory path: read the one voxel off disk and keep
+    nothing. A dict is the preload store: the whole volume is held and sampled
+    from RAM."""
+    if store is None:
+        val, _vox = niftiutil.sample_world_value(path, world)
+        return val
+    vol = _preload_volume(store, path)
+    if vol is None:
+        return None
+    data, aff = vol
+    vox = niftiutil.world_to_voxel(world, aff)
+    if any(v < 0 or v >= s for v, s in zip(vox, data.shape)):
+        return None
+    v = float(data[vox[0], vox[1], vox[2]])
+    return v if np.isfinite(v) else None
+
+
+def _bar_series(source, datafolder, dataset, modality, roi, glm_model, specie,
+                models, maptype, zt, world, store):
+    """``[(model, value, sem, n), ...]`` — every model that actually has a map of
+    this type, sampled at ``world``. Models without one are simply skipped: the
+    plot shows the models "for which there is available data".
+
+    For a **group-average** map the error bar is the standard error of that voxel's
+    mean: the value in the ``_std`` map beside it over ``sqrt(n)``, with *n* the
+    number of maps that went into the average (``file_list`` in the ``_mean.json``
+    sidecar). Note the pipeline writes that std with ddof=0 and *n* counts averaged
+    **maps** — participant runs, not participants — so the bars are within-map
+    dispersion, not a between-subject CI. z-maps carry no std twin, so they get no
+    error bars."""
+    out = []
+    for model in models:
+        path = _map_path_for(source, datafolder, dataset, modality, roi, glm_model,
+                             specie, model, maptype, zt)
+        if not path:
+            continue
+        val = _sample_at(path, world, store)
+        if val is None:
+            continue
+        sem, n = None, None
+        std_p, log_p = _std_and_log_paths(path)
+        if std_p:
+            n = _mean_log_n(log_p)
+            sd = _sample_at(std_p, world, store) if n else None
+            if sd is not None and sd >= 0:
+                sem = float(sd) / np.sqrt(float(n))
+        out.append((model, float(val), sem, n))
+    return out
+
+
+def _bar_label(model, grouping, label_mode):
+    """Axis label for one bar — the bare stem when the grouping is held constant
+    across the whole plot (it is already in the plot's title), else the full name."""
+    if label_mode == "stem" and grouping and model.endswith(f"__{grouping}"):
+        return model[: -len(f"__{grouping}")]
+    return model
+
+
+def _bar_fig(rows, current, grouping, label_mode, lo, xtitle, subtitle):
+    """(figure, height px) — horizontal bar chart of every model's value at the
+    crosshair. The height is returned because it grows with the number of bars and
+    the Graph's own style has to be set to match, or Plotly draws into a box of the
+    wrong size.
+
+    Bars keep the **menu order**, not value order: the crosshair moves constantly
+    and a sorted plot would reshuffle under it, whereas a fixed order lets you
+    watch one model's bar as you scroll through slices and compare the same row
+    between two cards. The card's own model is drawn in the accent colour, the
+    card's low threshold as a dotted line, so "does my model win here, and does it
+    even clear threshold?" is one look."""
+    if not rows:
+        return niftiutil.empty_fig("no model has a map at this point", height=BAR_MIN_H), BAR_MIN_H
+    labels = [_bar_label(m, grouping, label_mode) for m, _v, _s, _n in rows]
+    values = [v for _m, v, _s, _n in rows]
+    errs = [(s if s is not None else 0.0) for _m, _v, s, _n in rows]
+    colors = [BAR_COLOR_CUR if m == current else BAR_COLOR for m, _v, _s, _n in rows]
+    n_err = sum(1 for _m, _v, s, _n in rows if s is not None)
+    hover = [(f"{m}<br>{v:.4g}" + (f" ± {s:.3g} SEM (n={n})" if s is not None else ""))
+             for m, v, s, n in rows]
+
+    fig = go.Figure(go.Bar(
+        x=values, y=labels, orientation="h", marker=dict(color=colors),
+        error_x=dict(type="data", array=errs, visible=n_err > 0,
+                     color=MUTED, thickness=1, width=2),
+        hovertext=hover, hovertemplate="%{hovertext}<extra></extra>",
+        showlegend=False))
+    for x, dash in ((0.0, "solid"), (float(lo), "dot")):
+        fig.add_vline(x=x, line=dict(color=LINE if dash == "solid" else ACCENT,
+                                     width=1, dash=dash))
+    height = max(BAR_MIN_H, 44 + BAR_ROW_H * len(rows))
+    fig.update_layout(
+        title=dict(text=subtitle, font=dict(size=11, color=INK)),
+        margin=dict(l=6, r=10, t=28, b=30), height=height,
+        paper_bgcolor=PANEL, plot_bgcolor="#ffffff", font_color=INK, bargap=0.25,
+        xaxis=dict(title=dict(text=xtitle, font=dict(size=9, color=MUTED)),
+                   tickfont=dict(size=9), gridcolor=LINE, zeroline=False),
+        yaxis=dict(autorange="reversed", tickfont=dict(size=9),
+                   automargin=True, gridcolor=LINE))
+    return fig, height
+
+
+def _bar_store_key(source, datafolder, dataset, modality, roi, glm_model, specie, maptype):
+    """Key under which one context's preloaded volumes live. Everything that can
+    change *which file* a model resolves to is in it, so a source / ROI / species
+    switch gets its own store instead of quietly reusing the wrong brains."""
+    return (source, datafolder, dataset, modality, roi, glm_model, specie, maptype)
+
+
+def _bar_cache_mb():
+    total = 0
+    for store in _BAR_PRELOAD.values():
+        for vol in store.values():
+            if vol is not None:
+                total += vol[0].nbytes
+    return total / (1024.0 * 1024.0)
+
+
+# ---------------------------------------------------------------------------
+# Crosshair: the voxel a click lands on, and the read-out under the slice
+# ---------------------------------------------------------------------------
+# The crosshair is stored as a **voxel of the map's own grid** (``[i, j, k]``), not
+# as a screen position, so it survives an axis switch, a flip, a colormap change
+# and a different map on the same grid. Only the in-plane part is honoured when
+# drawing: the out-of-plane coordinate is always replaced by the slice currently
+# on screen, so scrolling through slices sweeps the read-out down the same
+# in-plane column — which is how you read an intensity profile through a cluster.
+
+def _cross_voxel(cross, shape, axis, slice_idx):
+    """The stored crosshair rebased onto the displayed slice, or None."""
+    if not cross:
+        return None
+    try:
+        vox = [int(c) for c in cross[:3]]
+    except (TypeError, ValueError):
+        return None
+    if len(vox) != 3:
+        return None
+    vox[int(axis)] = int(slice_idx)
+    if any(v < 0 or v >= s for v, s in zip(vox, shape)):
+        return None
+    return tuple(vox)
+
+
+def _cross_field(label, value):
+    return html.Span([
+        html.Span(f"{label} ", style={"color": MUTED}),
+        html.Span(value, style={"color": INK, "fontWeight": "bold",
+                                "fontFamily": "Consolas, 'Courier New', monospace"}),
+    ], style={"marginRight": "12px", "whiteSpace": "nowrap"})
+
+
+def _cross_hint(text):
+    return [html.Span(f"✛ {text}", style={"color": MUTED, "fontStyle": "italic"})]
+
+
+def _cross_readout(vox, affine, value, axis, slice_idx, nslices, thr):
+    """The read-out line: voxel index, world (mm) coordinate and the map's value
+    at the crosshair — the "intensity" field of a normal MR viewer — plus which
+    slice of how many is on screen. Sub-threshold voxels are still reported (that
+    is the point of clicking one) but flagged, since they are drawn transparent."""
+    if vox is None:
+        return _cross_hint("click the slice to place the crosshair")
+    mm = niftiutil.voxel_to_world(vox, affine)
+    axis_name = {0: "X", 1: "Y", 2: "Z"}[int(axis)]
+    out = [
+        _cross_field("voxel", "(%d, %d, %d)" % vox),
+        _cross_field("mm", "(%.1f, %.1f, %.1f)" % mm),
+        _cross_field("intensity", "—" if value is None else f"{value:.4g}"),
+        _cross_field(f"slice {axis_name}", f"{int(slice_idx)}/{int(nslices) - 1}"),
+    ]
+    if value is not None and abs(float(value)) < float(thr):
+        out.append(html.Span("below threshold — not painted",
+                             style={"color": MUTED, "fontStyle": "italic"}))
+    return out
+
+
 def status_dot(color):
     return html.Span(style={"display": "inline-block", "width": "10px", "height": "10px",
                             "background": color, "borderRadius": "50%",
@@ -850,7 +1298,7 @@ def status_dot(color):
 
 URL_BASE = os.environ.get("EXPLORER_URL_BASE", "/")
 app = Dash(__name__, url_base_pathname=URL_BASE, suppress_callback_exceptions=True,
-           title="EmoC Model Explorer")
+           title="RSA Model Explorer")
 server = app.server
 
 # --- Edit-mode layout: CSS affordances + pointer-driven drag-to-reorder ----
@@ -874,6 +1322,8 @@ app.index_string = """<!DOCTYPE html>
       .pl-drag-hint{ display:none; }
       .pl-row.edit-mode .pl-drag-hint{ display:inline-block; }
       .pl-panel.pl-dragging{ opacity:0.55; z-index:5; box-shadow:0 6px 18px rgba(0,0,0,0.18); }
+      /* the brain view eats the wheel (slice scrubbing), so say so on hover */
+      .pl-map-wrap{ cursor:crosshair; }
     </style>
 </head>
 <body>
@@ -935,7 +1385,60 @@ app.index_string = """<!DOCTYPE html>
         if(drag){ drag.panel.classList.remove('pl-dragging'); drag=null;
                   document.body.style.userSelect=''; commit(); }
       });
+
+      // --- wheel over a brain view = step through slices --------------------
+      // The slice slider holds a *fraction* (0..1), but a wheel notch should move
+      // exactly one slice, so the step is 1/(n-1) with n read from the hidden
+      // ``pl-{i}-slices`` span the render callback keeps up to date. The new value
+      // is handed to Dash the same way the reorder drag is (set_props), so the
+      // slider, the sync stores and the card render all follow normally.
+      //
+      // Scrolling is faster than the server round trip, so consecutive notches are
+      // accumulated locally: within WHEEL_HOLD ms of the last notch we step from
+      // our own last value instead of re-reading the (still lagging) slider, and
+      // after that we resync from the DOM so a drag / a 🔗 sync update wins.
+      var WHEEL_HOLD = 700, wheelState = {};
+      function fracOf(i){
+        // '[role=slider]' + aria-valuenow is the one handle selector that holds
+        // across dcc.Slider's DOM (Radix thumb in Dash 4, rc-slider before it);
+        // the number box beside the slider is the fallback.
+        var h=document.querySelector('#pl-'+i+'-frac [role="slider"]');
+        var v=h?parseFloat(h.getAttribute('aria-valuenow')):NaN;
+        if(isNaN(v)){
+          var inp=document.querySelector('#pl-'+i+'-frac input');
+          v=inp?parseFloat(inp.value):NaN;
+        }
+        return isNaN(v)?0.5:v;
+      }
+      function nSlices(i){
+        var el=document.getElementById('pl-'+i+'-slices');
+        var n=el?parseInt(el.textContent,10):NaN;
+        return (isNaN(n)||n<2)?0:n;
+      }
+      document.addEventListener('wheel', function(e){
+        if(!e.target.closest) return;
+        var w=e.target.closest('.pl-map-wrap'); if(!w) return;
+        var i=w.getAttribute('data-index'); if(i===null) return;
+        var n=nSlices(i); if(!n) return;                 // no map loaded -> let the page scroll
+        e.preventDefault();                              // scrub slices, don't scroll the page
+        var now=(window.performance?performance.now():Date.now());
+        var st=wheelState[i];
+        var base=(st && (now-st.t)<WHEEL_HOLD) ? st.v : fracOf(i);
+        var dir=(e.deltaY>0)?-1:1;                       // wheel up -> higher slice index
+        // Step the *slice index*, then convert back: stepping the fraction instead
+        // would let the server's own frac -> index rounding swallow or double a
+        // notch whenever the value lands on a half-slice.
+        var slice=Math.min(n-1, Math.max(0, Math.round(base*(n-1)) + dir));
+        var v=Math.round((slice/(n-1))*1e6)/1e6;
+        wheelState[i]={v:v, t:now};
+        if(window.dash_clientside && window.dash_clientside.set_props){
+          window.dash_clientside.set_props('pl-'+i+'-frac', {value:v});
+        }
+      }, {passive:false});
     })();
+    // Slice-slider tooltip: the value is a fraction, which is meaningless to read.
+    window.dccFunctions = window.dccFunctions || {};
+    window.dccFunctions.slicePct = function(v){ return Math.round(v*100) + '%'; };
     </script>
 </body>
 </html>"""
@@ -969,6 +1472,14 @@ def top_bar():
         html.Button("Reload results", id="ex-reload", n_clicks=0, style=BTN2),
         html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
         _labeled("View h", _num("ex-view-height", SETTINGS["view_height"], "70px")),
+        html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
+        _labeled("Model bars", html.Div(style={"display": "flex", "gap": "6px", "alignItems": "center"},
+                 children=[
+            dcc.Dropdown(id="ex-barmode", options=[{"label": l, "value": v} for v, l in BAR_MODES],
+                         value=SETTINGS["bar_mode"], clearable=False, style={"width": "200px"}),
+            html.Button("🧹 Free", id="ex-barfree", n_clicks=0, title="drop preloaded maps",
+                        style=BTN2),
+        ])),
         html.Div(style={"width": "1px", "height": "34px", "background": LINE, "margin": "0 4px"}),
         _labeled("Models", html.Div(style={"display": "flex", "gap": "8px", "alignItems": "center"}, children=[
             html.Button("➕ Add model", id="ex-addpanel", n_clicks=0, style=BTN),
@@ -1033,11 +1544,19 @@ def card(i):
                                "cursor": "pointer", "fontSize": "13px", "padding": "0 2px",
                                "marginLeft": "auto"}),
         ]),
-        # --- fold + model + grouping selection (fold drives the other two) ---
+        # --- the model cascade, read left to right: distance method → (Mahalanobis
+        # fold) → model → grouping. Each level only offers what the level above
+        # allows; the fold dropdown is *hidden* (not just empty) for a distance
+        # method that does not fold, so the row shows exactly the choices that
+        # exist for the analysis in hand.
         html.Div(style={"display": "flex", "gap": "6px", "flexWrap": "wrap", "margin": "6px 0"}, children=[
-            dcc.Dropdown(id=f"pl-{i}-mahfold", options=[], value=None, placeholder="fold…",
+            dcc.Dropdown(id=f"pl-{i}-dis", options=[], value=None, placeholder="distance…",
                          clearable=False, persistence=True,
                          style={"flex": "1 1 120px", "minWidth": "110px"}),
+            html.Div(id=f"pl-{i}-mahfold-wrap", style={"flex": "1 1 120px", "minWidth": "110px"},
+                     children=dcc.Dropdown(id=f"pl-{i}-mahfold", options=[], value=None,
+                                           placeholder="fold…", clearable=False,
+                                           persistence=True)),
             dcc.Dropdown(id=f"pl-{i}-stem", options=[], value=None, placeholder="model…",
                          persistence=True, style={"flex": "1 1 150px", "minWidth": "140px"}),
             dcc.Dropdown(id=f"pl-{i}-grouping", options=[], value=None, placeholder="grouping…",
@@ -1061,6 +1580,9 @@ def card(i):
             dcc.Checklist(id=f"pl-{i}-showmodel", options=[{"label": " show matrix", "value": "on"}],
                           value=["on"], persistence=True,
                           labelStyle={"fontSize": "12px"}, style={"paddingBottom": "6px"}),
+            dcc.Checklist(id=f"pl-{i}-showbar", options=[{"label": " 📶 model bars", "value": "on"}],
+                          value=["on"], persistence=True,
+                          labelStyle={"fontSize": "12px"}, style={"paddingBottom": "6px"}),
         ]),
         # --- map controls: type + axis + colormap ---
         html.Div(style={"display": "flex", "gap": "6px", "flexWrap": "wrap", "margin": "2px 0"}, children=[
@@ -1071,10 +1593,15 @@ def card(i):
             dcc.Dropdown(id=f"pl-{i}-cmap", options=[{"label": c, "value": c} for c in COLORMAPS],
                          value=DEFAULT_CMAP, clearable=False, persistence=True, style={"width": "110px"}),
         ]),
+        # Slice position. The step is fine (0.001) rather than one-slice-sized
+        # because the wheel handler steps by an exact 1/(n-1) — a coarse step would
+        # snap those notches back onto its own grid and skip slices.
         html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center"}, children=[
             html.Span("slice", style={"fontSize": "11px", "color": MUTED}),
-            html.Div(dcc.Slider(id=f"pl-{i}-frac", min=0, max=1, step=0.02, value=0.5,
-                     marks=None, tooltip={"placement": "bottom"}), style={"flex": "1"}),
+            html.Div(dcc.Slider(id=f"pl-{i}-frac", min=0, max=1, step=0.001, value=0.5,
+                     marks=None,
+                     tooltip={"placement": "bottom", "transform": "slicePct"}),
+                     style={"flex": "1"}),
         ]),
         html.Div(style={"display": "flex", "gap": "10px", "alignItems": "center"}, children=[
             html.Span(id=f"pl-{i}-zt-label", style={"fontSize": "11px", "color": MUTED, "minWidth": "70px"}),
@@ -1090,28 +1617,60 @@ def card(i):
         # slice and the distribution behind it are read together. ``minWidth: 0``
         # on both halves keeps the Plotly graphs from forcing the row to wrap.
         html.Div(style={"display": "flex", "gap": "6px", "alignItems": "stretch"}, children=[
-            html.Div(dcc.Graph(id=f"pl-{i}-map", style={"height": f"{vh}px"}),
-                     style={"flex": "3 1 0", "minWidth": 0}),
+            # ``pl-map-wrap`` + data-index is what the wheel handler hooks onto to
+            # scrub slices; the hidden span carries the slice count it needs.
+            html.Div(className="pl-map-wrap", **{"data-index": str(i)}, children=[
+                dcc.Graph(id=f"pl-{i}-map", style={"height": f"{vh}px"}),
+                html.Span(id=f"pl-{i}-slices", children="0", style={"display": "none"}),
+            ], style={"flex": "3 1 0", "minWidth": 0}),
             html.Div(id=f"pl-{i}-histwrap",
                      children=dcc.Graph(id=f"pl-{i}-hist", figure=niftiutil.empty_fig(height=vh),
                                         style={"height": f"{vh}px"},
                                         config={"displayModeBar": False}),
                      style={"flex": "2 1 0", "minWidth": 0}),
         ]),
-        # --- model dissimilarity matrix (toggled by "show matrix") ---
-        html.Div(id=f"pl-{i}-matrixwrap", children=[
-            html.Div("Model matrix (builder view)", style={"fontSize": "11px", "color": MUTED,
-                     "margin": "8px 0 2px"}),
-            html.Div(dcc.Graph(id=f"pl-{i}-matrix", figure=niftiutil.empty_fig(height=200),
-                     config={"displayModeBar": False}),
-                     style={"maxHeight": "520px", "overflowY": "auto"}),
+        # --- crosshair read-out (voxel / mm / intensity at the clicked voxel) ---
+        html.Div(id=f"pl-{i}-info", style=CROSS_PANEL_STYLE),
+        dcc.Store(id=f"pl-{i}-cross"),   # crosshair voxel [i, j, k] on the map grid
+        # --- model dissimilarity matrix + model-comparison bars, side by side ---
+        # The matrix says what the selected model predicts; the bars say what every
+        # model measured at the crosshair. Reading them together is the point of
+        # putting them in one row, and either can be toggled off to give the other
+        # the full card width.
+        html.Div(style={"display": "flex", "gap": "8px", "alignItems": "flex-start"}, children=[
+            html.Div(id=f"pl-{i}-matrixwrap", style=MATRIX_WRAP_SHOW, children=[
+                html.Div("Model matrix (builder view)", style={"fontSize": "11px", "color": MUTED,
+                         "margin": "8px 0 2px"}),
+                html.Div(dcc.Graph(id=f"pl-{i}-matrix", figure=niftiutil.empty_fig(height=200),
+                         config={"displayModeBar": False}),
+                         style={"maxHeight": "520px", "overflowY": "auto"}),
+            ]),
+            html.Div(id=f"pl-{i}-barwrap", style=BAR_WRAP_SHOW, children=[
+                html.Div("All models at the crosshair", style={"fontSize": "11px", "color": MUTED,
+                         "margin": "8px 0 2px"}),
+                html.Div(style={"display": "flex", "gap": "6px", "alignItems": "center",
+                                "marginBottom": "3px"}, children=[
+                    dcc.Dropdown(id=f"pl-{i}-bar-scope",
+                                 options=[{"label": l, "value": v} for v, l in BAR_SCOPES],
+                                 value="fold-grouping", clearable=False, persistence=True,
+                                 style={"flex": "1 1 130px", "minWidth": "120px"}),
+                    html.Button("📶 Compare", id=f"pl-{i}-bar-btn", n_clicks=0,
+                                title="sample every model in scope at the crosshair", style=BTN),
+                ]),
+                html.Div(id=f"pl-{i}-barnote", style={"fontSize": "11px", "color": MUTED,
+                         "minHeight": "15px", "margin": "0 2px 2px"}),
+                html.Div(dcc.Graph(id=f"pl-{i}-bar",
+                         figure=niftiutil.empty_fig("click ✛ then 📶 Compare", height=BAR_MIN_H),
+                         style={"height": f"{BAR_MIN_H}px"}, config={"displayModeBar": False}),
+                         style={"maxHeight": "520px", "overflowY": "auto"}),
+            ]),
         ]),
     ])
 
 
 app.layout = html.Div(style={"backgroundColor": BG, "color": INK, "minHeight": "100vh",
                       "padding": "10px 14px", "fontFamily": "'Segoe UI', Arial, sans-serif"}, children=[
-    html.H2("EmoC Model Explorer", style={"textAlign": "center", "margin": "4px 0 8px"}),
+    html.H2("RSA Model Explorer", style={"textAlign": "center", "margin": "4px 0 8px"}),
     top_bar(),
     html.Div(style={"display": "flex", "alignItems": "baseline", "gap": "10px", "margin": "4px 2px 6px"},
              children=[
@@ -1125,7 +1684,7 @@ app.layout = html.Div(style={"backgroundColor": BG, "color": INK, "minHeight": "
 
     dcc.Store(id="ex-dataver", data=0),
     dcc.Store(id="ex-update-trigger", data=0),
-    dcc.Store(id="ex-grouped", data={"folds": [], "by_fold": {}}),
+    dcc.Store(id="ex-grouped", data={"dis_methods": [], "by_dis": {}}),
     dcc.Store(id="ex-layout", data=SETTINGS["layout"]),
     dcc.Store(id="ex-settings-status"),
     # Shared view state broadcast to synced same-species cards (see sync callbacks).
@@ -1166,55 +1725,111 @@ def cb_rois(modality, datafolder, dataset, source, glm_model, _ver):
 @app.callback(Output("ex-grouped", "data"), Output("ex-models-title", "children"),
               Input("ex-datafolder", "value"), Input("ex-dataset", "value"), Input("ex-dataver", "data"))
 def cb_build_index(datafolder, dataset, _ver):
-    """Rebuild the fold → model → grouping menu whenever the data folder / dataset
-    changes or results are reloaded, re-reading ``_models.csv`` fresh each time."""
+    """Rebuild the distance-method → fold → model → grouping menu whenever the data
+    folder / dataset changes or results are reloaded, re-reading that project's
+    ``_models.csv`` fresh each time. The manifest path it actually resolved to is
+    part of the status line, so switching dataset shows plainly which file the
+    menus now come from."""
     _MANIFEST_CACHE.pop((datafolder, dataset), None)   # legacy battery-manifest cache
     mm.clear_cache()                                   # re-read _models.csv from disk
     grouped = build_index(datafolder, dataset)
-    folds = grouped.get("folds", [])
-    nstems = sum(len(grouped["by_fold"][f]["stems"]) for f in folds)
-    if folds == [FALLBACK_FOLD]:
-        title = (f"no _models.csv — scanned {nstems} model families from disk; "
-                 "add a card, pick a model + grouping")
-    else:
-        title = (f"{len(folds)} fold(s), {nstems} model families from _models.csv — "
-                 "pick a fold, then a model + grouping per card")
-    return grouped, title
+    dis = grouped.get("dis_methods", [])
+    nstems = sum(len(_fold_data(grouped, d, FOLD_ANY).get("stems", [])) for d in dis)
+    path = manifest_file(datafolder, dataset)
+    if dis == [FALLBACK_DIS]:
+        return grouped, (f"no _models.csv under {dataset or '?'}/rsa_models — scanned "
+                         f"{nstems} model families from disk; add a card, pick a model "
+                         "+ grouping")
+    folds = sum(len(_dis_data(grouped, d).get("folds", [])) for d in dis)
+    return grouped, (f"{len(dis)} distance method(s), {folds} fold(s), {nstems} model "
+                     f"families — pick a distance method first · {path}")
 
 
 @app.callback(Output("ex-dataver", "data"), Input("ex-reload", "n_clicks"),
               State("ex-dataver", "data"), prevent_initial_call=True)
 def cb_reload(_n, ver):
     """Drop cached maps/masks/result-sets so freshly-synced results are re-read."""
+    _PATH_CACHE.clear()
     _MAP_CACHE.clear()
     _RESULT_SETS_CACHE.clear()
     _MASK_CACHE.clear()
     _MASK_ON_GRID.clear()
+    _MEANLOG_CACHE.clear()
+    _BAR_PRELOAD.clear()
     return (ver or 0) + 1
 
 
-# Per-card cascade: fold → model (stem) → grouping. Each level lists only what the
-# level above allows, and each keeps a still-valid persisted value (so a card comes
-# back exactly as left) while defaulting sensibly when the old value no longer fits.
+@app.callback(Output("ex-models-title", "children", allow_duplicate=True),
+              Input("ex-barmode", "value"), Input("ex-barfree", "n_clicks"),
+              prevent_initial_call=True)
+def cb_bar_memory(mode, _n):
+    """Drop the model-bar preload store — on demand (🧹 Free) and whenever the read
+    mode changes, since switching to "on request" is a request to stop holding
+    brains in RAM and switching to "preloaded" should start from a clean, correctly
+    keyed store."""
+    freed = _bar_cache_mb()
+    _BAR_PRELOAD.clear()
+    what = "preloaded" if mode == "preload" else "read on request"
+    tail = f" — {freed:.0f} MB freed" if freed >= 0.5 else ""
+    if ctx.triggered_id == "ex-barfree":
+        return f"Model-bar maps dropped{tail or ' — nothing was held'}."
+    return f"Model bars: maps {what}{tail}."
+
+
+# Per-card cascade: **distance method → (Mahalanobis fold) → model (stem) →
+# grouping**, exactly the order ``_models.csv`` is organised in. Each level lists
+# only what the level above allows, and each keeps a still-valid persisted value
+# (so a card comes back exactly as left) while defaulting sensibly when the old
+# value no longer fits.
+#
+# The fold level is conditional: it is a real choice only under ``mahalanobis``
+# (it names how the crossnobis folds are cut). For every other distance method the
+# card holds the pooled ``FOLD_ANY`` value and the dropdown is hidden, so the row
+# never asks for a setting that does not apply.
+
+def _register_panel_dis(i):
+    @app.callback(Output(f"pl-{i}-dis", "options"), Output(f"pl-{i}-dis", "value"),
+                  Input("ex-grouped", "data"), State(f"pl-{i}-dis", "value"))
+    def _cb(grouped, cur):
+        dis = (grouped or {}).get("dis_methods", []) if isinstance(grouped, dict) else []
+        opts = [{"label": d, "value": d} for d in dis]
+        if cur in dis:
+            return opts, cur
+        return opts, (dis[0] if dis else None)
+    return _cb
+
 
 def _register_panel_mahfold(i):
     @app.callback(Output(f"pl-{i}-mahfold", "options"), Output(f"pl-{i}-mahfold", "value"),
-                  Input("ex-grouped", "data"), State(f"pl-{i}-mahfold", "value"))
-    def _cb(grouped, cur):
-        folds = (grouped or {}).get("folds", []) if isinstance(grouped, dict) else []
+                  Input(f"pl-{i}-dis", "value"), Input("ex-grouped", "data"),
+                  State(f"pl-{i}-mahfold", "value"))
+    def _cb(dis, grouped, cur):
+        folds, real = _dis_folds(grouped, dis)
         opts = [{"label": f, "value": f} for f in folds]
+        if not real:                       # method doesn't fold -> the pooled entry
+            return opts, folds[0]
         if cur in folds:
             return opts, cur
-        return opts, (folds[0] if folds else None)
+        return opts, folds[0]
+    return _cb
+
+
+def _register_panel_foldwrap(i):
+    # Show the fold dropdown only where it means something (Mahalanobis).
+    @app.callback(Output(f"pl-{i}-mahfold-wrap", "style"),
+                  Input(f"pl-{i}-dis", "value"), Input("ex-grouped", "data"))
+    def _cb(dis, grouped):
+        _folds, real = _dis_folds(grouped, dis)
+        return {"flex": "1 1 120px", "minWidth": "110px"} if real else WRAP_HIDE
     return _cb
 
 
 def _register_panel_stem(i):
     @app.callback(Output(f"pl-{i}-stem", "options"), Output(f"pl-{i}-stem", "value"),
-                  Input(f"pl-{i}-mahfold", "value"), Input("ex-grouped", "data"),
-                  State(f"pl-{i}-stem", "value"))
-    def _cb(fold, grouped, cur):
-        stems = _fold_data(grouped, fold).get("stems", [])
+                  Input(f"pl-{i}-dis", "value"), Input(f"pl-{i}-mahfold", "value"),
+                  Input("ex-grouped", "data"), State(f"pl-{i}-stem", "value"))
+    def _cb(dis, fold, grouped, cur):
+        stems = _fold_data(grouped, dis, fold).get("stems", [])
         opts = [{"label": s, "value": s} for s in stems]
         if cur in stems:                                     # keep a still-valid choice
             return opts, cur
@@ -1224,15 +1839,17 @@ def _register_panel_stem(i):
 
 def _register_panel_why(i):
     @app.callback(Output(f"pl-{i}-why", "children"),
-                  Input(f"pl-{i}-mahfold", "value"), Input(f"pl-{i}-stem", "value"),
-                  Input("ex-grouped", "data"))
-    def _cb(fold, stem, grouped):
-        return _fold_data(grouped, fold).get("why", {}).get(stem or "", "")
+                  Input(f"pl-{i}-dis", "value"), Input(f"pl-{i}-mahfold", "value"),
+                  Input(f"pl-{i}-stem", "value"), Input("ex-grouped", "data"))
+    def _cb(dis, fold, stem, grouped):
+        return _fold_data(grouped, dis, fold).get("why", {}).get(stem or "", "")
     return _cb
 
 
 for _i in range(MAX_MODELS):
+    _register_panel_dis(_i)
     _register_panel_mahfold(_i)
+    _register_panel_foldwrap(_i)
     _register_panel_stem(_i)
     _register_panel_why(_i)
 
@@ -1288,8 +1905,9 @@ for _i in range(MAX_MODELS):
               Input("ex-source-mode", "value"), Input("ex-datafolder", "value"),
               Input("ex-glm-model", "value"), Input("ex-dataset", "value"),
               Input("ex-modality", "value"), Input("ex-view-height", "value"),
-              Input("ex-layout", "data"), prevent_initial_call=True)
-def cb_save_settings(source, datafolder, glm_model, dataset, modality, view_h, layout):
+              Input("ex-layout", "data"), Input("ex-barmode", "value"),
+              prevent_initial_call=True)
+def cb_save_settings(source, datafolder, glm_model, dataset, modality, view_h, layout, barmode):
     s = {
         "source_mode": source or "drive",
         "datafolder": datafolder or None,
@@ -1297,6 +1915,7 @@ def cb_save_settings(source, datafolder, glm_model, dataset, modality, view_h, l
         "dataset": (dataset or DEFAULT_DATASET).strip(),
         "modality": modality or "RSA",
         "view_height": _int(view_h, DEFAULT_SETTINGS["view_height"]),
+        "bar_mode": barmode if barmode in dict(BAR_MODES) else DEFAULT_SETTINGS["bar_mode"],
         "layout": _clean_layout(layout),   # model-card order + gap
     }
     save_settings(s)
@@ -1309,10 +1928,11 @@ def cb_save_settings(source, datafolder, glm_model, dataset, modality, view_h, l
 
 def _register_panel_grouping(i):
     @app.callback(Output(f"pl-{i}-grouping", "options"), Output(f"pl-{i}-grouping", "value"),
-                  Input(f"pl-{i}-mahfold", "value"), Input(f"pl-{i}-stem", "value"),
+                  Input(f"pl-{i}-dis", "value"), Input(f"pl-{i}-mahfold", "value"),
+                  Input(f"pl-{i}-stem", "value"),
                   Input("ex-grouped", "data"), State(f"pl-{i}-grouping", "value"))
-    def _cb(fold, stem, grouped, cur):
-        variants = _fold_data(grouped, fold).get("index", {}).get(stem or "", {})
+    def _cb(dis, fold, stem, grouped, cur):
+        variants = _fold_data(grouped, dis, fold).get("index", {}).get(stem or "", {})
         groups = list(variants.keys())                       # already canonically ordered
         opts = [{"label": g, "value": g} for g in groups]
         if cur in groups:                                    # keep a still-valid choice
@@ -1329,17 +1949,40 @@ for _i in range(MAX_MODELS):
 # Callbacks — per-card threshold range (depends on the map type / "measure")
 # ---------------------------------------------------------------------------
 # The range slider's two handles mean different things for different map types:
-# a z-threshold (0-8) for the z-map / cluster-corrected map, vs. an
-# average-similarity threshold — Kendall's tau, this pipeline's default RSA
-# method, ranging -1..1 — for the group-average map. Switching map type swaps
-# the slider's limits/marks/label; a still-in-range current [lo, hi] survives
-# the switch, otherwise it resets to that mode's default. The **low** handle
-# filters voxels below it out (rendered transparent); the **high** handle caps
-# the color scale — voxels at/above it are painted the palette's top color.
+# a z-threshold for the z-map / cluster-corrected map, vs. an average-similarity
+# threshold — Kendall's tau, this pipeline's default RSA method, ranging -1..1 —
+# for the group-average map. The **low** handle filters voxels below it out
+# (rendered transparent); the **high** handle caps the color scale — voxels
+# at/above it are painted the palette's top color.
+#
+# For **Z-map / Cluster-corrected** the default window is not a fixed pair but
+# **3.1 → the map's own maximum**: the conventional cluster-forming threshold at
+# one end, the brightest voxel actually present at the other, so the palette
+# spends its whole range on the data instead of on headroom that no voxel reaches.
+# That means the default is recomputed whenever the *image* changes (map type,
+# model, grouping, species, source, reload) — and the slider's own max grows with
+# it, since a z of 12 has to be reachable by the handle. For **Group average** the
+# fixed -1..1 scale stands and a still-valid current [lo, hi] survives a switch.
 ZT_RANGE_Z = {"min": 0, "max": 8, "step": 0.1, "marks": {0: "0", 3.1: "3.1", 8: "8"},
               "default": [3.1, 8], "label": "z"}
 ZT_RANGE_MEAN = {"min": -1, "max": 1, "step": 0.02, "marks": {-1: "-1", 0: "0", 1: "1"},
                  "default": [0.0, 1.0], "label": "Kendall τ"}
+
+
+def _map_abs_max(source, datafolder, dataset, modality, roi, glm_model,
+                 specie, model, maptype, zt):
+    """Largest |value| in the map a card is about to draw, or None when it cannot
+    be loaded / is empty. Goes through ``_load_map``'s cache, so once the card has
+    rendered that map this costs nothing."""
+    loaded = _load_map(source, datafolder, dataset, modality, roi, glm_model,
+                       specie, model, maptype, zt)
+    if loaded is None:
+        return None
+    finite = loaded[0][np.isfinite(loaded[0])]
+    if finite.size == 0:
+        return None
+    top = float(np.max(np.abs(finite)))
+    return top if top > 0 else None
 
 
 def _register_panel_zt_range(i):
@@ -1348,17 +1991,39 @@ def _register_panel_zt_range(i):
         Output(f"pl-{i}-range", "step"), Output(f"pl-{i}-range", "marks"),
         Output(f"pl-{i}-range", "value", allow_duplicate=True),
         Output(f"pl-{i}-zt-label", "children"),
-        Input(f"pl-{i}-maptype", "value"), State(f"pl-{i}-range", "value"),
+        Input(f"pl-{i}-maptype", "value"), Input(f"pl-{i}-dis", "value"),
+        Input(f"pl-{i}-mahfold", "value"),
+        Input(f"pl-{i}-stem", "value"), Input(f"pl-{i}-grouping", "value"),
+        Input(f"pl-{i}-maps", "value"), Input("ex-roi", "value"),
+        Input("ex-source-mode", "value"), Input("ex-glm-model", "value"),
+        Input("ex-grouped", "data"), Input("ex-dataver", "data"),
+        State(f"pl-{i}-range", "value"), State("ex-datafolder", "value"),
+        State("ex-dataset", "value"), State("ex-modality", "value"),
         prevent_initial_call="initial_duplicate")
-    def _cb(maptype, cur):
-        r = ZT_RANGE_MEAN if maptype == "mean" else ZT_RANGE_Z
-        try:
-            lo, hi = float(cur[0]), float(cur[1])
-            in_range = r["min"] <= lo <= hi <= r["max"]
-        except (TypeError, ValueError, IndexError):
-            in_range = False
-        val = [lo, hi] if in_range else list(r["default"])
-        return r["min"], r["max"], r["step"], r["marks"], val, r["label"]
+    def _cb(maptype, dis, mahfold, stem, grouping, maps, roi, source, glm_model, grouped,
+            _ver, cur, datafolder, dataset, modality):
+        if maptype == "mean":
+            r = ZT_RANGE_MEAN
+            try:
+                lo, hi = float(cur[0]), float(cur[1])
+                in_range = r["min"] <= lo <= hi <= r["max"]
+            except (TypeError, ValueError, IndexError):
+                in_range = False
+            val = [lo, hi] if in_range else list(r["default"])
+            return r["min"], r["max"], r["step"], r["marks"], val, r["label"]
+
+        r = ZT_RANGE_Z
+        lo = float(r["default"][0])                 # 3.1 — cluster-forming threshold
+        model = _resolve_model(grouped, dis, mahfold, stem, grouping)
+        specie = maps if maps in ("D", "H") else "D"
+        top = (_map_abs_max(source, datafolder, dataset, modality, roi, glm_model,
+                            specie, model, maptype, lo) if model else None)
+        hi = round(float(top), 2) if top else float(r["max"])
+        if hi <= lo:                                # nothing above 3.1 in this map
+            hi = lo + float(r["step"])
+        smax = max(float(r["max"]), float(np.ceil(hi * 10) / 10))
+        marks = {r["min"]: f"{r['min']:g}", lo: f"{lo:g}", smax: f"{smax:g}"}
+        return r["min"], smax, r["step"], marks, [lo, hi], r["label"]
     return _cb
 
 
@@ -1435,18 +2100,21 @@ def _hist_fig(values, lo, hi, colorscale, height, xtitle):
 
 def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
                       specie, model, maptype, axis, frac, zt, view_height,
-                      colorscale=None, vmax_override=None, want_hist=True):
-    """(slice figure, histogram figure | None, n supra-threshold in mask, n in mask).
+                      colorscale=None, vmax_override=None, want_hist=True, cross=None):
+    """(slice figure, histogram figure | None, n supra-threshold in mask, n in mask,
+    crosshair read-out, n slices along the displayed axis).
 
     The histogram is computed from the *same* loaded volume as the slice, so the
     two always describe one map; it is skipped entirely (None) when the card has
-    its histogram hidden."""
+    its histogram hidden. The slice count is handed back because the wheel-scroll
+    handler needs it to move the slider by exactly one slice per notch."""
     loaded = _load_map(source, datafolder, dataset, modality, roi, glm_model,
                        specie, model, maptype, zt)
     label = {"D": "Dog", "H": "Human"}[specie]
     if loaded is None:
         empty = niftiutil.empty_fig(f"{label}: no {maptype} map", height=view_height, dark=True)
-        return empty, (niftiutil.empty_fig("no map", height=view_height) if want_hist else None), 0, 0
+        return (empty, (niftiutil.empty_fig("no map", height=view_height) if want_hist else None),
+                0, 0, _cross_hint("no map loaded"), 0)
     data, aff = loaded
     atlas = _atlas_on_grid(specie, data.shape, aff)
     ax = int(axis)
@@ -1466,11 +2134,23 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
         vmax = auto_max
     if vmax <= vmin:
         vmax = vmin + 1e-6
+    # Crosshair: stored in voxels, rebased onto this slice, then converted into the
+    # rendered picture's own (col, row) frame — the same frame a click reports back.
+    orient = niftiutil.slice_orientation(aff, ax)
+    vox = _cross_voxel(cross, data.shape, ax, idx)
+    cross_rc, value = None, None
+    if vox is not None:
+        r, c = niftiutil.voxel_to_slice_rc(data.shape, ax, vox, orient)
+        cross_rc = (c, r)
+        v = float(data[vox])
+        value = v if np.isfinite(v) else None
+    info = _cross_readout(vox, aff, value, ax, idx, data.shape[ax], thr)
     # ``aff`` is the map's affine; the atlas has been resampled onto that same
     # grid, so it orients both volumes and drives the L/R · A/P · S/I labels.
     fig = niftiutil.make_slice_fig(atlas, data, ax, idx, opacity=0.8, z_threshold=thr,
                                    vmin=vmin, vmax=vmax, title=f"{label} · {model}",
-                                   height=view_height, colorscale=colorscale, affine=aff)
+                                   height=view_height, colorscale=colorscale, affine=aff,
+                                   show_crosshair=cross_rc is not None, cross=cross_rc)
     # Counts (and the histogram) are restricted to the search mask — the voxels the
     # searchlight actually visited — so "how many survive this threshold" is out of
     # a meaningful denominator instead of the whole bounding box.
@@ -1478,7 +2158,7 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
     vals = vals[np.isfinite(vals)]
     supra = int(np.sum(vals >= thr))
     hist = _hist_fig(vals, thr, vmax, colorscale, view_height, xtitle) if want_hist else None
-    return fig, hist, supra, int(vals.size)
+    return fig, hist, supra, int(vals.size), info, int(data.shape[ax])
 
 
 def _register_panel(i):
@@ -1493,53 +2173,62 @@ def _register_panel(i):
         Output(f"pl-{i}-histwrap", "style"),
         Output(f"pl-{i}-matrix", "figure"), Output(f"pl-{i}-matrixwrap", "style"),
         Output(f"pl-{i}-note", "children"),
-        Input(f"pl-{i}-enable", "value"), Input(f"pl-{i}-mahfold", "value"),
-        Input(f"pl-{i}-stem", "value"),
+        Output(f"pl-{i}-info", "children"), Output(f"pl-{i}-slices", "children"),
+        Input(f"pl-{i}-enable", "value"), Input(f"pl-{i}-dis", "value"),
+        Input(f"pl-{i}-mahfold", "value"), Input(f"pl-{i}-stem", "value"),
         Input(f"pl-{i}-grouping", "value"), Input(f"pl-{i}-maps", "value"),
         Input(f"pl-{i}-showhist", "value"),
         Input(f"pl-{i}-showmodel", "value"), Input(f"pl-{i}-maptype", "value"),
         Input(f"pl-{i}-axis", "value"), Input(f"pl-{i}-frac", "value"), Input(f"pl-{i}-range", "value"),
-        Input(f"pl-{i}-cmap", "value"),
+        Input(f"pl-{i}-cmap", "value"), Input(f"pl-{i}-cross", "data"),
         Input("ex-roi", "value"), Input("ex-dataver", "data"),
         Input("ex-source-mode", "value"), Input("ex-glm-model", "value"),
         Input("ex-view-height", "value"), Input("ex-grouped", "data"),
         Input("ex-update-trigger", "data"), State("ex-autoupdate", "value"),
         State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-modality", "value"))
-    def _cb(enable, mahfold, stem, grouping, maps, showhist, showmodel, maptype, axis, frac,
-            rng, cmap, roi, _ver, source, glm_model, view_h, grouped, _update_trig, autoupdate,
-            datafolder, dataset, modality):
+    def _cb(enable, dis, mahfold, stem, grouping, maps, showhist, showmodel, maptype, axis,
+            frac, rng, cmap, cross, roi, _ver, source, glm_model, view_h, grouped,
+            _update_trig, autoupdate, datafolder, dataset, modality):
         vh = _int(view_h, DEFAULT_SETTINGS["view_height"])
         gshow = {"height": f"{vh}px"}
-        wrap_show = {}
-        wrap_hide = {"display": "none"}
+        wrap_show = MATRIX_WRAP_SHOW
+        wrap_hide = WRAP_HIDE
         show_matrix = "on" in (showmodel or [])
         show_hist = "on" in (showhist or [])
         hist_wrap = {"flex": "2 1 0", "minWidth": 0} if show_hist else wrap_hide
         if "on" not in (enable or []):        # card off — block hidden anyway
             return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
-                    no_update, wrap_hide, "")
+                    no_update, wrap_hide, "", no_update, no_update)
 
         # Auto-update off: only the slice slider, card on/off, matrix show/hide and
         # the top-bar source/ROI/reload/view-height controls (plus the Update button
         # itself) re-render live; everything else just flags a pending change and
-        # leaves the current map/matrix in place until Update is clicked.
+        # leaves the current map/matrix in place until Update is clicked. Placing
+        # the crosshair is live too — it inspects what is already on screen.
         trig = ctx.triggered_id
         live_triggers = {f"pl-{i}-frac", f"pl-{i}-enable", f"pl-{i}-showmodel",
-                         f"pl-{i}-showhist",
+                         f"pl-{i}-showhist", f"pl-{i}-cross",
                          "ex-update-trigger", "ex-roi", "ex-dataver", "ex-source-mode",
                          "ex-glm-model", "ex-view-height", "ex-grouped"}
         if trig is not None and trig not in live_triggers and "auto" not in (autoupdate or []):
             return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
-                    no_update, no_update, "⏸ change pending — click 🔄 Update")
+                    no_update, no_update, "⏸ change pending — click 🔄 Update",
+                    no_update, no_update)
+        # A click only moves the crosshair: the map has to be redrawn to carry it,
+        # but neither the in-mask histogram nor the model matrix depend on it, and
+        # re-rendering the matrix would re-read its CSV off the network disk.
+        cross_only = trig == f"pl-{i}-cross"
 
-        model = _resolve_model(grouped, mahfold, stem, grouping)
+        model = _resolve_model(grouped, dis, mahfold, stem, grouping)
         if not model:
-            title = html.Span("— pick a fold, model + grouping —", style={"color": MUTED})
+            title = html.Span("— pick a distance method, model + grouping —",
+                              style={"color": MUTED})
             empty = niftiutil.empty_fig("select a model + grouping", height=vh, dark=True)
             mat = _model_heatmap(datafolder, dataset, None) if show_matrix else no_update
             hist = niftiutil.empty_fig("no model", height=vh) if show_hist else no_update
             return (title, empty, gshow, hist, gshow, hist_wrap, mat,
-                    wrap_show if show_matrix else wrap_hide, "no model")
+                    wrap_show if show_matrix else wrap_hide, "no model",
+                    _cross_hint("no model selected"), "0")
 
         # header: results-availability dot + resolved model name
         result_sets = resolve_result_sets(source, datafolder, dataset, modality, roi, glm_model)
@@ -1556,16 +2245,18 @@ def _register_panel(i):
             zt, vmax = 0.0, 1.0
         specie = maps if maps in ("D", "H") else "D"
         label = {"D": "Dog", "H": "Human"}[specie]
-        fig, hist, n, n_mask = _card_species_fig(
+        fig, hist, n, n_mask, info, nsl = _card_species_fig(
             source, datafolder, dataset, modality, roi, glm_model,
             specie, model, maptype, axis, frac, zt, vh,
-            colorscale=cmap, vmax_override=vmax, want_hist=show_hist)
+            colorscale=cmap, vmax_override=vmax,
+            want_hist=show_hist and not cross_only, cross=cross)
         note = f"{label}: {n} / {n_mask} vx ≥ {zt:g} in mask"
 
         # model matrix (only re-rendered / shown when the toggle is on)
-        mat = _model_heatmap(datafolder, dataset, model) if show_matrix else no_update
-        return (title, fig, gshow, (hist if show_hist else no_update), gshow, hist_wrap,
-                mat, wrap_show if show_matrix else wrap_hide, note)
+        mat = (no_update if cross_only or not show_matrix
+               else _model_heatmap(datafolder, dataset, model))
+        return (title, fig, gshow, (hist if hist is not None else no_update), gshow, hist_wrap,
+                mat, wrap_show if show_matrix else wrap_hide, note, info, str(nsl))
     return _cb
 
 
@@ -1581,48 +2272,216 @@ def _register_panel_style(i):
     return _cb_style
 
 
+def _register_panel_click(i):
+    # Click on the brain view -> crosshair voxel. Plotly reports the click in the
+    # *rendered slice's* frame (x = column, y = row), so it has to be run back
+    # through the same orientation the slice was drawn with to name a voxel. The
+    # map is re-resolved here rather than passed along, which is free: it is the
+    # very volume the render callback just loaded, so `_load_map` is a cache hit.
+    # ``allow_duplicate`` because the sync reader writes this same store when a
+    # crosshair arrives from another card of the species.
+    @app.callback(Output(f"pl-{i}-cross", "data", allow_duplicate=True),
+                  Input(f"pl-{i}-map", "clickData"),
+                  State(f"pl-{i}-dis", "value"), State(f"pl-{i}-mahfold", "value"),
+                  State(f"pl-{i}-stem", "value"),
+                  State(f"pl-{i}-grouping", "value"), State(f"pl-{i}-maps", "value"),
+                  State(f"pl-{i}-maptype", "value"), State(f"pl-{i}-axis", "value"),
+                  State(f"pl-{i}-frac", "value"), State(f"pl-{i}-range", "value"),
+                  State("ex-grouped", "data"), State("ex-roi", "value"),
+                  State("ex-source-mode", "value"), State("ex-glm-model", "value"),
+                  State("ex-datafolder", "value"), State("ex-dataset", "value"),
+                  State("ex-modality", "value"), prevent_initial_call=True)
+    def _cb_click(click, dis, mahfold, stem, grouping, maps, maptype, axis, frac, rng,
+                  grouped, roi, source, glm_model, datafolder, dataset, modality):
+        pt = ((click or {}).get("points") or [{}])[0]
+        if pt.get("x") is None or pt.get("y") is None:
+            return no_update
+        model = _resolve_model(grouped, dis, mahfold, stem, grouping)
+        if not model:
+            return no_update
+        try:
+            zt = float(rng[0])
+        except (TypeError, ValueError, IndexError):
+            zt = 0.0
+        specie = maps if maps in ("D", "H") else "D"
+        loaded = _load_map(source, datafolder, dataset, modality, roi, glm_model,
+                           specie, model, maptype, zt)
+        if loaded is None:
+            return no_update
+        data, aff = loaded
+        ax = int(axis)
+        idx = int(round(float(frac) * (data.shape[ax] - 1)))
+        orient = niftiutil.slice_orientation(aff, ax)
+        return list(niftiutil.slice_rc_to_voxel(data.shape, ax, idx,
+                                                pt["y"], pt["x"], orient))
+    return _cb_click
+
+
+def _register_panel_barwrap(i):
+    # Show/hide the model-bar half of the bottom row. Kept out of the big render
+    # callback so toggling it never re-reads a map.
+    @app.callback(Output(f"pl-{i}-barwrap", "style"),
+                  Input(f"pl-{i}-showbar", "value"), Input(f"pl-{i}-enable", "value"))
+    def _cb(showbar, enable):
+        on = "on" in (enable or []) and "on" in (showbar or [])
+        return BAR_WRAP_SHOW if on else WRAP_HIDE
+    return _cb
+
+
+def _register_panel_bar(i):
+    # "What does every model say at this voxel?" — see the section above the data
+    # helpers for the two read modes. This is **button-driven on purpose**: the
+    # scope can be dozens of maps on a network disk. A crosshair move is allowed to
+    # recompute only in *preloaded* mode and only once this context's store is
+    # already warm (so the volumes are in RAM and it costs nothing); otherwise it
+    # just marks the plot stale and waits for the button. That way clicking around
+    # the brain can never kick off a multi-model disk scan by accident.
+    @app.callback(
+        Output(f"pl-{i}-bar", "figure"), Output(f"pl-{i}-bar", "style"),
+        Output(f"pl-{i}-barnote", "children"),
+        Input(f"pl-{i}-bar-btn", "n_clicks"), Input(f"pl-{i}-cross", "data"),
+        State(f"pl-{i}-bar-scope", "value"), State(f"pl-{i}-dis", "value"),
+        State(f"pl-{i}-mahfold", "value"),
+        State(f"pl-{i}-stem", "value"), State(f"pl-{i}-grouping", "value"),
+        State(f"pl-{i}-maps", "value"), State(f"pl-{i}-maptype", "value"),
+        State(f"pl-{i}-axis", "value"), State(f"pl-{i}-frac", "value"),
+        State(f"pl-{i}-range", "value"), State(f"pl-{i}-showbar", "value"),
+        State(f"pl-{i}-enable", "value"),
+        State("ex-grouped", "data"), State("ex-roi", "value"),
+        State("ex-source-mode", "value"), State("ex-glm-model", "value"),
+        State("ex-datafolder", "value"), State("ex-dataset", "value"),
+        State("ex-modality", "value"), State("ex-barmode", "value"),
+        prevent_initial_call=True)
+    def _cb(_n, cross, scope, dis, mahfold, stem, grouping, maps, maptype, axis, frac, rng,
+            showbar, enable, grouped, roi, source, glm_model, datafolder, dataset,
+            modality, barmode):
+        # Nothing to draw for a hidden plot or a switched-off card — and a card can
+        # be off and still receive a crosshair, via 🔗 sync.
+        if "on" not in (showbar or []) or "on" not in (enable or []):
+            return no_update, no_update, no_update
+        specie = maps if maps in ("D", "H") else "D"
+        key = _bar_store_key(source, datafolder, dataset, modality, roi, glm_model,
+                             specie, maptype)
+        warm = bool(_BAR_PRELOAD.get(key))
+        if ctx.triggered_id == f"pl-{i}-cross" and not (barmode == "preload" and warm):
+            return no_update, no_update, "✛ moved — click 📶 Compare to resample"
+
+        gshow = {"height": f"{BAR_MIN_H}px"}
+        try:
+            zt = float(rng[0])
+        except (TypeError, ValueError, IndexError):
+            zt = 0.0
+        # The crosshair belongs to *this card's* map, so that map is what turns it
+        # into a world coordinate. It is already loaded (the render callback just
+        # drew it), so this is a cache hit.
+        model_cur = _resolve_model(grouped, dis, mahfold, stem, grouping)
+        loaded = _load_map(source, datafolder, dataset, modality, roi, glm_model,
+                           specie, model_cur, maptype, zt) if model_cur else None
+        if loaded is None:
+            return (niftiutil.empty_fig("no map on this card", height=BAR_MIN_H), gshow,
+                    "this card has no map to take a crosshair from")
+        data, aff = loaded
+        ax = int(axis)
+        idx = int(round(float(frac) * (data.shape[ax] - 1)))
+        vox = _cross_voxel(cross, data.shape, ax, idx)
+        if vox is None:
+            return (niftiutil.empty_fig("click ✛ then 📶 Compare", height=BAR_MIN_H), gshow,
+                    "no crosshair yet — click the slice first")
+        world = niftiutil.voxel_to_world(vox, aff)
+
+        models, label_mode = _bar_model_list(grouped, dis, mahfold, grouping, scope)
+        n_scope = len(models)
+        models = models[:BAR_MAX_MODELS]
+        store = _BAR_PRELOAD.setdefault(key, {}) if barmode == "preload" else None
+        t0 = time.time()
+        rows = _bar_series(source, datafolder, dataset, modality, roi, glm_model,
+                           specie, models, maptype, zt, world, store)
+        dt = time.time() - t0
+
+        label = {"D": "Dog", "H": "Human"}[specie]
+        maptype_label = dict(MAPTYPES).get(maptype, maptype)
+        xtitle = "group mean (Kendall τ)" if maptype == "mean" else "z"
+        subtitle = ("✛ (%.1f, %.1f, %.1f) mm · %s · %s"
+                    % (world[0], world[1], world[2], label, maptype_label))
+        fig, height = _bar_fig(rows, model_cur, grouping, label_mode, zt, xtitle, subtitle)
+
+        shown = min(n_scope, BAR_MAX_MODELS)
+        note = f"{len(rows)}/{shown} models with a map · {dt:.1f}s"
+        if n_scope > BAR_MAX_MODELS:
+            note += f" (scope capped at {BAR_MAX_MODELS} of {n_scope})"
+        n_err = sum(1 for r in rows if r[2] is not None)
+        if n_err:
+            note += f" · ±SEM on {n_err}"
+        elif maptype == "mean":
+            note += " · no ±SEM (no _std / _mean.json beside the maps)"
+        if barmode == "preload":
+            note += f" · {_bar_cache_mb():.0f} MB held"
+        return fig, {"height": f"{height}px"}, note
+    return _cb
+
+
 for _i in range(MAX_MODELS):
     _register_panel(_i)
     _register_panel_style(_i)
+    _register_panel_click(_i)
+    _register_panel_barwrap(_i)
+    _register_panel_bar(_i)
 
 
 # ---------------------------------------------------------------------------
 # Callbacks — cross-card view sync (slice / axis / threshold / scale / colormap)
 # ---------------------------------------------------------------------------
 # Each card carries a "🔗 sync" toggle. Synced cards of the *same species* share one
-# view: moving the slice/axis, or changing threshold / max / colormap on any of
-# them mirrors to all the others. This is done with two tiny broadcast stores
-# (``ex-sync-D`` / ``ex-sync-H``):
-#   * a single **writer** callback watches every card's SYNC_CONTROLS + sync toggle;
+# view: moving the slice/axis, changing threshold / max / colormap, **or clicking a
+# new crosshair** on any of them mirrors to all the others. This is done with two
+# tiny broadcast stores (``ex-sync-D`` / ``ex-sync-H``):
+#   * a single **writer** callback watches every card's SYNC_KEYS + sync toggle;
 #     when a synced card's control changes (or its sync turns on) it publishes that
-#     card's control values into the store for the card's species.
+#     card's values into the store for the card's species. It *merges* into what is
+#     already there rather than replacing it, so a card that has no crosshair of its
+#     own does not wipe the shared one — it just leaves that key as it found it.
 #   * a per-card **reader** adopts its species store whenever the store (or the
 #     card's own sync / species) changes, writing the shared values back onto its
 #     controls. The loop is self-limiting: a reader only writes values equal to the
 #     store, so the writer it re-triggers republishes the same data and Dash stops.
+#
+# The crosshair travels as a **voxel index**, which is what makes it meaningful in
+# another card at all: same-species maps sit on one voxel grid (the pipeline's hard
+# invariant), so voxel (i, j, k) is the same anatomy in every card of that species.
 
-def _sync_params_from(vals, i):
-    """The SYNC_CONTROLS snapshot for card *i* as a plain dict, ready to store."""
-    return {p: vals[(i, p)] for p in SYNC_CONTROLS}
+def _sync_params_from(vals, i, prev):
+    """Card *i*'s SYNC_KEYS snapshot, merged over the species store's current
+    contents. A ``None`` crosshair is dropped rather than published: "this card has
+    no crosshair" must not clear everyone else's."""
+    params = dict(prev) if isinstance(prev, dict) else {}
+    params.update({p: vals[(i, p)] for p in SYNC_KEYS})
+    if params.get("cross") is None:
+        params.pop("cross", None)
+    return params
 
 
 @app.callback(
     Output("ex-sync-D", "data", allow_duplicate=True),
     Output("ex-sync-H", "data", allow_duplicate=True),
     *[Input(f"pl-{i}-{p}", "value") for p in SYNC_CONTROLS for i in range(MAX_MODELS)],
+    *[Input(f"pl-{i}-{p}", "data") for p in SYNC_STORES for i in range(MAX_MODELS)],
     *[Input(f"pl-{i}-sync", "value") for i in range(MAX_MODELS)],
     *[State(f"pl-{i}-maps", "value") for i in range(MAX_MODELS)],
+    State("ex-sync-D", "data"), State("ex-sync-H", "data"),
     prevent_initial_call=True)
 def cb_sync_write(*args):
     n = MAX_MODELS
-    nctl = len(SYNC_CONTROLS)
-    # Reshape the flat Dash arg list back into addressable groups.
+    nkeys = len(SYNC_KEYS)
+    # Reshape the flat Dash arg list back into addressable groups. Order follows
+    # the declaration above: control values, store data, sync toggles, then the
+    # States (species per card, then the two broadcast stores).
     vals = {}
-    for pi, p in enumerate(SYNC_CONTROLS):
+    for pi, p in enumerate(SYNC_KEYS):
         for i in range(n):
             vals[(i, p)] = args[pi * n + i]
-    syncs = args[nctl * n: (nctl + 1) * n]
-    mapss = args[(nctl + 1) * n: (nctl + 2) * n]
+    syncs = args[nkeys * n: (nkeys + 1) * n]
+    mapss = args[(nkeys + 1) * n: (nkeys + 2) * n]
+    store_d, store_h = args[(nkeys + 2) * n], args[(nkeys + 2) * n + 1]
 
     trig = ctx.triggered_id                      # e.g. "pl-2-frac"
     m = re.match(r"pl-(\d+)-(\w+)$", trig or "")
@@ -1631,28 +2490,28 @@ def cb_sync_write(*args):
     i, prop = int(m.group(1)), m.group(2)
     if "sync" not in (syncs[i] or []):           # only synced cards publish
         return no_update, no_update
-    if prop not in SYNC_CONTROLS and prop != "sync":
+    if prop not in SYNC_KEYS and prop != "sync":
         return no_update, no_update
 
-    params = _sync_params_from(vals, i)
     if mapss[i] == "H":
-        return no_update, params
-    return params, no_update
+        return no_update, _sync_params_from(vals, i, store_h)
+    return _sync_params_from(vals, i, store_d), no_update
 
 
 def _register_panel_sync_read(i):
     @app.callback(
-        [Output(f"pl-{i}-{p}", "value", allow_duplicate=True) for p in SYNC_CONTROLS],
+        [Output(f"pl-{i}-{p}", "value", allow_duplicate=True) for p in SYNC_CONTROLS] +
+        [Output(f"pl-{i}-{p}", "data", allow_duplicate=True) for p in SYNC_STORES],
         Input("ex-sync-D", "data"), Input("ex-sync-H", "data"),
         Input(f"pl-{i}-sync", "value"), Input(f"pl-{i}-maps", "value"),
         prevent_initial_call=True)
     def _cb(store_d, store_h, sync, maps):
         if "sync" not in (sync or []):
-            return [no_update] * len(SYNC_CONTROLS)
+            return [no_update] * len(SYNC_KEYS)
         store = store_h if maps == "H" else store_d
         if not isinstance(store, dict) or not store:
-            return [no_update] * len(SYNC_CONTROLS)
-        return [store.get(p, no_update) for p in SYNC_CONTROLS]
+            return [no_update] * len(SYNC_KEYS)
+        return [store.get(p, no_update) for p in SYNC_KEYS]
     return _cb
 
 
@@ -1723,7 +2582,7 @@ def cb_autoupdate_status(val):
 
 # ---------------------------------------------------------------------------
 def main():
-    ap = argparse.ArgumentParser(description="EmoC RSA model explorer")
+    ap = argparse.ArgumentParser(description="RSA model explorer (any dataset)")
     ap.add_argument("--port", type=int,
                     default=int(os.environ.get("EXPLORER_PORT", os.environ.get("PORT", "8055"))))
     ap.add_argument("--host", default="127.0.0.1")

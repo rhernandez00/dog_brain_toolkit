@@ -2878,15 +2878,56 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     model_vector = np.zeros(len(rsa_model_dict['pairs']))
     # print('Model vector length: ' + str(len(model_vector)))
     
+    # create a list of random numbers from 0 to reps-1
+    rnd_N_list = list(range(0, reps))
+    # randomize the elements in rnd_N_list
+    random.shuffle(rnd_N_list)
+
+    ## prepare to load meta similarity map
     for i, pair in enumerate(rsa_model_dict['pairs']):
         model_vector[i] = rsa_model_dict['model'][pair[0]][pair[1]]
-    
+
+    ## Check if there are any files missing
+    if rnd:
+        # keep track of whether any files are missing
+        files_missing = False
+        for indx, rnd_N in enumerate(rnd_N_list):
+            # if method is not mahalanobis, output includes session and run
+            if dis_method != 'mahalanobis':
+                output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                os.sep + 'RSA_rnd' + os.sep + model + os.sep + rsa_model + os.sep + 
+                f"{specie}-sub-{sub_N:02d}" + os.sep +
+                f"ses-{session}_task-{task}_run-{run_N:02d}")
+            else:
+                output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + 
+                os.sep + 'RSA_rnd' + os.sep + model + os.sep + rsa_model + os.sep + 
+                f"{specie}-sub-{sub_N:02d}")
+            # build output filename _[4 digit padded rnd_N]
+            output_file = os.path.join(output_folder, f"r-{radius}_{dis_method}_{rsa_method}_{rnd_N:04d}.nii.gz")
+            # check if output_file exists
+            if os.path.exists(output_file):
+                print(f"rnd {(indx+1):04d}/{reps:04d} exist, skipping")
+                continue
+            else:
+                files_missing = True
+                break
+        
+
+            ## finish checking if there are files missing
+    # if no files are missing, skip computation
+    if not files_missing and rnd:
+        print(f"All {reps} permutation model comparison files already exist. Skipping computation.")
+        return
+
+
     print("Loading meta similarity map...")
     meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose,
                                                    # output below is written with mask_affine; make sure
                                                    # the step-1 maps are actually on that grid
                                                    ref_affine=mask_affine, ref_label='mask (mask_affine)')
     print("Meta similarity map loaded.")
+    ## finish loading meta similarity map
+
     # create similarity_table (x, y, z) of all voxels in the mask, results will be added here
     similarity_table = np.column_stack(np.where(ref_img > 0))
     # add 1 to x, y, z to match 1-based indexing in itk-snap
@@ -2896,9 +2937,6 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     # initialize warning table
     warning_table = []
 
-    rnd_N_list = list(range(0, reps))
-    # randomize the elements in rnd_N_list
-    random.shuffle(rnd_N_list)
     
 
     for indx, rnd_N in enumerate(rnd_N_list):

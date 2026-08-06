@@ -3,17 +3,29 @@
 models_manifest.py — read the centralized RSA model manifest ``_models.csv``.
 
 ``_models.csv`` is the single source of truth for **which models exist, which
-Mahalanobis fold each belongs to, and which groupings each offers**. It lives in a
-dataset's ``rsa_models`` folder and is (re)built by ``tools/build_models_manifest.py``:
+distance method and Mahalanobis fold each belongs to, and which groupings each
+offers**. It lives in a dataset's ``rsa_models`` folder and is (re)built by
+``tools/build_models_manifest.py``:
 
     {datafolder}/{dataset}/rsa_models/_models.csv
 
-Columns (one row per model *family* × fold):
+Both parts of that path are the caller's — the same file is read for any dataset
+on any data folder, so a new project only has to drop its own ``_models.csv`` in
+its own ``rsa_models`` folder. Nothing here knows about EmoC.
 
+Columns (one row per model *family* × distance method × fold):
+
+    dis_method          pairwise-similarity method (mahalanobis / correlation / ...)
     mah_fold            folding strategy the family was built for (stim-wise / run-wise / ...)
     model               model family stem — matches the "{model}__{grouping}.csv" filenames
     groupings_possible  python-list literal of grouping suffixes, e.g. "['all', 'within', ...]"
     why                 one-line rationale, shown in the dashboards
+
+``dis_method`` is the **outermost** filter: it decides which models exist at all.
+The fold is only a real choice under ``mahalanobis`` (it names how the crossnobis
+folds are cut); for every other method the manifest's ``mah_fold`` cell is
+bookkeeping, so ``dis_index`` pools those rows under the synthetic ``FOLD_ANY``
+and callers skip the fold menu — see ``uses_fold``.
 
 Both ``pipeline_dashboard.py`` and ``hypothesis_explorer.py`` read models through
 here, so a model can be added / edited / re-grouped in one place. The reader is
@@ -39,6 +51,20 @@ MANIFEST_FILENAME = "_models.csv"
 # pooled) and "collapse" (run-wise pooled) both mean "everything together"; the rest
 # follow. Unknown groupings are appended (sorted) after these.
 GROUPING_ORDER = ["all", "collapse", "within", "cross", "dog", "hum"]
+
+# Manifest rows without a ``dis_method`` cell predate the column; they are the
+# Mahalanobis battery.
+DEFAULT_DIS_METHOD = "mahalanobis"
+
+# The only distance method for which the Mahalanobis fold is a real choice — it is
+# what ``--mah_fold`` cuts the crossnobis folds by. Every other method (correlation,
+# ...) has no folding step, so its rows are pooled and the fold menu is skipped.
+FOLD_METHODS = {"mahalanobis"}
+
+# Synthetic fold key holding *every* row of a distance method, regardless of the
+# ``mah_fold`` cell. Always present, and it is the entry callers use when the fold
+# level does not apply.
+FOLD_ANY = "(any fold)"
 
 _ROWS_CACHE = {}   # tuple(normalised dirs) -> parsed rows
 
@@ -103,6 +129,18 @@ def _parse_groupings(raw):
     return [s.strip("[]'\" ")]
 
 
+def normalize_dis_method(raw):
+    """A manifest ``dis_method`` cell as a clean string, defaulting to
+    ``mahalanobis`` when the column is missing or blank (pre-column rows)."""
+    return str(raw or "").strip() or DEFAULT_DIS_METHOD
+
+
+def uses_fold(dis_method):
+    """True when the Mahalanobis fold is a meaningful choice for this distance
+    method — i.e. when the menus should offer a fold level at all."""
+    return normalize_dis_method(dis_method).lower() in FOLD_METHODS
+
+
 def order_groupings(groupings):
     """Groupings in canonical order, de-duplicated; unknown ones sorted at the end."""
     seen, uniq = set(), []
@@ -134,7 +172,7 @@ def load_rows(dirs, use_cache=True):
                 if not model or not fold:
                     continue
                 rows.append({
-                    "dis_method": str(r.get("dis_method", "") or "").strip() or "mahalanobis",
+                    "dis_method": normalize_dis_method(r.get("dis_method")),
                     "mah_fold": fold,
                     "model": model,
                     "groupings": order_groupings(_parse_groupings(r.get("groupings_possible"))),
@@ -165,6 +203,34 @@ def folds(dirs):
     return out
 
 
+def dis_methods(dirs):
+    """Distinct ``dis_method`` values, in manifest order. This is the *first* menu
+    level: it decides which models exist for the analysis being looked at."""
+    out, seen = [], set()
+    for r in load_rows(dirs):
+        d = r["dis_method"]
+        if d not in seen:
+            seen.add(d)
+            out.append(d)
+    return out
+
+
+def folds_for_dis_method(dirs, dis_method):
+    """Distinct ``mah_fold`` values within one distance method, in manifest order.
+    Empty for a method that does not fold (see ``uses_fold``)."""
+    if not uses_fold(dis_method):
+        return []
+    want = normalize_dis_method(dis_method)
+    out, seen = [], set()
+    for r in load_rows(dirs):
+        if r["dis_method"] != want:
+            continue
+        if r["mah_fold"] not in seen:
+            seen.add(r["mah_fold"])
+            out.append(r["mah_fold"])
+    return out
+
+
 def models_for_fold(dirs, mah_fold):
     """Ordered ``[(model, [groupings], why)]`` for one fold (manifest order)."""
     return [(r["model"], r["groupings"], r["why"])
@@ -186,30 +252,59 @@ def concrete_model_name(dirs, model, grouping):
     return suffixed
 
 
-def fold_index(dirs):
-    """The structure backing the model dashboards::
+def _blank_fold():
+    return {"stems": [], "index": {}, "why": {}, "groupings": {}}
 
-        {'folds': [fold, ...],
-         'by_fold': {fold: {'stems':     [stem, ...],
-                            'index':     {stem: {grouping: concrete_model}},
-                            'why':       {stem: why},
-                            'groupings': {stem: [grouping, ...]}}}}
 
-    Empty ``folds`` when there is no ``_models.csv`` (callers fall back to scanning)."""
-    out = {"folds": [], "by_fold": {}}
+def _add_row(fd, dirs, row):
+    """Fold one manifest row into a ``by_fold`` entry (merging when the stem is
+    already there, which is what pooling several folds into ``FOLD_ANY`` does)."""
+    stem = row["model"]
+    if stem not in fd["index"]:
+        fd["stems"].append(stem)
+        fd["index"][stem] = {}
+        fd["why"][stem] = row["why"]
+        fd["groupings"][stem] = []
+    for g in row["groupings"]:
+        fd["index"][stem][g] = concrete_model_name(dirs, stem, g)
+    fd["groupings"][stem] = order_groupings(fd["groupings"][stem] + list(row["groupings"]))
+    # keep the {grouping: model} dict itself in canonical order — the grouping menu
+    # is built from its key order
+    fd["index"][stem] = {g: fd["index"][stem][g] for g in fd["groupings"][stem]}
+
+
+def dis_index(dirs):
+    """The structure backing the model dashboards, **distance method first**::
+
+        {'dis_methods': [dis_method, ...],
+         'by_dis': {dis_method: {
+             'uses_fold': bool,              # is the fold menu meaningful here?
+             'folds':     [mah_fold, ...],   # empty when uses_fold is False
+             'by_fold':   {mah_fold: {'stems':     [stem, ...],
+                                      'index':     {stem: {grouping: concrete_model}},
+                                      'why':       {stem: why},
+                                      'groupings': {stem: [grouping, ...]}},
+                           FOLD_ANY: {...}}}}}   # every row of the method, pooled
+
+    ``FOLD_ANY`` is always present for every method, so a caller that skips the
+    fold level (any non-Mahalanobis method) has one entry to read instead of a
+    special case. Empty ``dis_methods`` when there is no ``_models.csv`` (callers
+    fall back to scanning the folder)."""
+    out = {"dis_methods": [], "by_dis": {}}
     for r in load_rows(dirs):
-        fold, stem = r["mah_fold"], r["model"]
-        if fold not in out["by_fold"]:
-            out["folds"].append(fold)
-            out["by_fold"][fold] = {"stems": [], "index": {}, "why": {}, "groupings": {}}
-        fd = out["by_fold"][fold]
-        if stem not in fd["index"]:
-            fd["stems"].append(stem)
-            fd["index"][stem] = {}
-            fd["why"][stem] = r["why"]
-            fd["groupings"][stem] = r["groupings"]
-        for g in r["groupings"]:
-            fd["index"][stem][g] = concrete_model_name(dirs, stem, g)
+        dis = r["dis_method"]
+        if dis not in out["by_dis"]:
+            out["dis_methods"].append(dis)
+            out["by_dis"][dis] = {"uses_fold": uses_fold(dis), "folds": [],
+                                  "by_fold": {FOLD_ANY: _blank_fold()}}
+        dd = out["by_dis"][dis]
+        if dd["uses_fold"]:
+            fold = r["mah_fold"]
+            if fold not in dd["by_fold"]:
+                dd["folds"].append(fold)
+                dd["by_fold"][fold] = _blank_fold()
+            _add_row(dd["by_fold"][fold], dirs, r)
+        _add_row(dd["by_fold"][FOLD_ANY], dirs, r)
     return out
 
 
@@ -231,9 +326,10 @@ def concrete_models_for_dis_method(dirs, dis_method):
     (e.g. 'mahalanobis' or 'correlation'), each family expanded over its groupings.
     Reads the manifest's ``dis_method`` column; rows without it default to
     'mahalanobis'."""
+    want = normalize_dis_method(dis_method)
     seen, out = set(), []
     for r in load_rows(dirs):
-        if r["dis_method"] != dis_method:
+        if r["dis_method"] != want:
             continue
         for g in r["groupings"]:
             name = concrete_model_name(dirs, r["model"], g)

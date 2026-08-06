@@ -47,6 +47,7 @@ ATLAS_COLORSCALE = "Greys"
 ATLAS_REVERSE = True
 SLICE_BG = "#000000"        # canvas behind a slice — paper *and* plot area
 SLICE_INK = "#ffffff"       # title / orientation labels on that canvas
+CROSSHAIR_COLOR = "#00e5ff"  # click-placed crosshair, readable over hot/grey scales
 PANEL_BG = "#ffffff"
 INK = "#222222"
 SURFACE_COLOR = "#b9c4da"
@@ -75,6 +76,32 @@ def world_to_voxel(world, affine):
     inv = np.linalg.inv(affine)
     w = np.array([*world, 1.0])
     return tuple(np.round((inv @ w)[:3]).astype(int))
+
+
+def sample_world_value(path, world):
+    """(value, voxel) of the volume at world (mm) coordinate ``world``.
+
+    Read through nibabel's array proxy, so **the volume never enters memory** —
+    only the requested voxel is materialised. That is what lets a caller sample
+    one point out of dozens of group maps (e.g. "what does every model say at
+    this voxel?") without holding a few hundred MB of brains at once.
+
+    Each map is indexed through its *own* affine, so maps on different grids are
+    still compared at the same anatomical point. Returns ``(None, vox)`` when the
+    point falls outside the volume or the value is not finite, and
+    ``(None, None)`` when the file cannot be read at all."""
+    try:
+        img = nib.load(path)
+    except Exception:
+        return None, None
+    vox = world_to_voxel(world, img.affine)
+    if any(v < 0 or v >= s for v, s in zip(vox, img.shape[:3])):
+        return None, vox
+    try:
+        val = float(np.asarray(img.dataobj[vox[0], vox[1], vox[2]]))
+    except Exception:
+        return None, vox
+    return (val if np.isfinite(val) else None), vox
 
 
 def resample_lowres_to_highres(low_data, low_affine, high_shape, high_affine):
@@ -218,6 +245,56 @@ def _oriented(vol, axis, idx, orient):
     return sl
 
 
+# --- rendered (row, col) <-> volume voxel ---------------------------------
+# ``_oriented`` throws away which array axis ended up where, but a click on a
+# rendered slice has to come back as a *voxel*, and a crosshair held in voxels
+# has to be drawn at the right place after an axis switch or a flip. These two
+# helpers are the exact inverse pair of that layout, for both the affine-driven
+# path and the legacy ``rot90`` fallback.
+
+def _inplane_axes(axis):
+    return [a for a in range(3) if a != int(axis)]
+
+
+def slice_rc_to_voxel(shape, axis, slice_idx, row, col, orient):
+    """(i, j, k) for a (row, col) position on a slice rendered by ``_oriented``.
+
+    ``row``/``col`` are the Plotly heatmap's y/x data coordinates (row 0 is the
+    bottom of the picture). The result is clipped into the volume."""
+    axis = int(axis)
+    in_axes = _inplane_axes(axis)
+    r, c = int(round(float(row))), int(round(float(col)))
+    vox = [0, 0, 0]
+    vox[axis] = int(slice_idx)
+    if orient is None:                          # rot90(sl)[r, c] == sl[c, B-1-r]
+        vox[in_axes[0]] = c
+        vox[in_axes[1]] = shape[in_axes[1]] - 1 - r
+    else:
+        (up_pos, right_pos), up_flip, right_flip, _labels = orient
+        if up_flip:
+            r = shape[in_axes[up_pos]] - 1 - r
+        if right_flip:
+            c = shape[in_axes[right_pos]] - 1 - c
+        vox[in_axes[up_pos]] = r
+        vox[in_axes[right_pos]] = c
+    return tuple(int(np.clip(v, 0, s - 1)) for v, s in zip(vox, shape))
+
+
+def voxel_to_slice_rc(shape, axis, vox, orient):
+    """(row, col) at which voxel ``vox`` is drawn — inverse of ``slice_rc_to_voxel``."""
+    axis = int(axis)
+    in_axes = _inplane_axes(axis)
+    if orient is None:
+        return shape[in_axes[1]] - 1 - int(vox[in_axes[1]]), int(vox[in_axes[0]])
+    (up_pos, right_pos), up_flip, right_flip, _labels = orient
+    r, c = int(vox[in_axes[up_pos]]), int(vox[in_axes[right_pos]])
+    if up_flip:
+        r = shape[in_axes[up_pos]] - 1 - r
+    if right_flip:
+        c = shape[in_axes[right_pos]] - 1 - c
+    return r, c
+
+
 def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
                    vmin, vmax, show_crosshair=False, cross=None, title="", height=360,
                    colorscale=None, affine=None):
@@ -236,7 +313,11 @@ def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
     ``colorscale`` names the overlay colour map (any Plotly colorscale, e.g.
     ``"Hot"``); ``None`` falls back to the module default. Sub-threshold voxels
     are NaN'd (``_threshold``) so they render fully transparent — i.e. alpha=0
-    below ``z_threshold`` — and everything at/above uses the chosen scale."""
+    below ``z_threshold`` — and everything at/above uses the chosen scale.
+
+    ``cross`` is ``(col, row)`` **in the rendered slice's own coordinates** — the
+    same frame ``clickData`` reports and ``voxel_to_slice_rc`` produces — not a
+    voxel; convert first."""
     if atlas is None:
         return empty_fig(title, height, dark=True)
     axis = int(axis)
@@ -246,8 +327,11 @@ def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
     ov = _oriented(overlay, axis, idx, orient) if overlay is not None else None
 
     fig = go.Figure()
+    # ``hoverinfo="none"`` (not "skip"): no hover label is drawn, but the traces
+    # still emit hover/click events, which is what lets a caller turn a click on
+    # the picture into a voxel. "skip" would silently kill ``clickData``.
     fig.add_trace(go.Heatmap(z=bg, colorscale=ATLAS_COLORSCALE, reversescale=ATLAS_REVERSE,
-                             showscale=False, hoverinfo="skip"))
+                             showscale=False, hoverinfo="none"))
     ov_t = _threshold(ov, z_threshold)
     if ov_t is not None and not np.all(np.isnan(ov_t)):
         fig.add_trace(go.Heatmap(
@@ -255,13 +339,22 @@ def make_slice_fig(atlas, overlay, axis, slice_idx, opacity, z_threshold,
             showscale=True, zmin=vmin, zmax=vmax,
             colorbar=dict(title=dict(text="z", font=dict(color=SLICE_INK)), len=0.6,
                           thickness=10, tickfont=dict(color=SLICE_INK), outlinewidth=0),
-            hoverinfo="skip"))
+            hoverinfo="none", hoverongaps=True))
     if show_crosshair and cross:
         cx, cy = cross
-        fig.add_shape(type="line", x0=cx, x1=cx, y0=0, y1=bg.shape[0] - 1,
-                      line=dict(color="cyan", width=1, dash="dot"))
-        fig.add_shape(type="line", x0=0, x1=bg.shape[1] - 1, y0=cy, y1=cy,
-                      line=dict(color="cyan", width=1, dash="dot"))
+        nr, nc = bg.shape
+        # Classic viewer crosshair: dotted full-width guides with a gap around the
+        # target voxel, so the voxel under the cross stays visible.
+        gap = max(1.5, 0.04 * max(nr, nc))
+        line = dict(color=CROSSHAIR_COLOR, width=1, dash="dot")
+        for y0, y1 in ((-0.5, cy - gap), (cy + gap, nr - 0.5)):
+            if y1 > y0:
+                fig.add_shape(type="line", x0=cx, x1=cx, y0=y0, y1=y1, line=line)
+        for x0, x1 in ((-0.5, cx - gap), (cx + gap, nc - 0.5)):
+            if x1 > x0:
+                fig.add_shape(type="line", x0=x0, x1=x1, y0=cy, y1=cy, line=line)
+        fig.add_shape(type="rect", x0=cx - 0.5, x1=cx + 0.5, y0=cy - 0.5, y1=cy + 0.5,
+                      line=dict(color=CROSSHAIR_COLOR, width=1))
     fig.update_layout(
         title=dict(text=title, font=dict(size=12, color=SLICE_INK)),
         margin=dict(l=4, r=4, t=26, b=4),
