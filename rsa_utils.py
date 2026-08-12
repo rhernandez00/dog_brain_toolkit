@@ -1972,6 +1972,14 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
     print(f"Minimal cluster size for p<{cluster_threshold}: {minimal_cluster_size} voxels")
     # apply minimal cluster size threshold to z_map_thresholded, remove clusters smaller than minimal_cluster_size
     z_map_thresholded = apply_cluster_size_threshold(z_map_thresholded, minimal_cluster_size, connectivity=connectivity, verbose=verbose)
+
+    # Count what survived. "Nothing survived" is a legitimate *result*, not a
+    # failure: the all-zero map is written all the same, so that step 10 and the
+    # dashboard can tell "ran, found nothing" from "never ran".
+    surviving = np.isfinite(z_map_thresholded) & (z_map_thresholded > 0)
+    n_voxels = int(surviving.sum())
+    _, n_clusters = label(surviving, structure=generate_binary_structure(3, 3))
+
     # save corrected z map
     # "P:\userdata\raulh87\data\EmoB\results\RSA\basic\emotion-valence-basic\mean\D-r-3_mahalanobis_kendall_z.nii.gz"
     if mask_type is None:
@@ -1984,6 +1992,36 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
                                 f"{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz")
     nib.save(nib.Nifti1Image(z_map_thresholded, affine=img_affine), corrected_z_map_path)
     print(f"Saved corrected z map to {corrected_z_map_path}")
+    if n_clusters == 0:
+        print(f"NO CLUSTERS survived z>={z_threshold} at a minimal size of "
+              f"{minimal_cluster_size} voxels - the corrected map above is empty "
+              f"(all zeros). This is a completed step, not a failure.")
+    else:
+        print(f"{n_clusters} cluster(s) / {n_voxels} voxel(s) survived correction.")
+
+    # Sidecar with the correction parameters and the outcome, so "empty because
+    # nothing was significant" is explicit rather than inferred from an all-zero
+    # map. Never fail the step over the sidecar: the corrected map is the output.
+    summary_path = corrected_z_map_path[:-len('.nii.gz')] + '.json'
+    try:
+        with open(summary_path, 'w') as f:
+            json.dump({
+                'z_threshold': float(z_threshold),
+                'cluster_threshold': float(cluster_threshold),
+                'minimal_cluster_size': int(minimal_cluster_size),
+                'forced_minimal_cluster_size': forced_minimal_cluster_size,
+                'connectivity': connectivity,
+                'n_clusters': int(n_clusters),
+                'n_voxels': n_voxels,
+                'empty': bool(n_clusters == 0),
+                'corrected_map': os.path.basename(corrected_z_map_path),
+                'created_at': datetime.datetime.now().isoformat(timespec='seconds'),
+            }, f, indent=2)
+        print(f"Saved cluster-correction summary to {summary_path}")
+    except Exception as e:
+        print(f"WARNING: could not write cluster-correction summary "
+              f"({e.__class__.__name__}: {e}); corrected map is still at "
+              f"{corrected_z_map_path}")
     return True
 
 import numpy as np
@@ -2887,10 +2925,11 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
     for i, pair in enumerate(rsa_model_dict['pairs']):
         model_vector[i] = rsa_model_dict['model'][pair[0]][pair[1]]
 
+    files_missing = False
     ## Check if there are any files missing
     if rnd:
         # keep track of whether any files are missing
-        files_missing = False
+        
         for indx, rnd_N in enumerate(rnd_N_list):
             # if method is not mahalanobis, output includes session and run
             if dis_method != 'mahalanobis':
@@ -2910,6 +2949,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
                 continue
             else:
                 files_missing = True
+                print(f"{output_file} does not exist, computing rnd")
                 break
         
 
@@ -2991,7 +3031,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
         for i, (x, y, z) in enumerate(similarity_table[:, :3]):
             xi, yi, zi = int(x), int(y), int(z)
             if i % 100 == 0 and verbose:
-                print(f"Processing voxel {i+1}/{similarity_table.shape[0]} at ({xi},{yi},{zi})")
+                print(f"{specie}-sub-{sub_N:02d}, run-{run_N:02d}, rnd {(indx+1):04d}/{reps:04d}: voxel {i+1}/{similarity_table.shape[0]} at ({xi},{yi},{zi})")
             voxel_meta_vector = meta_similarity_map[xi-1, yi-1, zi-1, :]  # -1 for 0-based indexing
             if np.all(np.isnan(voxel_meta_vector)):
                 # add to warning table
@@ -5420,14 +5460,14 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
         if os.path.exists(mean_model_map_path):
             if not replace_rnd_files:
                 if verbose: 
-                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} exist, skipping...")
+                    print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} exist, skipping...")
                 continue
             else:
                 if verbose:
-                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} exist, replacing...")
+                    print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} exist, replacing...")
         else:
             if verbose:
-                print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d}, file {mean_model_map_path} does not exist, calculating...")
+                print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d}, file {mean_model_map_path} does not exist, calculating...")
         
         # check if temp file exists and how long ago it was modified
         if os.path.exists(mean_model_map_path_tmp):
@@ -5435,14 +5475,14 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             elapsed_time = time() - mod_time
             if elapsed_time < wait_time:
                 if verbose:
-                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} skipping as it is being processed by another instance. Skipping...")
+                    print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} skipping as it is being processed by another instance. Skipping...")
                 continue
             else:
                 if verbose:
-                    print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} old temp found, calculating model similarity map...")
+                    print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} old temp found, calculating model similarity map...")
         else:
             if verbose:
-                print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} temporal file created {mean_model_map_path_tmp}...")
+                print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} temporal file created {mean_model_map_path_tmp}...")
             # create temp file
             with open(mean_model_map_path_tmp, 'w') as f:
                 f.write(f"Temporary file for rnd {rnd_N:05d}\n")
@@ -5474,13 +5514,13 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
         # check if enough files are available
         available_percentage = len(files_list) / file_counter_total
         if available_percentage < min_percentage_available:
-            print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
+            print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} not enough files available ({available_percentage*100:.2f}%). Needed {min_percentage_available*100:.2f}%. Skipping...")
             # remove temp file
             if os.path.exists(mean_model_map_path_tmp):
                 os.remove(mean_model_map_path_tmp)
             continue
         else:
-            print(f"rsa_model {rsa_model} sub_N {sub_N} rnd {(indx+1):05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
+            print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
         try:
             # calculate group model similarity map
             # nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
@@ -6260,6 +6300,24 @@ def extract_clusters_and_peaks(
     # print dimensions of image in terms of number of voxels in each dimension
     print(f"Image shape (voxels): {stat.shape}")
 
+    # threshold (if not already cluster-thresholded)
+    if stat_thresh is not None:
+        mask = stat >= stat_thresh
+    else:
+        mask = np.isfinite(stat) & (stat > 0)  # or however your map is defined
+
+    # connected components (26-connectivity)
+    struct = generate_binary_structure(3, 3)
+    labeled, n_clu = label(mask, structure=struct)
+
+    # An empty (all-zero) map is a valid cluster-corrected result — nothing was
+    # significant. Return before touching the atlas: with no peaks to label there
+    # is nothing to map into atlas space, so a label grid that doesn't match the
+    # stat grid must not turn "no clusters" into a crash.
+    if n_clu == 0:
+        print(f"No suprathreshold clusters in {nifti_path}")
+        return []
+
     # Normalize label inputs (allow passing a NIfTI image or a path)
     if label_nii_data is not None and label_dict is not None:
         if isinstance(label_nii_data, (str, os.PathLike)):
@@ -6285,16 +6343,6 @@ def extract_clusters_and_peaks(
                         "label_nii_data.shape != stat.shape. Pass a nibabel image (nib.load(...)) or "
                         "provide label_affine so peak mm coordinates can be mapped into atlas voxel space."
                     )
-
-    # threshold (if not already cluster-thresholded)
-    if stat_thresh is not None:
-        mask = stat >= stat_thresh
-    else:
-        mask = np.isfinite(stat) & (stat > 0)  # or however your map is defined
-
-    # connected components (26-connectivity)
-    struct = generate_binary_structure(3, 3)
-    labeled, n_clu = label(mask, structure=struct)
 
     results = []
     for c in range(1, n_clu + 1):
@@ -6362,6 +6410,31 @@ def extract_clusters_and_peaks(
             "peak_xyz_mm": cluster_max[2] if cluster_max else None
         })
     return results
+
+# Columns of the step-10 cluster table, in order. The index columns come first;
+# ``write_empty_cluster_table`` writes exactly this header with no rows, so a
+# "nothing was significant" table is read by pandas like any other table (0 rows)
+# instead of being a different shape.
+CLUSTER_TABLE_INDEX = ['cluster_id', 'subpeak_id']
+CLUSTER_TABLE_COLUMNS = [
+    'cluster_size_vox', 'subpeak_Z',
+    'subpeak_x_vox', 'subpeak_y_vox', 'subpeak_z_vox',
+    'subpeak_x_mm', 'subpeak_y_mm', 'subpeak_z_mm', 'region',
+]
+
+
+def write_empty_cluster_table(out_path):
+    """Write a header-only cluster table: the step ran, nothing was significant.
+
+    Used when the cluster-corrected map has no surviving clusters. Writing the
+    real header (rather than no file, or a one-off 'message' column) means every
+    reader — ``pd.read_csv``, the viewer, the pipeline dashboard probe — sees a
+    valid table with zero rows, and the step can report success.
+    """
+    df = pd.DataFrame(columns=CLUSTER_TABLE_INDEX + CLUSTER_TABLE_COLUMNS)
+    df.set_index(CLUSTER_TABLE_INDEX).to_csv(out_path)
+    return df
+
 
 def clusters_to_table(results, out_path, apply_coords_transform=False, atlas_file=None, mask=None):
     """
@@ -6433,7 +6506,7 @@ def clusters_to_table(results, out_path, apply_coords_transform=False, atlas_fil
 
 def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                   dis_method, rsa_method, z_threshold=3.1, min_dist_mm=8.0, max_peaks_per_cluster=3,
-                  label_dict=None, label_nii_data=None, apply_coords_transform=True,
+                  label_dict=None, label_nii_data=None, label_affine=None, apply_coords_transform=True,
                   atlas_file=None, mask=None, mask_type=None):
     res_folder = r"G:\My Drive\Results" + os.sep + dataset + os.sep + "current-results"
     if mask_type is None:
@@ -6473,18 +6546,17 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                          mask_type + os.sep +
                     f"{specie}_{rsa_model}_zt{z_threshold}.csv")
     # res_image = r"P:\userdata\raulh87\data\EmoB\results\RSA\basic-block\old_emotion-valence\mean\D-r-3_mahalanobis_kendall_z_corrected.nii.gz"
-    results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm, 
+    results = extract_clusters_and_peaks(res_image, stat_thresh=None, min_dist_mm=min_dist_mm,
                                          max_peaks_per_cluster=max_peaks_per_cluster, label_dict=label_dict,
-                                         label_nii_data=label_nii_data)
-    # if results is empty, create csv file that indicates there are no clusters found
+                                         label_nii_data=label_nii_data, label_affine=label_affine)
+    # No surviving clusters is a completed analysis with a negative result, not a
+    # failure: write the table anyway (header, zero rows), mirror it like any other,
+    # and return True so the step's completion marker is written and the dashboard
+    # can tell "ran, nothing significant" from "never ran".
     if not results:
-        # create empty csv file with a message
-        df_empty = pd.DataFrame({'message': ['No clusters found']})
-        df_empty.to_csv(out_path, index=False)
-        print(f"No clusters found in {res_image}. Empty table written to: {out_path}")
-
-        
-        return False
+        write_empty_cluster_table(out_path)
+        print(f"No clusters found in {res_image}. "
+              f"Empty table (header only, 0 clusters) written to: {out_path}")
     else:
         clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
         print(f"Files written in: {out_path}")

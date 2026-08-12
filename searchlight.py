@@ -418,12 +418,14 @@ def main():
         # print 
 
         label_dict = pd.read_csv(os.path.join(
-        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"))  
+        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"))
 
-        label_nii_data = nib.load(os.path.join(
+        label_img = nib.load(os.path.join(
         path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
-    )).get_fdata()
-        
+    ))
+        label_nii_data = label_img.get_fdata()
+        label_affine = label_img.affine
+
     elif specie == 'H':
         specie_label = 'Hum'
         apply_coords_transform=True #assumes that atlas and results are in different spaces, applies coordinate transform to get correct labels in excel output
@@ -439,10 +441,20 @@ def main():
         participants = list(range(1, 41))
         
 
-        # get label_nii_data and label_dict for humans
-        label_nii_data = nib.load(os.path.join(
-            datafolder, dataset, 'ROI', 'AAL3.nii.gz'
-        )).get_fdata()
+        # get label_nii_data and label_dict for humans. Use the toolkit's own
+        # AAL3 (Atlas/Hum/AAL3.nii.gz, 91x109x91 MNI 2mm grid) rather than
+        # {dataset}/ROI/AAL3.nii.gz: the latter is a copy resampled onto one
+        # participant's native-EPI grid (96x96x52, see the "Hard invariant: one
+        # voxel grid" note in CLAUDE.md) and no longer matches the corrected
+        # z-maps now that step 0.5 puts human results on the MNI template grid.
+        # extract_clusters_and_peaks maps peak mm coordinates through this
+        # affine into the atlas' own voxel space, so it must be the atlas'
+        # real affine -- not assumed equal to the results grid's.
+        label_img = nib.load(os.path.join(
+            path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL3.nii.gz'
+        ))
+        label_nii_data = label_img.get_fdata()
+        label_affine = label_img.affine
         # get label_dict
         # "P:\userdata\raulh87\github\dog_brain_toolkit\Atlas\Hum\AAL_dictionary.csv"
         label_dict = pd.read_csv(os.path.join(
@@ -768,7 +780,7 @@ def main():
             print("### Step 10: Summarizing results and saving to Excel ###")
             result = rsa_utils.create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                   dis_method=dis_method, rsa_method=rsa_method, z_threshold=z_threshold, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
-                  label_dict=label_dict, label_nii_data=label_nii_data,
+                  label_dict=label_dict, label_nii_data=label_nii_data, label_affine=label_affine,
                   apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask,
                   mask_type=mask_type)
             if result:

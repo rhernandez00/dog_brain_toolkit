@@ -65,6 +65,17 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     statistical map is overwhelmingly near-zero voxels. Toggle **📊 histogram**
     off to hide it and give the slice the full card width. The note under the
     slider reports ``supra-threshold / in-mask`` voxel counts.
+  * **Under the histogram** is a second copy of that [low, high] pair, drawn as a
+    slider **spanning the histogram's own value axis** and aligned to its bars, so
+    a handle sits on the values it is cutting: drag it and watch the threshold
+    move through the distribution. It and the card's range slider are the same two
+    numbers — move either and the other follows. The card's slider keeps the map
+    type's fixed scale (0..8+ for z, -1..1 for an average) so a value stays
+    meaningful when 🔗 sync mirrors it onto another card; this one is as fine as
+    the data, spending its whole track on values that exist in the map. A cap the
+    histogram's range cannot reach (a max of 1.0 over data peaking at 0.35) shows
+    as a handle parked at the edge; nudging it there sets the cap to the top of
+    the distribution.
   * Toggle **🔗 sync** to mirror the view (slice, axis, range, colormap **and the
     crosshair**) across every *other synced card of the same species*: move the
     slice on one and the matching-species cards follow, scales included; click a
@@ -168,6 +179,10 @@ For **Group average** it is an average-similarity range, typically Kendall's tau
 (-1 to 1, default [0, 1]) since that's this pipeline's default RSA method; a
 still-valid current [low, high] survives a switch back to it.
 
+The **slider under the histogram** is the same pair on the distribution's own
+scale (see the card description above): the two are mirrored, and dragging either
+re-renders the map.
+
 Standalone only (own port, default 8055):
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\hypothesis_explorer.py --port 8056
@@ -258,6 +273,14 @@ WRAP_HIDE = {"display": "none"}
 CORRECTED_ZT_TRIES = [3.1, 2.3, 3.9]
 HIST_BINS = 60             # bins in the in-mask value histogram drawn beside the brain
 HIST_SUB_COLOR = "#c9ced6"  # bar colour below the low handle (those voxels are transparent)
+# Plot-area inset of the histogram figure. A second range slider is drawn directly
+# under the histogram, padded by these numbers so its track spans the *plotting
+# area* rather than the graph div: handle and cut line then sit on the same pixel
+# for the same value. They are only the first guess — Plotly grows the left margin
+# to fit the y-axis title and tick labels (38 comes back as ~51), so the alignment
+# is measured off the rendered figure in the page script and the padding corrected.
+HIST_MARGIN_L = 38
+HIST_MARGIN_R = 6
 
 # --- model-comparison bar plot (beside the dissimilarity matrix) -----------
 # "What does every model say at *this* voxel?" — one bar per model, sampled at the
@@ -1435,6 +1458,57 @@ app.index_string = """<!DOCTYPE html>
           window.dash_clientside.set_props('pl-'+i+'-frac', {value:v});
         }
       }, {passive:false});
+
+      // --- keep the slider under a histogram spanning that histogram's bars ---
+      // The slider's min/max are already the figure's x-axis range (the render
+      // callback sets them), so the only thing left is pixels: a handle has to sit
+      // on the bar holding its value. Two corrections, neither knowable in Python:
+      //   * Plotly expands the requested left margin to fit the y-axis title and
+      //     ticks (38 comes back as ~51), so the plot area is measured off the
+      //     drawn SVG — the background rect against the graph div.
+      //   * the slider keeps its handles *inside* its track, so a handle centre
+      //     travels only track width minus one handle. The track is therefore run
+      //     half a handle past the plot area at each end, which puts the centres
+      //     exactly on it. That overhang can exceed the figure's right margin, so
+      //     a negative inset is expressed as a margin (padding cannot be < 0) and
+      //     the slider overhangs into the card's own padding.
+      // Re-measured on any DOM change (a redraw rewrites the SVG) and on resize;
+      // writing the inset is itself a mutation, so it is skipped when nothing moved.
+      function setInset(el, side, v){
+        if(el.dataset['ins'+side]===String(v)) return;
+        el.style['padding'+side] = (v>0? v : 0)+'px';
+        el.style['margin'+side]  = (v<0? v : 0)+'px';
+        el.dataset['ins'+side] = v;
+      }
+      function alignHistSlider(wrap){
+        var box=wrap.parentElement; if(!box) return;
+        var gd=box.querySelector('.js-plotly-plot'); if(!gd) return;
+        var bg=gd.querySelector('.bglayer rect'); if(!bg) return;
+        var g=gd.getBoundingClientRect(), b=bg.getBoundingClientRect();
+        if(!g.width || !b.width) return;
+        var thumb=wrap.querySelector('[role="slider"]');
+        var half=thumb? thumb.getBoundingClientRect().width/2 : 0;
+        setInset(wrap, 'Left',  Math.round(b.left-g.left-half));
+        setInset(wrap, 'Right', Math.round(g.right-b.right-half));
+      }
+      // setTimeout rather than requestAnimationFrame: rAF is suspended while the
+      // tab is hidden, and a queue raised in that state would latch until the tab
+      // came back — a second explorer window would sit misaligned until focused.
+      var alignQueued=false;
+      function queueAlign(){
+        if(alignQueued) return;
+        alignQueued=true;
+        setTimeout(function(){
+          alignQueued=false;
+          var ws=document.querySelectorAll('.pl-histslider');
+          for(var k=0;k<ws.length;k++){ alignHistSlider(ws[k]); }
+        }, 16);
+      }
+      new MutationObserver(queueAlign).observe(document.body,
+        {childList:true, subtree:true, attributes:true,
+         attributeFilter:['style','width','height','transform']});
+      window.addEventListener('resize', queueAlign);
+      queueAlign();
     })();
     // Slice-slider tooltip: the value is a fraction, which is meaningless to read.
     window.dccFunctions = window.dccFunctions || {};
@@ -1623,11 +1697,25 @@ def card(i):
                 dcc.Graph(id=f"pl-{i}-map", style={"height": f"{vh}px"}),
                 html.Span(id=f"pl-{i}-slices", children="0", style={"display": "none"}),
             ], style={"flex": "3 1 0", "minWidth": 0}),
-            html.Div(id=f"pl-{i}-histwrap",
-                     children=dcc.Graph(id=f"pl-{i}-hist", figure=niftiutil.empty_fig(height=vh),
-                                        style={"height": f"{vh}px"},
-                                        config={"displayModeBar": False}),
-                     style={"flex": "2 1 0", "minWidth": 0}),
+            html.Div(id=f"pl-{i}-histwrap", style={"flex": "2 1 0", "minWidth": 0}, children=[
+                dcc.Graph(id=f"pl-{i}-hist", figure=niftiutil.empty_fig(height=vh),
+                          style={"height": f"{vh}px"}, config={"displayModeBar": False}),
+                # Second view of the *same* [low, high] the range slider above the
+                # brain carries — this one spanning the histogram's own value axis,
+                # sitting directly under it and inset by the figure's margins, so
+                # its handles line up with the cut lines drawn in the bars. Move
+                # either slider and the other follows. Because its range is the
+                # data's rather than the map type's fixed scale, it is also the
+                # finer of the two: the whole track is spent on values that exist.
+                html.Div(className="pl-histslider",
+                         style={"padding": f"0 {HIST_MARGIN_R}px 0 {HIST_MARGIN_L}px",
+                                "marginTop": "-6px"}, children=[
+                    dcc.RangeSlider(id=f"pl-{i}-hrange", min=-1, max=1, step=0.02,
+                                    value=[0, 1], allowCross=False, marks=None,
+                                    tooltip={"placement": "bottom", "always_visible": False}),
+                ]),
+                dcc.Store(id=f"pl-{i}-hecho"),   # last [low, high] pushed into it
+            ]),
         ]),
         # --- crosshair read-out (voxel / mm / intensity at the clicked voxel) ---
         html.Div(id=f"pl-{i}-info", style=CROSS_PANEL_STYLE),
@@ -2032,8 +2120,95 @@ for _i in range(MAX_MODELS):
 
 
 # ---------------------------------------------------------------------------
+# Callbacks — the histogram's own [low, high] slider, mirrored with the card's
+# ---------------------------------------------------------------------------
+# The slider under the histogram and the range slider above the brain are two
+# views of one pair of numbers, so moving either moves the other. They are *not*
+# the same scale: the card's slider spans the map type's fixed range (0..8+ for z,
+# -1..1 for a group average) because a value has to survive being mirrored onto a
+# synced card whose data tops out elsewhere, while the histogram's spans the values
+# this map actually holds — which is what lines its handles up with the bars.
+#
+# The two directions are deliberately owned by different callbacks:
+#   * **card slider -> histogram slider** rides along with the render callback
+#     below, which is the one that knows the figure the slider has to match. It
+#     travels with the redraw, so a card gated by Auto-update keeps its slider on
+#     the histogram still on screen instead of on a map it isn't showing yet.
+#   * **histogram slider -> card slider** is this callback.
+# A value pushed the first way can be outside the histogram's range (a max cap of
+# 1.0 over data that peaks at 0.35), so it is clamped and the handle pins at the
+# edge rather than rendering off the track. That clamped push comes straight back
+# here as a change of the histogram slider, and propagating it would quietly
+# rewrite the value the user set — so the pushed pair is remembered in
+# ``pl-{i}-hecho`` and ignored when it returns.
+
+def _pair(val):
+    """[float, float] from a slider value, or None if it isn't one."""
+    try:
+        return [float(val[0]), float(val[1])]
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _pair_clamped(val, lo, hi):
+    """``val`` moved inside [lo, hi], keeping low <= high."""
+    try:
+        lo, hi = float(lo), float(hi)
+    except (TypeError, ValueError):
+        return val
+    a = min(max(val[0], lo), hi)
+    b = min(max(val[1], lo), hi)
+    return [a, max(a, b)]
+
+
+def _pair_eq(a, b):
+    return a is not None and b is not None and abs(a[0] - b[0]) < 1e-9 and abs(a[1] - b[1]) < 1e-9
+
+
+def _register_panel_hrange(i):
+    @app.callback(
+        Output(f"pl-{i}-range", "value", allow_duplicate=True),
+        Input(f"pl-{i}-hrange", "value"),
+        State(f"pl-{i}-range", "value"),
+        State(f"pl-{i}-range", "min"), State(f"pl-{i}-range", "max"),
+        State(f"pl-{i}-hecho", "data"), prevent_initial_call=True)
+    def _cb(hrng, rng, rmin, rmax, echo):
+        hrng, rng = _pair(hrng), _pair(rng)
+        if hrng is None or rng is None:
+            return no_update
+        if _pair_eq(hrng, _pair(echo)):           # our own push coming back
+            return no_update
+        want = _pair_clamped(hrng, rmin, rmax)    # the card's slider can't show more
+        return no_update if _pair_eq(want, rng) else want
+    return _cb
+
+
+for _i in range(MAX_MODELS):
+    _register_panel_hrange(_i)
+
+
+# ---------------------------------------------------------------------------
 # Callbacks — card rendering (one per card)
 # ---------------------------------------------------------------------------
+
+def _hist_axis_range(values, lo):
+    """[left, right] the histogram's value axis spans, or None for no data.
+
+    The low handle is always inside it, so its cut line stays visible even when it
+    sits past the data (e.g. z-threshold 3.1 on an all-sub-threshold map). This is
+    a helper rather than a few lines inside ``_hist_fig`` because the slider drawn
+    *under* the histogram takes its min/max from exactly the same numbers — that
+    is what makes a handle sit on the value its cut line marks."""
+    v = np.asarray(values, dtype=float)
+    v = v[np.isfinite(v)]
+    if v.size == 0:
+        return None
+    lo = float(lo)
+    left, right = min(float(np.min(v)), lo), max(float(np.max(v)), lo)
+    if right <= left:
+        right = left + 1e-6
+    return [left, right]
+
 
 def _hist_fig(values, lo, hi, colorscale, height, xtitle):
     """Distribution of the map's values **inside the search mask**, drawn to sit
@@ -2046,14 +2221,11 @@ def _hist_fig(values, lo, hi, colorscale, height, xtitle):
     came to look at is a flat line on the baseline."""
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]
-    if v.size == 0:
+    bounds = _hist_axis_range(v, lo)
+    if bounds is None:
         return niftiutil.empty_fig("no voxels in mask", height=height)
     lo, hi = float(lo), float(hi)
-    # Always keep the low handle inside the axis so its cut line is visible, even
-    # when it sits past the data (e.g. z-threshold 3.1 on an all-sub-threshold map).
-    left, right = min(float(np.min(v)), lo), max(float(np.max(v)), lo)
-    if right <= left:
-        right = left + 1e-6
+    left, right = bounds
     # Put a bin boundary exactly on the low handle (splitting the bin budget in
     # proportion) so no single bar straddles the cut: with ``np.histogram``'s
     # half-open bins, "left edge >= lo" then selects precisely the voxels the
@@ -2088,7 +2260,7 @@ def _hist_fig(values, lo, hi, colorscale, height, xtitle):
     fig.update_layout(
         title=dict(text=f"{v.size} vx in mask · {n_supra} ≥ {lo:g}",
                    font=dict(size=11, color=INK)),
-        margin=dict(l=38, r=6, t=26, b=30), height=height, bargap=0,
+        margin=dict(l=HIST_MARGIN_L, r=HIST_MARGIN_R, t=26, b=30), height=height, bargap=0,
         paper_bgcolor=PANEL, plot_bgcolor="#ffffff", font_color=INK,
         xaxis=dict(title=dict(text=xtitle, font=dict(size=9, color=MUTED)),
                    tickfont=dict(size=9), gridcolor=LINE,
@@ -2101,20 +2273,23 @@ def _hist_fig(values, lo, hi, colorscale, height, xtitle):
 def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
                       specie, model, maptype, axis, frac, zt, view_height,
                       colorscale=None, vmax_override=None, want_hist=True, cross=None):
-    """(slice figure, histogram figure | None, n supra-threshold in mask, n in mask,
-    crosshair read-out, n slices along the displayed axis).
+    """(slice figure, histogram figure | None, [left, right] of the histogram's
+    value axis | None, n supra-threshold in mask, n in mask, crosshair read-out,
+    n slices along the displayed axis).
 
     The histogram is computed from the *same* loaded volume as the slice, so the
     two always describe one map; it is skipped entirely (None) when the card has
-    its histogram hidden. The slice count is handed back because the wheel-scroll
-    handler needs it to move the slider by exactly one slice per notch."""
+    its histogram hidden. Its axis bounds ride along because the slider drawn under
+    it is given exactly that range. The slice count is handed back because the
+    wheel-scroll handler needs it to move the slider by exactly one slice per
+    notch."""
     loaded = _load_map(source, datafolder, dataset, modality, roi, glm_model,
                        specie, model, maptype, zt)
     label = {"D": "Dog", "H": "Human"}[specie]
     if loaded is None:
         empty = niftiutil.empty_fig(f"{label}: no {maptype} map", height=view_height, dark=True)
         return (empty, (niftiutil.empty_fig("no map", height=view_height) if want_hist else None),
-                0, 0, _cross_hint("no map loaded"), 0)
+                None, 0, 0, _cross_hint("no map loaded"), 0)
     data, aff = loaded
     atlas = _atlas_on_grid(specie, data.shape, aff)
     ax = int(axis)
@@ -2158,14 +2333,31 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
     vals = vals[np.isfinite(vals)]
     supra = int(np.sum(vals >= thr))
     hist = _hist_fig(vals, thr, vmax, colorscale, view_height, xtitle) if want_hist else None
-    return fig, hist, supra, int(vals.size), info, int(data.shape[ax])
+    hbounds = _hist_axis_range(vals, thr) if want_hist else None
+    return fig, hist, hbounds, supra, int(vals.size), info, int(data.shape[ax])
+
+
+def _hslider_props(hbounds, val):
+    """(min, max, step, value, echo) for the slider under the histogram: the
+    figure's own value axis, with the card's [low, high] clamped into it. The step
+    is a four-hundredth of the range rather than the card slider's fixed one — the
+    span here can be a few hundredths of a tau, and a 0.02 step would quantise it
+    to three positions. ``no_update``s when there is no histogram to align to
+    (hidden, or nothing loaded), leaving the slider as the last map left it."""
+    if not hbounds:
+        return (no_update,) * 5
+    lo, hi = float(hbounds[0]), float(hbounds[1])
+    push = _pair_clamped(val, lo, hi)
+    return lo, hi, max((hi - lo) / 400.0, 1e-9), push, push
 
 
 def _register_panel(i):
     # Card *content* — title/status, single-species results map + note, model
     # matrix. The card block's own style (order, width, show/hide, edit outline) is
     # owned by the separate style callback below so the edit-mode arrangement is
-    # never overwritten here.
+    # never overwritten here. It also owns the histogram slider's *scale* (the
+    # figure it just drew is what that slider has to line up with); the value
+    # mirroring itself lives in the callback above.
     @app.callback(
         Output(f"pl-{i}-title", "children"),
         Output(f"pl-{i}-map", "figure"), Output(f"pl-{i}-map", "style"),
@@ -2174,6 +2366,10 @@ def _register_panel(i):
         Output(f"pl-{i}-matrix", "figure"), Output(f"pl-{i}-matrixwrap", "style"),
         Output(f"pl-{i}-note", "children"),
         Output(f"pl-{i}-info", "children"), Output(f"pl-{i}-slices", "children"),
+        Output(f"pl-{i}-hrange", "min"), Output(f"pl-{i}-hrange", "max"),
+        Output(f"pl-{i}-hrange", "step"),
+        Output(f"pl-{i}-hrange", "value", allow_duplicate=True),
+        Output(f"pl-{i}-hecho", "data", allow_duplicate=True),
         Input(f"pl-{i}-enable", "value"), Input(f"pl-{i}-dis", "value"),
         Input(f"pl-{i}-mahfold", "value"), Input(f"pl-{i}-stem", "value"),
         Input(f"pl-{i}-grouping", "value"), Input(f"pl-{i}-maps", "value"),
@@ -2185,7 +2381,8 @@ def _register_panel(i):
         Input("ex-source-mode", "value"), Input("ex-glm-model", "value"),
         Input("ex-view-height", "value"), Input("ex-grouped", "data"),
         Input("ex-update-trigger", "data"), State("ex-autoupdate", "value"),
-        State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-modality", "value"))
+        State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-modality", "value"),
+        prevent_initial_call="initial_duplicate")
     def _cb(enable, dis, mahfold, stem, grouping, maps, showhist, showmodel, maptype, axis,
             frac, rng, cmap, cross, roi, _ver, source, glm_model, view_h, grouped,
             _update_trig, autoupdate, datafolder, dataset, modality):
@@ -2196,9 +2393,10 @@ def _register_panel(i):
         show_matrix = "on" in (showmodel or [])
         show_hist = "on" in (showhist or [])
         hist_wrap = {"flex": "2 1 0", "minWidth": 0} if show_hist else wrap_hide
+        hs_keep = (no_update,) * 5            # histogram slider: leave scale alone
         if "on" not in (enable or []):        # card off — block hidden anyway
             return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
-                    no_update, wrap_hide, "", no_update, no_update)
+                    no_update, wrap_hide, "", no_update, no_update) + hs_keep
 
         # Auto-update off: only the slice slider, card on/off, matrix show/hide and
         # the top-bar source/ROI/reload/view-height controls (plus the Update button
@@ -2213,7 +2411,7 @@ def _register_panel(i):
         if trig is not None and trig not in live_triggers and "auto" not in (autoupdate or []):
             return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
                     no_update, no_update, "⏸ change pending — click 🔄 Update",
-                    no_update, no_update)
+                    no_update, no_update) + hs_keep
         # A click only moves the crosshair: the map has to be redrawn to carry it,
         # but neither the in-mask histogram nor the model matrix depend on it, and
         # re-rendering the matrix would re-read its CSV off the network disk.
@@ -2228,7 +2426,7 @@ def _register_panel(i):
             hist = niftiutil.empty_fig("no model", height=vh) if show_hist else no_update
             return (title, empty, gshow, hist, gshow, hist_wrap, mat,
                     wrap_show if show_matrix else wrap_hide, "no model",
-                    _cross_hint("no model selected"), "0")
+                    _cross_hint("no model selected"), "0") + hs_keep
 
         # header: results-availability dot + resolved model name
         result_sets = resolve_result_sets(source, datafolder, dataset, modality, roi, glm_model)
@@ -2245,7 +2443,7 @@ def _register_panel(i):
             zt, vmax = 0.0, 1.0
         specie = maps if maps in ("D", "H") else "D"
         label = {"D": "Dog", "H": "Human"}[specie]
-        fig, hist, n, n_mask, info, nsl = _card_species_fig(
+        fig, hist, hbounds, n, n_mask, info, nsl = _card_species_fig(
             source, datafolder, dataset, modality, roi, glm_model,
             specie, model, maptype, axis, frac, zt, vh,
             colorscale=cmap, vmax_override=vmax,
@@ -2256,7 +2454,8 @@ def _register_panel(i):
         mat = (no_update if cross_only or not show_matrix
                else _model_heatmap(datafolder, dataset, model))
         return (title, fig, gshow, (hist if hist is not None else no_update), gshow, hist_wrap,
-                mat, wrap_show if show_matrix else wrap_hide, note, info, str(nsl))
+                mat, wrap_show if show_matrix else wrap_hide, note, info, str(nsl)) + \
+            _hslider_props(hbounds, [zt, vmax])
     return _cb
 
 
