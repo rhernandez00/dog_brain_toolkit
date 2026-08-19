@@ -148,18 +148,52 @@ back as you left them.
 
 Auto-update / manual update
 ----------------------------
-The top-bar **Auto-update** toggle (on by default) controls whether changing a
-card's method/fold/model/grouping/species/map-type/axis/threshold/colormap/max
-re-renders that card's map immediately. Turn it off to batch several changes
-and apply them together with **🔄 Update now**. The **slice** slider always
-updates live regardless of this toggle (it's cheap and you want to scrub it),
-as do card on/off, the histogram and matrix show/hide toggles, and the top-bar
-source/ROI/reload/view-height controls. A gated card shows a "pending
-changes" note until you click Update. The status line next to **Models** in
-the header (normally the method/fold/model-family count plus the resolved
-``_models.csv`` path) doubles as a general
-feedback line: it also reports reloads, add/remove-card, layout-reset and
-update actions as they happen.
+Only the changes that make the app read a **file** are held back: a card's
+distance method, fold, model, grouping, **species** and **map type**. Those are
+what the top-bar **Auto-update** toggle (on by default) governs. Turn it off and
+picking a different model costs nothing until you ask for it — with either
+
+  * the card's own **🔄** button in its header (updates *that card only*), or
+  * the top bar's **🔄 Update now** (updates every enabled card).
+
+A gated card shows a "⏸ change pending" note in the meantime.
+
+Everything else is **always live**, because it only re-draws a volume that is
+already in RAM: the slice slider and wheel scroll, the axis, both threshold
+sliders, the colormap, the crosshair, the view height, card on/off and the
+histogram/matrix/bar show-hide toggles, plus the deliberate top-bar actions
+(source, ROI, reload, GLM model). The status line next to **Models** in the
+header (normally the method/fold/model-family count plus the resolved
+``_models.csv`` path) doubles as a general feedback line: it also reports
+reloads, add/remove-card, layout-reset and update actions as they happen.
+
+What is redrawn, and what isn't
+-------------------------------
+Each re-render only rebuilds the parts the change can actually affect, which is
+what keeps scrubbing through slices smooth over a network disk:
+
+  * **slice / axis / crosshair** → the brain view only. The in-mask histogram and
+    the model matrix do not depend on any of them.
+  * **threshold / colormap** → brain + histogram. The matrix still isn't touched.
+  * **model change** → everything, matrix included.
+
+Underneath, volumes are cached **by resolved file path** rather than by the
+selection that produced it, so moving a threshold handle never re-reads the map
+(only a *cluster-corrected* map has the threshold in its file name, and that
+correctly resolves to a different file). Model matrices are cached on the CSV's
+mtime, mask-restricted value arrays on the map's path, and the raw layout's
+directory listings on the folder — all dropped together by **Reload results**.
+
+Terminal log
+------------
+The app narrates itself to the console it was started from: which card
+re-rendered and what triggered it, which files were read off the disk and how
+long they took, which renders were skipped and why, model-bar scans, index
+rebuilds and cache drops. Werkzeug's one-line-per-request access log
+(``POST /_dash-update-component ... 200 -``) is **off** — it fires several times
+per slider notch and says nothing about what the app did. Flags:
+``--verbose`` also logs cache hits and directory listings, ``--quiet`` logs
+warnings only, and ``--http-log`` puts the access log back.
 
 Threshold (per card)
 ---------------------
@@ -193,9 +227,11 @@ and viz/hypothesis_tree.py (result-set scan + per-model status).
 
 import argparse
 import json
+import logging
 import os
 import re
 import sys
+import threading
 import time
 
 import numpy as np
@@ -307,16 +343,88 @@ STATUS_STYLE = {
     "unlinked": ("#c9ced6", "No model"),
 }
 
+VERSION = "1.1.0"
+LAST_CHANGE = ("Performance + terminal log: volumes are cached by resolved file path "
+               "(threshold moves no longer re-read the disk), the model matrix and the "
+               "in-mask histogram are skipped on triggers that cannot change them, each "
+               "card gained its own 🔄 button, and the app narrates what it is doing to "
+               "the terminal while the Werkzeug per-request log is silenced.")
+
+
+# ---------------------------------------------------------------------------
+# Terminal log
+# ---------------------------------------------------------------------------
+# The app talks to one person watching one console, so it writes plain aligned
+# lines rather than going through ``logging``. Werkzeug's per-request line
+# ("POST /_dash-update-component ... 200 -") is silenced in ``main`` because it
+# fires several times per slider notch and says nothing about what the app did;
+# what is printed instead is the *work*: which card re-rendered and why, which
+# file was read off the network disk and how long it took, which reads were
+# served from cache, and which renders were skipped.
+#
+# ``--quiet`` drops everything but warnings; ``--http-log`` puts Werkzeug back.
+
+LOG_LEVEL = 1            # 0 = warnings only, 1 = normal, 2 = verbose (cache hits)
+_LOG_LOCK = threading.Lock()
+_LOG_TAG_W = 8
+
+def log(tag, msg, level=1):
+    """One aligned line on stderr-free stdout: ``10:53:43.123  render   …``."""
+    if level > LOG_LEVEL:
+        return
+    stamp = time.strftime("%H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
+    with _LOG_LOCK:
+        print(f"{stamp}  {tag:<{_LOG_TAG_W}} {msg}", flush=True)
+
+
+def logw(msg):
+    log("warn", msg, level=0)
+
+
+def _mb(arr):
+    try:
+        return arr.nbytes / 1e6
+    except AttributeError:
+        return 0.0
+
+
+class _Timer:
+    """``with _Timer() as t:`` … ``t.ms`` — used to say how long a disk read took."""
+
+    def __enter__(self):
+        self.t0 = time.time()
+        return self
+
+    def __exit__(self, *exc):
+        self.dt = time.time() - self.t0
+
+    @property
+    def ms(self):
+        return self.dt * 1000.0
+
+
 # --- caches (module-level; keyed so re-selecting is instant) --------------
 _ATLAS = {}          # specie -> (hi, hi_aff, lo_aff, lo_shape)
 _ATLAS_ON_GRID = {}  # (specie, shape, aff_hash) -> atlas resampled onto overlay grid
-_PATH_CACHE = {}     # same key as _MAP_CACHE -> resolved map path | None
-_MAP_CACHE = {}      # (source,datafolder,dataset,modality,roi,glm,specie,model,maptype,zt) -> (data,aff) | None
+_PATH_CACHE = {}     # (source,…,maptype,zt-if-corrected) -> resolved map path | None
+# Volumes are cached by **resolved path**, not by the selection that produced it.
+# That is the difference between a threshold drag being free and it re-reading a
+# ~50 MB file off the network disk: the card's [low, high] handles do not change
+# which file a mean/z map lives in, so the same path comes back and the volume is
+# already in RAM. (For a cluster-corrected map the threshold *is* part of the file
+# name — a different path, a different entry, correctly.)
+_VOL_CACHE = {}      # normalised map path -> (data, aff) | None
+_LISTDIR_CACHE = {}  # raw-layout mean folder -> [file names]  (one network listing)
 _RESULT_SETS_CACHE = {}  # source-keyed {'D':set,'H':set} of models with results
 _MASK_CACHE = {}     # (datafolder,dataset,specie,roi) -> (data,aff,path) | None
 _MASK_ON_GRID = {}   # (datafolder,dataset,specie,roi,shape,aff_hash) -> bool array | None
+_MASK_VALS = {}      # (map path, datafolder, dataset, specie, roi) -> (values, axis note)
+_HEATMAP_CACHE = {}  # (model CSV path, mtime, size) -> the built matrix figure
 _MEANLOG_CACHE = {}  # path of a *_mean.json sidecar -> len(file_list) | None
 _BAR_PRELOAD = {}    # bar-plot "preloaded" mode: ctx key -> {map path: (data, aff)}
+# Per-card memo of what was last *pushed to the browser*, so a re-render that
+# cannot have changed the matrix does not ship a 40x40 heatmap down the wire.
+_CARD_MATRIX_KEY = {}   # card index -> (datafolder, dataset, model)
 
 
 def _int(v, default):
@@ -542,17 +650,30 @@ def _mask_bool_for_grid(datafolder, dataset, specie, roi, shape, aff):
     return _MASK_ON_GRID[key]
 
 
-def _mask_values(data, datafolder, dataset, specie, roi, aff):
+def _mask_values(data, datafolder, dataset, specie, roi, aff, map_key=None):
     """(values, axis note) — the map's values inside the search mask, plus a short
     label saying where they came from. Falls back to the map's own non-zero voxels
     when no mask file can be found, and says so, rather than silently
-    histogramming the whole (mostly empty) bounding box."""
+    histogramming the whole (mostly empty) bounding box.
+
+    Cached on ``map_key`` (the map's resolved path) when one is given: pulling a
+    few hundred thousand voxels out of a full volume is the same answer every time
+    for one map + mask, and the histogram is rebuilt on every threshold move."""
+    key = (map_key, datafolder, dataset, specie, roi) if map_key else None
+    if key is not None and key in _MASK_VALS:
+        return _MASK_VALS[key]
     mb, resampled = _mask_bool_for_grid(datafolder, dataset, specie, roi, data.shape, aff)
     if mb is None:
-        return data[np.abs(data) > 1e-6], "value · non-zero voxels (no mask file found)"
-    if resampled:
-        return data[mb], f"value · ⚠ {roi} resampled — mask and map are on different grids"
-    return data[mb], f"value · voxels in {roi}"
+        out = (data[np.abs(data) > 1e-6], "value · non-zero voxels (no mask file found)")
+    elif resampled:
+        out = (data[mb], f"value · ⚠ {roi} resampled — mask and map are on different grids")
+    else:
+        out = (data[mb], f"value · voxels in {roi}")
+    vals = out[0][np.isfinite(out[0])]
+    out = (vals, out[1])
+    if key is not None:
+        _MASK_VALS[key] = out
+    return out
 
 
 # --- Drive (current-results) layout ---------------------------------------
@@ -594,10 +715,21 @@ def _raw_mean_dir(datafolder, dataset, glm_model, model):
 
 
 def _raw_listdir(folder):
-    try:
-        return os.listdir(folder)
-    except OSError:
-        return []
+    """Names in a raw-layout ``mean`` folder, cached per folder.
+
+    This is a network listing and every model/species/maptype combination the bar
+    plot resolves asks for the same one, so it is read once per folder per session
+    and dropped by "Reload results"."""
+    if folder in _LISTDIR_CACHE:
+        return _LISTDIR_CACHE[folder]
+    with _Timer() as t:
+        try:
+            names = os.listdir(folder)
+        except OSError:
+            names = []
+    _LISTDIR_CACHE[folder] = names
+    log("disk", f"listdir {len(names):>3} entries  {t.ms:6.0f} ms  {folder}", level=2)
+    return names
 
 
 def _raw_has_result(mean_dir, specie):
@@ -686,15 +818,23 @@ def _map_path_for(source, datafolder, dataset, modality, roi, glm_model,
     on the network disk (the raw layout lists a directory, the drive layout stats
     several candidates), and the model-bar plot resolves *every model in scope* on
     every recompute, which is what that cost is actually paid for. Dropped by
-    "Reload results" along with the loaded maps."""
+    "Reload results" along with the loaded maps.
+
+    ``zt`` only reaches the file name for a **cluster-corrected** map, so it is
+    dropped from the key for every other map type. Without that, each notch of the
+    threshold slider was a fresh cache miss and a fresh directory listing / stat
+    storm on the network disk for a file that never moved."""
+    zt_key = round(float(zt), 2) if maptype == "corrected" else None
     key = (source, datafolder, dataset, modality, roi, glm_model, specie, model,
-           maptype, round(float(zt), 2))
+           maptype, zt_key)
     if key not in _PATH_CACHE:
         if source == "raw":
             p = _raw_map_path(datafolder, dataset, glm_model, roi, specie, model, maptype, zt)
         else:
             p = _drive_map_path(datafolder, dataset, modality, roi, specie, model, maptype, zt)
         _PATH_CACHE[key] = p
+        if p is None:
+            log("path", f"no {maptype} map for {specie} · {model}", level=2)
     return _PATH_CACHE[key]
 
 
@@ -706,11 +846,15 @@ def resolve_result_sets(source, datafolder, dataset, modality, roi, glm_model):
     else:
         key = ("drive", datafolder, dataset, modality, roi)
     if key not in _RESULT_SETS_CACHE:
-        if source == "raw":
-            _RESULT_SETS_CACHE[key] = raw_models_with_results(datafolder, dataset, glm_model)
-        else:
-            _RESULT_SETS_CACHE[key] = (ht.models_with_results(datafolder, dataset, modality, roi)
-                                       if roi else {"D": set(), "H": set()})
+        with _Timer() as t:
+            if source == "raw":
+                sets = raw_models_with_results(datafolder, dataset, glm_model)
+            else:
+                sets = (ht.models_with_results(datafolder, dataset, modality, roi)
+                        if roi else {"D": set(), "H": set()})
+        _RESULT_SETS_CACHE[key] = sets
+        log("scan", f"results ({source}) — {len(sets.get('D', ()))} D / "
+                    f"{len(sets.get('H', ()))} H models  {t.ms:.0f} ms")
     return _RESULT_SETS_CACHE[key]
 
 
@@ -734,23 +878,44 @@ def describe_source_mode(source, datafolder, dataset, glm_model):
     return datasource.describe_source(dataset)
 
 
-def _load_map(source, datafolder, dataset, modality, roi, glm_model, specie, model, maptype, zt):
-    key = (source, datafolder, dataset, modality, roi, glm_model, specie, model,
-           maptype, round(float(zt), 2))
-    if key in _MAP_CACHE:
-        return _MAP_CACHE[key]
+def _load_volume(path):
+    """``(data, affine)`` for one NIfTI, cached **by path** — or None.
+
+    Keyed by the file rather than by the selection that resolved to it, so two
+    cards showing the same map, and every threshold/colormap/slice change on one
+    card, share a single read. This is the cache that matters: on ``P:`` a 2 mm MNI
+    volume is a multi-second read, and the old key carried the threshold, so every
+    notch of the slider paid it again."""
+    if not path:
+        return None
+    key = os.path.normcase(os.path.abspath(path))
+    if key in _VOL_CACHE:
+        log("cache", f"hit  {os.path.basename(path)}", level=2)
+        return _VOL_CACHE[key]
     result = None
-    if model:
-        path = _map_path_for(source, datafolder, dataset, modality, roi, glm_model,
-                             specie, model, maptype, zt)
-        if path:
-            try:
-                data, aff, _hdr = niftiutil.load_nifti(path)
-                result = (data, aff)
-            except Exception:
-                result = None
-    _MAP_CACHE[key] = result
+    with _Timer() as t:
+        try:
+            data, aff, _hdr = niftiutil.load_nifti(path)
+            result = (data, aff)
+        except Exception as e:
+            logw(f"could not read {path}: {e}")
+    _VOL_CACHE[key] = result
+    if result is not None:
+        # Two models' maps often share a basename and differ only in the folder
+        # above them, so the log shows the tail of the path, not just the name.
+        tail = "/".join(path.replace("\\", "/").split("/")[-3:])
+        log("disk", f"read {tail}  {'x'.join(str(s) for s in result[0].shape)}  "
+                    f"{_mb(result[0]):.1f} MB  {t.ms:.0f} ms")
     return result
+
+
+def _load_map(source, datafolder, dataset, modality, roi, glm_model, specie, model, maptype, zt):
+    """The volume behind one card's selection, via the resolved-path cache."""
+    if not model:
+        return None
+    path = _map_path_for(source, datafolder, dataset, modality, roi, glm_model,
+                         specie, model, maptype, zt)
+    return _load_volume(path)
 
 
 # ---------------------------------------------------------------------------
@@ -992,25 +1157,43 @@ def _resolve_model(grouped, dis, fold, stem, grouping):
 def _model_heatmap(datafolder, dataset, model):
     """Return a Plotly figure of the linked model's dissimilarity matrix, rendered
     with rsa_model_builder.build_cell_heatmap and the model's saved _style.json
-    (falls back to a compact default so a 40x40 matrix stays readable)."""
+    (falls back to a compact default so a 40x40 matrix stays readable).
+
+    Cached on (CSV path, mtime, size): the CSV and its style sidecar live on the
+    network disk and building a 40x40 cell heatmap is not free, while the matrix
+    itself only changes when the file does. Edit the model in the builder and the
+    mtime moves, so the next render picks the new matrix up by itself."""
     if not model:
         return niftiutil.empty_fig("Pick a model + grouping to load its matrix.", height=200)
     path = _find_model_csv(datafolder, dataset, model)
     if not path:
         return niftiutil.empty_fig(f"No matrix CSV for '{model}'.", height=200)
     try:
-        df = pd.read_csv(path, index_col=0)
-        labels = [str(x) for x in df.index]
-        matrix = rmb.enforce_invariants(df.values.astype(float))
-    except Exception as e:
-        return niftiutil.empty_fig(f"Matrix unreadable: {e}", height=200)
-    sidecar = rmb.load_style_sidecar(path)
-    fig_style = sidecar.get("figure_style") if isinstance(sidecar, dict) else None
-    if fig_style:
-        style = {**rmb.DEFAULT_STYLE, **fig_style}
-    else:  # no saved style — compact so the full matrix fits the card
-        style = {**rmb.DEFAULT_STYLE, "cell_size": 20, "val_font_size": 8, "label_font_size": 9}
-    return rmb.build_cell_heatmap(matrix, labels, style)
+        st = os.stat(path)
+        key = (path, st.st_mtime, st.st_size)
+    except OSError:
+        key = (path, None, None)
+    if key in _HEATMAP_CACHE:
+        log("matrix", f"cached  {model}", level=2)
+        return _HEATMAP_CACHE[key]
+    with _Timer() as t:
+        try:
+            df = pd.read_csv(path, index_col=0)
+            labels = [str(x) for x in df.index]
+            matrix = rmb.enforce_invariants(df.values.astype(float))
+        except Exception as e:
+            logw(f"matrix unreadable for {model}: {e}")
+            return niftiutil.empty_fig(f"Matrix unreadable: {e}", height=200)
+        sidecar = rmb.load_style_sidecar(path)
+        fig_style = sidecar.get("figure_style") if isinstance(sidecar, dict) else None
+        if fig_style:
+            style = {**rmb.DEFAULT_STYLE, **fig_style}
+        else:  # no saved style — compact so the full matrix fits the card
+            style = {**rmb.DEFAULT_STYLE, "cell_size": 20, "val_font_size": 8, "label_font_size": 9}
+        fig = rmb.build_cell_heatmap(matrix, labels, style)
+    _HEATMAP_CACHE[key] = fig
+    log("matrix", f"built  {model}  {len(labels)}x{len(labels)}  {t.ms:.0f} ms")
+    return fig
 
 
 # ---------------------------------------------------------------------------
@@ -1613,10 +1796,19 @@ def card(i):
             html.Span(id=f"pl-{i}-title", style={"fontSize": "12px"}),
             html.Span("⠿ drag to reorder", className="pl-drag-hint",
                       style={"fontSize": "11px", "color": MUTED}),
+            # Per-card manual refresh. The top bar's 🔄 Update now applies pending
+            # changes on *every* enabled card; this one applies them on this card
+            # only, which is the difference between re-reading one map and
+            # re-reading six when five of them are already what you want.
+            html.Button("🔄", id=f"pl-{i}-update", n_clicks=0,
+                        title="update this card now (applies its pending changes)",
+                        style={"border": f"1px solid {LINE}", "background": "#eef1f6",
+                               "color": INK, "cursor": "pointer", "fontSize": "12px",
+                               "borderRadius": "6px", "padding": "1px 6px",
+                               "marginLeft": "auto"}),
             html.Button("✕", id=f"pl-{i}-remove", n_clicks=0, title="remove this model",
                         style={"border": "none", "background": "transparent", "color": MUTED,
-                               "cursor": "pointer", "fontSize": "13px", "padding": "0 2px",
-                               "marginLeft": "auto"}),
+                               "cursor": "pointer", "fontSize": "13px", "padding": "0 2px"}),
         ]),
         # --- the model cascade, read left to right: distance method → (Mahalanobis
         # fold) → model → grouping. Each level only offers what the level above
@@ -1805,7 +1997,9 @@ def cb_mode_datafolder(source):
               Input("ex-source-mode", "value"), Input("ex-glm-model", "value"),
               Input("ex-dataver", "data"))
 def cb_rois(modality, datafolder, dataset, source, glm_model, _ver):
-    rois = resolve_roi_options(source, datafolder, dataset, modality, glm_model)
+    with _Timer() as t:
+        rois = resolve_roi_options(source, datafolder, dataset, modality, glm_model)
+    log("scan", f"ROI/mask options ({source}) - {len(rois)} found  {t.ms:.0f} ms")
     return ([{"label": r, "value": r} for r in rois], (rois[0] if rois else None),
             describe_source_mode(source, datafolder, dataset, glm_model))
 
@@ -1820,8 +2014,11 @@ def cb_build_index(datafolder, dataset, _ver):
     menus now come from."""
     _MANIFEST_CACHE.pop((datafolder, dataset), None)   # legacy battery-manifest cache
     mm.clear_cache()                                   # re-read _models.csv from disk
-    grouped = build_index(datafolder, dataset)
+    with _Timer() as t:
+        grouped = build_index(datafolder, dataset)
     dis = grouped.get("dis_methods", [])
+    log("index", f"model menu rebuilt for {dataset} - {len(dis)} distance method(s)  "
+                 f"{t.ms:.0f} ms")
     nstems = sum(len(_fold_data(grouped, d, FOLD_ANY).get("stems", [])) for d in dis)
     path = manifest_file(datafolder, dataset)
     if dis == [FALLBACK_DIS]:
@@ -1837,13 +2034,19 @@ def cb_build_index(datafolder, dataset, _ver):
               State("ex-dataver", "data"), prevent_initial_call=True)
 def cb_reload(_n, ver):
     """Drop cached maps/masks/result-sets so freshly-synced results are re-read."""
+    held = sum(_mb(v[0]) for v in _VOL_CACHE.values() if v is not None)
     _PATH_CACHE.clear()
-    _MAP_CACHE.clear()
+    _VOL_CACHE.clear()
+    _LISTDIR_CACHE.clear()
     _RESULT_SETS_CACHE.clear()
     _MASK_CACHE.clear()
     _MASK_ON_GRID.clear()
+    _MASK_VALS.clear()
+    _HEATMAP_CACHE.clear()
+    _CARD_MATRIX_KEY.clear()
     _MEANLOG_CACHE.clear()
     _BAR_PRELOAD.clear()
+    log("reload", f"caches dropped ({held:.0f} MB of volumes) — results will be re-read")
     return (ver or 0) + 1
 
 
@@ -1968,7 +2171,9 @@ def cb_add_panel(_n, *enables):
     for i, e in enumerate(enables):
         if "on" not in (e or []):
             out[i] = ["on"]
+            log("ui", f"card {i + 1} added")
             return (*out, f"Added model {i + 1}.")
+    log("ui", f"add ignored - all {MAX_MODELS} card slots already in use")
     return (*out, f"All {MAX_MODELS} model slots are already in use.")
 
 
@@ -1977,7 +2182,9 @@ def _register_panel_remove(i):
                   Output("ex-models-title", "children", allow_duplicate=True),
                   Input(f"pl-{i}-remove", "n_clicks"), prevent_initial_call=True)
     def _cb_remove(_n):
-        return [], f"Removed model {i + 1}."       # clear the "on" value -> card hides
+        log("ui", f"card {i + 1} removed")
+        _CARD_MATRIX_KEY.pop(i, None)             # next time it is shown, re-push its matrix
+        return [], f"Removed model {i + 1}."      # clear the "on" value -> card hides
     return _cb_remove
 
 
@@ -2007,6 +2214,7 @@ def cb_save_settings(source, datafolder, glm_model, dataset, modality, view_h, l
         "layout": _clean_layout(layout),   # model-card order + gap
     }
     save_settings(s)
+    log("settings", f"saved - {s['source_mode']} / {s['dataset']} / {s['datafolder']}", level=2)
     return s
 
 
@@ -2085,11 +2293,27 @@ def _register_panel_zt_range(i):
         Input(f"pl-{i}-maps", "value"), Input("ex-roi", "value"),
         Input("ex-source-mode", "value"), Input("ex-glm-model", "value"),
         Input("ex-grouped", "data"), Input("ex-dataver", "data"),
+        Input(f"pl-{i}-update", "n_clicks"), Input("ex-update-trigger", "data"),
+        Input(f"pl-{i}-enable", "value"), State("ex-autoupdate", "value"),
         State(f"pl-{i}-range", "value"), State("ex-datafolder", "value"),
         State("ex-dataset", "value"), State("ex-modality", "value"),
         prevent_initial_call="initial_duplicate")
     def _cb(maptype, dis, mahfold, stem, grouping, maps, roi, source, glm_model, grouped,
-            _ver, cur, datafolder, dataset, modality):
+            _ver, _card_update, _update_trig, enable, autoupdate, cur, datafolder, dataset,
+            modality):
+        # A switched-off card is not on screen, and this callback *reads the map* to
+        # find its peak — so on a page load with five cards off it was five network
+        # reads for sliders nobody can see.
+        if "on" not in (enable or []):
+            return (no_update,) * 6
+        # Reading the map is also why Auto-update off has to gate it exactly like
+        # the render callback does — otherwise picking a model in "manual" mode
+        # would still pay the network read that manual mode exists to defer.
+        trig = ctx.triggered_id
+        gated = {f"pl-{i}-dis", f"pl-{i}-mahfold", f"pl-{i}-stem",
+                 f"pl-{i}-grouping", f"pl-{i}-maps", f"pl-{i}-maptype"}
+        if trig in gated and "auto" not in (autoupdate or []):
+            return (no_update,) * 6
         if maptype == "mean":
             r = ZT_RANGE_MEAN
             try:
@@ -2283,8 +2507,9 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
     it is given exactly that range. The slice count is handed back because the
     wheel-scroll handler needs it to move the slider by exactly one slice per
     notch."""
-    loaded = _load_map(source, datafolder, dataset, modality, roi, glm_model,
-                       specie, model, maptype, zt)
+    map_path = _map_path_for(source, datafolder, dataset, modality, roi, glm_model,
+                             specie, model, maptype, zt) if model else None
+    loaded = _load_volume(map_path)
     label = {"D": "Dog", "H": "Human"}[specie]
     if loaded is None:
         empty = niftiutil.empty_fig(f"{label}: no {maptype} map", height=view_height, dark=True)
@@ -2329,8 +2554,8 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
     # Counts (and the histogram) are restricted to the search mask — the voxels the
     # searchlight actually visited — so "how many survive this threshold" is out of
     # a meaningful denominator instead of the whole bounding box.
-    vals, xtitle = _mask_values(data, datafolder, dataset, specie, roi, aff)
-    vals = vals[np.isfinite(vals)]
+    vals, xtitle = _mask_values(data, datafolder, dataset, specie, roi, aff,
+                                map_key=map_path)
     supra = int(np.sum(vals >= thr))
     hist = _hist_fig(vals, thr, vmax, colorscale, view_height, xtitle) if want_hist else None
     hbounds = _hist_axis_range(vals, thr) if want_hist else None
@@ -2377,6 +2602,7 @@ def _register_panel(i):
         Input(f"pl-{i}-showmodel", "value"), Input(f"pl-{i}-maptype", "value"),
         Input(f"pl-{i}-axis", "value"), Input(f"pl-{i}-frac", "value"), Input(f"pl-{i}-range", "value"),
         Input(f"pl-{i}-cmap", "value"), Input(f"pl-{i}-cross", "data"),
+        Input(f"pl-{i}-update", "n_clicks"),
         Input("ex-roi", "value"), Input("ex-dataver", "data"),
         Input("ex-source-mode", "value"), Input("ex-glm-model", "value"),
         Input("ex-view-height", "value"), Input("ex-grouped", "data"),
@@ -2384,8 +2610,9 @@ def _register_panel(i):
         State("ex-datafolder", "value"), State("ex-dataset", "value"), State("ex-modality", "value"),
         prevent_initial_call="initial_duplicate")
     def _cb(enable, dis, mahfold, stem, grouping, maps, showhist, showmodel, maptype, axis,
-            frac, rng, cmap, cross, roi, _ver, source, glm_model, view_h, grouped,
+            frac, rng, cmap, cross, _card_update, roi, _ver, source, glm_model, view_h, grouped,
             _update_trig, autoupdate, datafolder, dataset, modality):
+        t_start = time.time()
         vh = _int(view_h, DEFAULT_SETTINGS["view_height"])
         gshow = {"height": f"{vh}px"}
         wrap_show = MATRIX_WRAP_SHOW
@@ -2394,31 +2621,38 @@ def _register_panel(i):
         show_hist = "on" in (showhist or [])
         hist_wrap = {"flex": "2 1 0", "minWidth": 0} if show_hist else wrap_hide
         hs_keep = (no_update,) * 5            # histogram slider: leave scale alone
+        trig = ctx.triggered_id
         if "on" not in (enable or []):        # card off — block hidden anyway
             return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
                     no_update, wrap_hide, "", no_update, no_update) + hs_keep
 
-        # Auto-update off: only the slice slider, card on/off, matrix show/hide and
-        # the top-bar source/ROI/reload/view-height controls (plus the Update button
-        # itself) re-render live; everything else just flags a pending change and
-        # leaves the current map/matrix in place until Update is clicked. Placing
-        # the crosshair is live too — it inspects what is already on screen.
-        trig = ctx.triggered_id
-        live_triggers = {f"pl-{i}-frac", f"pl-{i}-enable", f"pl-{i}-showmodel",
-                         f"pl-{i}-showhist", f"pl-{i}-cross",
-                         "ex-update-trigger", "ex-roi", "ex-dataver", "ex-source-mode",
-                         "ex-glm-model", "ex-view-height", "ex-grouped"}
-        if trig is not None and trig not in live_triggers and "auto" not in (autoupdate or []):
+        # --- what this trigger can actually change --------------------------
+        # Three tiers, and keeping them apart is most of what makes the app feel
+        # quick. The old code redrew *everything* — including re-reading the model
+        # CSV off the network disk — for a mouse-wheel notch on the slice.
+        #
+        #   GATED  — changes *which file* is read (model cascade, species, map
+        #            type). Only these wait for Auto-update / 🔄, because only
+        #            these can cost a network read.
+        #   VIEW   — re-draws what is already in RAM (slice, axis, threshold,
+        #            colormap, crosshair, view height). Always live: with the
+        #            volume cached by path these are pure re-renders.
+        #   FULL   — the deliberate top-bar actions and the two Update buttons.
+        gated_triggers = {f"pl-{i}-dis", f"pl-{i}-mahfold", f"pl-{i}-stem",
+                          f"pl-{i}-grouping", f"pl-{i}-maps", f"pl-{i}-maptype"}
+        if trig in gated_triggers and "auto" not in (autoupdate or []):
+            log("skip", f"card {i + 1}  {trig} changed — gated, waiting for 🔄")
             return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
-                    no_update, no_update, "⏸ change pending — click 🔄 Update",
+                    no_update, no_update, "⏸ change pending — click 🔄 on this card",
                     no_update, no_update) + hs_keep
-        # A click only moves the crosshair: the map has to be redrawn to carry it,
-        # but neither the in-mask histogram nor the model matrix depend on it, and
-        # re-rendering the matrix would re-read its CSV off the network disk.
-        cross_only = trig == f"pl-{i}-cross"
+        # A click only moves the crosshair, and neither the in-mask histogram nor
+        # the model matrix depend on it — nor do they depend on which slice or axis
+        # is on screen. Only the slice figure has to be rebuilt for those.
+        map_only = trig in (f"pl-{i}-cross", f"pl-{i}-frac", f"pl-{i}-axis")
 
         model = _resolve_model(grouped, dis, mahfold, stem, grouping)
         if not model:
+            _CARD_MATRIX_KEY.pop(i, None)
             title = html.Span("— pick a distance method, model + grouping —",
                               style={"color": MUTED})
             empty = niftiutil.empty_fig("select a model + grouping", height=vh, dark=True)
@@ -2447,12 +2681,31 @@ def _register_panel(i):
             source, datafolder, dataset, modality, roi, glm_model,
             specie, model, maptype, axis, frac, zt, vh,
             colorscale=cmap, vmax_override=vmax,
-            want_hist=show_hist and not cross_only, cross=cross)
+            want_hist=show_hist and not map_only, cross=cross)
         note = f"{label}: {n} / {n_mask} vx ≥ {zt:g} in mask"
 
-        # model matrix (only re-rendered / shown when the toggle is on)
-        mat = (no_update if cross_only or not show_matrix
-               else _model_heatmap(datafolder, dataset, model))
+        # Model matrix. It depends on nothing but (data folder, dataset, model), so
+        # it is only shipped when one of those actually moved since this card last
+        # pushed one — otherwise a slice scrub would send a 40x40 heatmap down the
+        # wire per notch. ``trig is None`` is a fresh page load: push it then, or a
+        # reloaded browser would come up with an empty matrix slot.
+        mkey = (datafolder, dataset, model)
+        if not show_matrix:
+            mat = no_update
+        elif trig is None or _CARD_MATRIX_KEY.get(i) != mkey or trig == f"pl-{i}-showmodel":
+            mat = _model_heatmap(datafolder, dataset, model)
+            _CARD_MATRIX_KEY[i] = mkey
+        else:
+            mat = no_update
+
+        drew = ["map"]
+        if hist is not None:
+            drew.append("histogram")
+        if mat is not no_update:
+            drew.append("matrix")
+        log("render", f"card {i + 1}  {model} · {specie} · {maptype}  "
+                      f"[{trig or 'page load'}]  {'+'.join(drew)}  "
+                      f"{(time.time() - t_start) * 1000:.0f} ms")
         return (title, fig, gshow, (hist if hist is not None else no_update), gshow, hist_wrap,
                 mat, wrap_show if show_matrix else wrap_hide, note, info, str(nsl)) + \
             _hslider_props(hbounds, [zt, vmax])
@@ -2592,10 +2845,13 @@ def _register_panel_bar(i):
         n_scope = len(models)
         models = models[:BAR_MAX_MODELS]
         store = _BAR_PRELOAD.setdefault(key, {}) if barmode == "preload" else None
+        log("bars", f"card {i + 1}  sampling {len(models)} model(s) [{scope}] at "
+                    f"({world[0]:.0f}, {world[1]:.0f}, {world[2]:.0f}) mm - {barmode} mode")
         t0 = time.time()
         rows = _bar_series(source, datafolder, dataset, modality, roi, glm_model,
                            specie, models, maptype, zt, world, store)
         dt = time.time() - t0
+        log("bars", f"card {i + 1}  {len(rows)} model(s) had a map  {dt:.1f} s")
 
         label = {"D": "Dog", "H": "Human"}[specie]
         maptype_label = dict(MAPTYPES).get(maptype, maptype)
@@ -2768,15 +3024,19 @@ def cb_update_now(_n, ver, *enables):
     live trigger regardless of the auto-update toggle — applies any pending
     changes on enabled cards."""
     n_on = sum(1 for e in enables if "on" in (e or []))
+    log("update", f"Update now - refreshing {n_on} enabled card(s)")
     return (ver or 0) + 1, f"Updated {n_on} enabled card(s)."
 
 
 @app.callback(Output("ex-models-title", "children", allow_duplicate=True),
               Input("ex-autoupdate", "value"), prevent_initial_call=True)
 def cb_autoupdate_status(val):
-    if "auto" in (val or []):
+    on = "auto" in (val or [])
+    log("update", f"auto-update {'ON' if on else 'OFF'}")
+    if on:
         return "Auto-update ON — cards refresh as you change settings."
-    return "Auto-update OFF — change settings, then click 🔄 Update now to apply."
+    return ("Auto-update OFF — change the model/species/map type, then click 🔄 on a card "
+            "(or 🔄 Update now for all).")
 
 
 # ---------------------------------------------------------------------------
@@ -2786,11 +3046,45 @@ def main():
                     default=int(os.environ.get("EXPLORER_PORT", os.environ.get("PORT", "8055"))))
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--debug", action="store_true")
+    ap.add_argument("--verbose", action="store_true",
+                    help="also log cache hits, directory listings and settings saves")
+    ap.add_argument("--quiet", action="store_true",
+                    help="log warnings only")
+    ap.add_argument("--http-log", action="store_true",
+                    help="restore Werkzeug's one-line-per-request access log "
+                         "(off by default: it fires several times per slider notch "
+                         "and says nothing about what the app did)")
     args = ap.parse_args()
-    print(f"[hypothesis_explorer] settings : {SETTINGS_PATH}")
-    print(f"[hypothesis_explorer] source   : {SETTINGS['source_mode']}  "
-          f"datafolder={_initial_datafolder(SETTINGS)}")
-    print(f"[hypothesis_explorer] open http://{args.host}:{args.port}")
+
+    global LOG_LEVEL
+    LOG_LEVEL = 0 if args.quiet else (2 if args.verbose else 1)
+
+    # Werkzeug logs every POST /_dash-update-component at INFO. A single drag of a
+    # slider produces a wall of those and buries the app's own messages, so the
+    # access log is muted and what the app prints instead is the work it did.
+    # ERROR (not WARNING) is deliberate: the "Running on http://…" banner and the
+    # development-server warning are logged at those levels too, and we print our
+    # own startup lines below.
+    if not args.http_log:
+        logging.getLogger("werkzeug").setLevel(logging.ERROR)
+        app.logger.setLevel(logging.ERROR)
+        try:    # Flask's own " * Serving Flask app …" banner goes through click, not
+                # the logger, so muting the logger alone leaves it behind.
+            import flask.cli
+            flask.cli.show_server_banner = lambda *a, **k: None
+        except Exception:
+            pass
+
+    print()
+    log("boot", f"RSA Model Explorer v{VERSION}")
+    log("boot", f"settings   {SETTINGS_PATH}")
+    log("boot", f"source     {SETTINGS['source_mode']}  "
+                f"datafolder={_initial_datafolder(SETTINGS)}")
+    log("boot", f"dataset    {SETTINGS['dataset']}  glm={SETTINGS['glm_model']}")
+    log("boot", f"log level  {['warnings only', 'normal', 'verbose'][LOG_LEVEL]}"
+                f"{'' if args.http_log else '  (HTTP access log muted)'}")
+    log("boot", f"open       http://{args.host}:{args.port}")
+    print()
     app.run(debug=args.debug, use_reloader=False, host=args.host, port=args.port)
 
 
