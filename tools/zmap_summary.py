@@ -39,16 +39,16 @@ Outputs land in ``--out_dir`` (default ``tools/zmap_summary_out/{dataset}``):
 CSVs for every table, the conjunction NIfTIs, PNG figures, and
 ``report.md`` tying them together.
 
-Usage
------
+Usage (Anaconda Prompt)
+-----------------------
   # everything, both species, default parameters
-  python tools/zmap_summary.py
+  python \github\dog_brain_toolkit\tools\zmap_summary.py
 
   # one distance method, no figures (faster)
-  python tools/zmap_summary.py --dis_method mahalanobis --no_figures
+  python \github\dog_brain_toolkit\tools\zmap_summary.py --dis_method mahalanobis --no_figures
 
   # a different threshold, dogs only
-  python tools/zmap_summary.py --species D --z_threshold 2.3
+  python \github\dog_brain_toolkit\tools\zmap_summary.py --species D --z_threshold 2.3
 
 Reading ~500 maps off the network disk is the slow part; it is threaded
 (``--workers``) and the whole run is well under an hour on EmoC.
@@ -1058,7 +1058,8 @@ def write_report(out_dir, args, per_map, peaks, sim, order, agree, method_cmp,
                      'need_step_10': int((d.has_corrected & ~d.has_table).sum())})
     A(md_table(pd.DataFrame(gaps)))
     A("\nQueue the gaps with, e.g.:\n\n```bash\n"
-      "python tools/schedule_steps.py --steps 7,8,9,10 --dry_run\n```\n")
+      r"python \github\dog_brain_toolkit\tools\schedule_steps.py "
+      "--steps 7,8,9,10 --dry_run\n```\n")
 
     if figures:
         A("\n## Figures\n")
