@@ -5,38 +5,48 @@ hypothesis_explorer.py — RSA model explorer (standalone Dash app, any dataset)
 This app is a **row of self-contained model cards** — no hypothesis tree. You
 **add** and **remove** cards, and each card is one RSA model you want to look at:
 
-  * The card's model is picked in **two visual steps**, and neither of them is a
+  * The card's model is picked in **three visual steps**, and none of them is a
     list of names. The analysis is organised as ``distance method → (Mahalanobis
-    fold) → model → grouping``, but that is four dropdowns of jargon in front of a
-    question with two halves — *which stimulus pairs am I comparing* and *which
-    hypothesis am I testing* — so the card asks those two, as pictures.
+    fold) → model → grouping``, which is four dropdowns of jargon; the card asks
+    the same four values as three pictures, in the same order.
 
-      ① **How the stimuli are grouped.** One tile per (distance method, fold,
-        grouping) the dataset actually offers, each drawn as **that grouping's own
-        stimulus grid**: the design's two levels of categorisation, one row of
-        icons per **agent block** (🐕 Dog-shown / 🧑 Human-shown) and one icon
-        per **category** inside it (🤩 positive anticipation, 😀 happiness,
-        😠 anger, 😨 fear, 😐 neutral). Boxes carry the meaning: one box
-        around everything is *pooled* (every pair enters), a box per row is
-        *within* (only pairs inside a row), two boxes joined by ⇅ is *cross*
-        (only pairs that bridge them), and a single lit row over a dimmed one is
-        *Dog only* / *Human only*. The distance method and fold ride along as a
-        small badge, so the two tiles that draw the same picture under different
-        methods are still told apart. Rows and columns are read off a model's own
-        matrix, so another dataset draws *its* grid, and an unknown label falls
-        back to its initials.
-      ② **Which hypothesis.** A gallery of the models available *under that
-        grouping* — each tile is the model's **own dissimilarity matrix**, drawn as
-        a thumbnail, with its name and an ⓘ carrying the ``why`` column of
-        ``_models.csv`` as its tooltip.
+      ① **Stimulus set.** One tile per (``dis_method``, ``mah_fold``) pair the
+        dataset offers. That pair is not two settings — it is **which stimulus set
+        the RDM is built over**, and therefore which models exist at all, since a
+        model built for one pairwise-similarity method is not comparable with
+        another's. So the tile *is* that set, drawn as its grid: one row of icons
+        per **agent block** (🐕 Dog-shown / 🧑 Human-shown), one cell per
+        **category** (🤩 positive anticipation, 😀 happiness, 😠 anger,
+        😨 fear, 😐 neutral), and each cell carrying its **exemplar count**
+        when it holds more than one. On EmoC that draws the difference exactly:
+        ``mahalanobis · stim-wise`` is a 10x10 RDM over conditions (``DogP``),
+        ``correlation · run-wise`` a 40x40 over four exemplars each
+        (``DogP1``..``DogP4``, shown as ×4 on every icon). The method and fold name
+        the tile underneath, with the number of models in the set. **Picking a set
+        re-fills step ②.**
+      ② **Which hypothesis.** A gallery of that set's models — each tile is the
+        model's **own dissimilarity matrix**, drawn as a thumbnail, with its name,
+        an ⓘ carrying the ``why`` column of ``_models.csv`` as its tooltip, and the
+        groupings that hypothesis actually offers.
+      ③ **Which pairs enter.** The same stimulus grid again, now *boxed*: one box
+        around everything is **pooled** (every pair enters), a box per row is
+        **within** (only pairs inside a row), two boxes joined by ⇅ is **cross**
+        (only the pairs that bridge them), and a single lit row over a dimmed one is
+        **Dog only** / **Human only**. Only the groupings the chosen hypothesis has
+        a model file for are offered.
+
+    Rows, columns and exemplar count are read off a model's own matrix, so another
+    dataset draws *its* grid and an unknown label falls back to its initials.
 
     Steps are shown **one at a time**, in order: a fresh card opens ① alone,
-    answering it swaps to ②, and answering that collapses both into a breadcrumb
-    (``◧ grouping · method`` · ``▦ model``) so the card only spends screen space on
-    choices that are still open. Click either chip to reopen its step.
+    answering it moves to ②, then ③, and answering that collapses all three into a
+    breadcrumb (``◈ set`` · ``▦ model`` · ``◧ grouping``) so the card only spends
+    screen space on choices that are still open. Click a chip to reopen its step; a
+    change that invalidates a level below clears it and re-opens that step by
+    itself.
 
     Stem + grouping resolve to the concrete ``{stem}__{grouping}`` model, and the
-    three cascade values are mirrored into hidden inputs, so everything downstream
+    cascade's own values are mirrored into hidden inputs, so everything downstream
     still reads them as before. The whole picker is driven by the dataset's central
     ``rsa_models/_models.csv`` manifest (built by ``tools/build_models_manifest.py``),
     read from ``{data folder}/{dataset}/rsa_models/`` — both taken from the top bar,
@@ -44,7 +54,7 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     the resolved path is printed in the status line beside **Models**. Edit that one
     file to add, retire, or re-group models. When the manifest is absent the card
     falls back to scanning the folder and offering every valid ``__{grouping}``
-    model under one synthetic method.
+    model under one synthetic set.
   * Each card is **one species** — its own column: the **Species** control picks
     **Dog** or **Human** and the card draws that species' results map as a 2D atlas
     slice (put Dog and Human side by side in two cards). **Which** map is drawn and
@@ -261,7 +271,7 @@ import pandas as pd
 import plotly.colors as pcolors
 import plotly.graph_objects as go
 from dash import Dash, ctx, dcc, html, no_update
-from dash.dependencies import Input, Output, State
+from dash.dependencies import ALL, Input, Output, State
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _REPO_ROOT = os.path.dirname(_THIS_DIR)  # tools/ lives one level below the repo root
@@ -372,18 +382,19 @@ STATUS_STYLE = {
     "unlinked": ("#c9ced6", "No model"),
 }
 
-VERSION = "1.2.0"
-LAST_CHANGE = ("Visual model picker + floating map switches. The four-dropdown cascade "
-               "inside a card is replaced by two picture steps shown one at a time: "
-               "① how the stimuli are grouped, one tile per (method, fold, grouping) drawn "
-               "as that grouping's own stimulus grid (a row of icons per agent block, one "
-               "icon per category, boxed to show which pairs enter), then ② which "
-               "hypothesis, a gallery of models each shown as its own dissimilarity-matrix "
-               "thumbnail with its _models.csv 'why' on an ⓘ. Both collapse into a "
-               "breadcrumb once the card can fetch a result. Map type and colormap moved "
-               "onto the slice itself as Google-Maps-style corner switches; the colour one "
-               "shows every palette as itself. dis/fold/grouping are mirrored into hidden "
-               "inputs, so every downstream callback is unchanged.")
+VERSION = "1.3.1"
+LAST_CHANGE = ("Fix: a card's title and model matrix follow the picker even while a "
+               "gated change waits for 🔄. The Auto-update gate exists to hold back the "
+               "*result volume*, but it was also holding back the two things that depend "
+               "only on the model name, so a card switched from correlation to mahalanobis "
+               "kept the previous model's 40x40 matrix under a breadcrumb already reading "
+               "mahalanobis · emotion_identity — which reads as a mis-drawn matrix, not as "
+               "a pending fetch. The model is now resolved before the gate; the pending "
+               "branch redraws the matrix from that model's own CSV and titles the card "
+               "⏸ pending; the map and histogram still wait. Also: a log line can no "
+               "longer take a callback down — the emoji in these messages raised "
+               "UnicodeEncodeError on a cp1252 console, killing the very render that was "
+               "reporting itself skipped.")
 
 
 # ---------------------------------------------------------------------------
@@ -408,8 +419,17 @@ def log(tag, msg, level=1):
     if level > LOG_LEVEL:
         return
     stamp = time.strftime("%H:%M:%S") + f".{int((time.time() % 1) * 1000):03d}"
+    line = f"{stamp}  {tag:<{_LOG_TAG_W}} {msg}"
     with _LOG_LOCK:
-        print(f"{stamp}  {tag:<{_LOG_TAG_W}} {msg}", flush=True)
+        try:
+            print(line, flush=True)
+        except UnicodeEncodeError:
+            # A console on a legacy code page (cp1252 is still the Windows default
+            # without PYTHONIOENCODING) cannot encode the emoji these messages use.
+            # A log line must never be able to take a callback down with it, so the
+            # unencodable characters are dropped rather than raised.
+            enc = getattr(sys.stdout, "encoding", None) or "ascii"
+            print(line.encode(enc, "replace").decode(enc, "replace"), flush=True)
 
 
 def logw(msg):
@@ -1231,21 +1251,21 @@ def _model_heatmap(datafolder, dataset, model):
 
 
 # ---------------------------------------------------------------------------
-# The icon vocabulary the grouping tiles are drawn from
+# The icon vocabulary the pickers are drawn from
 # ---------------------------------------------------------------------------
-# A grouping is a statement about **which stimulus pairs enter the RSA**, and the
-# stimuli are a *two-level categorisation*: an **agent block** (who is shown --
-# Dog or Human) crossed with a **category** (which emotion). Naming those two
-# levels is the whole job of the first picker: one row of icons per agent block,
-# one icon per category inside it, and boxes/links saying which pairs are
-# compared. That is strictly more informative than the bare words
-# ``all / within / cross / dog / hum``, which only mean something once you already
-# know the design.
+# Everything a card asks about is a statement over the **stimulus set** an RDM is
+# built on, and that set is a two-level categorisation: an **agent block** (who is
+# shown -- Dog or Human) crossed with a **category** (which emotion), each cell
+# holding one or more **exemplars**. Draw that grid and the questions answer
+# themselves: which set am I in (how many exemplars per cell), and which pairs of
+# it enter (the grouping). That is strictly more informative than the words
+# ``mahalanobis / stim-wise`` and ``all / within / cross / dog / hum``, which only
+# mean something once you already know the design.
 #
-# Nothing here is EmoC-specific by construction: the rows and columns are read off
-# a model's own dissimilarity matrix (``_taxonomy``), and a label this table has no
-# icon for falls back to its own initials in a chip. Point the app at a dataset
-# with different conditions and it draws that dataset's grid.
+# Nothing here is EmoC-specific by construction: rows, columns and exemplar count
+# are read off a model's own dissimilarity matrix (``_set_taxonomy``), and a label
+# this table has no icon for falls back to its own initials in a chip. Point the
+# app at a dataset with different conditions and it draws that dataset's grid.
 AGENT_ICONS = {"dog": ("\U0001f415", "Dog-shown"), "hum": ("\U0001f9d1", "Human-shown"),
                "human": ("\U0001f9d1", "Human-shown")}
 CATEGORY_ICONS = {                    # EmoC's five conditions, in stimulus order
@@ -1255,7 +1275,10 @@ CATEGORY_ICONS = {                    # EmoC's five conditions, in stimulus orde
     "F": ("\U0001f628", "Fear"),
     "N": ("\U0001f610", "Neutral"),
 }
-_AGENT_RE = re.compile(r"^(dog|hum(?:an)?)(.+)$", re.I)
+# ``DogP`` -> (Dog, P, ""), ``DogP1`` -> (Dog, P, "1"): the trailing digits are the
+# exemplar index, and whether they are there is exactly what separates the two
+# stimulus sets of this dataset.
+_STIM_RE = re.compile(r"^(dog|hum(?:an)?)([A-Za-z]+?)(\d*)$", re.I)
 
 # grouping -> (tile caption, agent rows that take part | None = every row,
 #              how the participating stimuli are boxed)
@@ -1276,28 +1299,33 @@ _TAXONOMY_LOGGED = set()
 
 
 def _split_stim_label(label):
-    """``"DogP"`` -> ``("Dog", "P")``; anything unparseable -> ``(None, label)``."""
-    m = _AGENT_RE.match(str(label).strip())
+    """``"DogP1"`` -> ``("Dog", "P", "1")``; unparseable -> ``(None, label, "")``."""
+    m = _STIM_RE.match(str(label).strip())
     if not m:
-        return None, str(label)
-    return m.group(1), m.group(2)
+        return None, str(label), ""
+    return m.group(1), m.group(2), m.group(3)
 
 
-def _taxonomy(datafolder, dataset, grouped):
-    """``(agents, categories)`` for this dataset's stimulus set, each entry a
-    ``(key, icon, title)`` triple.
+def _set_taxonomy(datafolder, dataset, grouped, dis, fold):
+    """``(agents, categories, exemplars_per_cell)`` for **one** (distance method,
+    fold) set -- the stimulus set its RDMs are built over. ``agents`` and
+    ``categories`` are ``(key, icon, title)`` triples.
 
-    Read off **one** model's dissimilarity matrix -- every model of a battery
-    shares its row labels, so a single CSV names the whole design. Cached per
-    (data folder, dataset): it is a network read whose answer only moves when the
-    battery does. Falls back to one unnamed block whose "categories" are the raw
-    labels when they do not parse as ``{agent}{category}``, so a dataset that is
-    not organised that way still gets a (flat) picture instead of an exception."""
-    key = (datafolder, dataset)
+    Read off one model's dissimilarity matrix from *that set*: every model in a set
+    shares its row labels, so a single CSV names the whole set. This is per-set
+    rather than per-dataset because the sets genuinely differ -- on EmoC,
+    ``mahalanobis / stim-wise`` is a 10x10 RDM over conditions (``DogP``) while
+    ``correlation / run-wise`` is a 40x40 over four exemplars each (``DogP1``..4),
+    and that difference is the whole content of the first picker. Cached per
+    (data folder, dataset, method, fold): a network read whose answer only moves
+    when the battery does. Falls back to one unnamed block whose "categories" are
+    the raw labels when they do not parse as ``{agent}{category}{n}``, so a dataset
+    that is not organised that way still gets a (flat) picture."""
+    key = (datafolder, dataset, dis, fold)
     if key in _TAXONOMY_CACHE:
         return _TAXONOMY_CACHE[key]
     labels = []
-    for model in _first_models(grouped, limit=4):
+    for model in _set_models(grouped, dis, fold, limit=4):
         path = _model_csv_map(datafolder, dataset).get(model)
         if not path:
             continue
@@ -1308,11 +1336,11 @@ def _taxonomy(datafolder, dataset, grouped):
             continue
         if labels:
             break
-    agents, cats = [], []
+    agents, cats, per_cell = [], [], {}
     seen_a, seen_c = set(), set()
     for lab in labels:
-        a, c = _split_stim_label(lab)
-        if a is None:                                   # not {agent}{category}
+        a, c, _idx = _split_stim_label(lab)
+        if a is None:                                   # not {agent}{category}{n}
             agents, cats = [], []
             break
         if a.lower() not in seen_a:
@@ -1321,30 +1349,68 @@ def _taxonomy(datafolder, dataset, grouped):
         if c not in seen_c:
             seen_c.add(c)
             cats.append((c,) + CATEGORY_ICONS.get(c, (c[:2], c)))
+        per_cell[(a.lower(), c)] = per_cell.get((a.lower(), c), 0) + 1
+    reps = max(per_cell.values()) if per_cell else 1
     if not agents:                                      # flat / unreadable fallback
         agents = [("", "\u25fc", "all stimuli")]
         cats = [(l, (l[:2] or "?"), l) for l in labels[:8]] or [("?", "\u2022", "stimulus")]
-    out = (agents, cats)
+        reps = 1
+    out = (agents, cats, reps)
     _TAXONOMY_CACHE[key] = out
     if key not in _TAXONOMY_LOGGED:      # six cards ask at once and all miss the cache
         _TAXONOMY_LOGGED.add(key)
-        log("index", f"stimulus taxonomy: {len(agents)} agent block(s) x {len(cats)} "
-                     f"categories ({'/'.join(a[0] for a in agents)} x "
-                     f"{'/'.join(c[0] for c in cats)})")
+        log("index", f"stimulus set {dis} / {fold}: {len(agents)} agent block(s) x "
+                     f"{len(cats)} categories x {reps} exemplar(s) = {len(labels)} stimuli")
     return out
 
 
-def _icon_row(agent, cats, dim=False):
-    """One agent block: its own icon, then one icon per category."""
+def _set_size_note(agents, cats, reps, n):
+    """The one-line "what is in this RDM" caption under a set's grid."""
+    if reps > 1:
+        return f"{n} stimuli \u00b7 {reps} per condition"
+    return f"{n} conditions"
+
+
+def _icon_cell(icon, title, reps):
+    """One category icon, carrying its exemplar count when a cell holds more than
+    one -- ``\U0001f620\u2074`` says "four anger clips", which is the difference between the
+    two sets at a glance."""
+    kids = [icon]
+    if reps > 1:
+        kids.append(html.Span(f"\u00d7{reps}", className="pl-ic-rep"))
+    return html.Span(kids, className="pl-ic-cat", title=title)
+
+
+def _icon_row(agent, cats, reps=1, dim=False):
+    """One agent block: its own icon, then one cell per category."""
     cls = "pl-ic-row" + (" pl-ic-dim" if dim else "")
     return html.Div(className=cls, children=[
         html.Span(agent[1], className="pl-ic-agent", title=agent[2]),
-        *[html.Span(ic, className="pl-ic-cat", title=f"{title} ({agent[2]})")
+        *[_icon_cell(ic, f"{title} ({agent[2]})" + (f" \u00d7{reps}" if reps > 1 else ""), reps)
           for _k, ic, title in cats],
     ])
 
 
-def _grouping_diagram(grouping, agents, cats):
+def _set_tile(dis, fold, real, agents, cats, reps, n_models):
+    """One tile of picker (1): the stimulus set a (distance method, fold) pair
+    works over, drawn as its grid, with the method/fold naming it underneath."""
+    n = len(agents) * len(cats) * reps
+    return html.Span(className="pl-tile pl-tile-set",
+                     title=f"{dis}" + (f" \u00b7 {fold}" if real else "") +
+                           f" \u2014 {n}x{n} RDM over {n} stimuli, {n_models} models",
+                     children=[
+        html.Span(_set_size_note(agents, cats, reps, n), className="pl-tile-cap"),
+        html.Span(className="pl-ic-stack", children=[
+            html.Div(className="pl-ic-box", children=[
+                _icon_row(a, cats, reps) for a in agents]),
+        ]),
+        html.Span(f"{dis}" + (f" \u00b7 {fold}" if real else ""), className="pl-tile-badge"),
+        html.Span(f"{n_models} model{'' if n_models == 1 else 's'}",
+                  className="pl-tile-badge"),
+    ])
+
+
+def _grouping_diagram(grouping, agents, cats, reps=1):
     """``(caption, [components])`` -- the picture of one grouping: which agent
     blocks take part and how they are boxed. The box **is** the claim: pairs
     inside a box enter the analysis, and a ``bridge`` says only the pairs spanning
@@ -1356,8 +1422,8 @@ def _grouping_diagram(grouping, agents, cats):
         idxs = [0]
     if mode == "one":
         body = [html.Div(className="pl-ic-box", children=[
-            _icon_row(agents[k], cats) for k in idxs])]
-        body += [_icon_row(agents[k], cats, dim=True)
+            _icon_row(agents[k], cats, reps) for k in idxs])]
+        body += [_icon_row(agents[k], cats, reps, dim=True)
                  for k in range(len(agents)) if k not in idxs]
     else:
         body = []
@@ -1365,19 +1431,18 @@ def _grouping_diagram(grouping, agents, cats):
             if n and mode == "bridge":
                 body.append(html.Div("\u21c5", className="pl-ic-link",
                                      title="only pairs that cross the two blocks"))
-            body.append(html.Div(className="pl-ic-box", children=[_icon_row(agents[k], cats)]))
+            body.append(html.Div(className="pl-ic-box",
+                                 children=[_icon_row(agents[k], cats, reps)]))
     return caption, body
 
 
-def _way_tile(grouping, branch, agents, cats):
-    """One tile of the first picker: the grouping drawn as icon groups, with the
-    distance method / fold it belongs to as a small badge underneath."""
-    caption, body = _grouping_diagram(grouping, agents, cats)
-    return html.Span(className="pl-tile pl-tile-way",
+def _grouping_tile(grouping, agents, cats, reps=1):
+    """One tile of picker (3): which pairs of the set's stimuli enter the RSA."""
+    caption, body = _grouping_diagram(grouping, agents, cats, reps)
+    return html.Span(className="pl-tile pl-tile-grp",
                      title=GROUPING_DESC.get(grouping, grouping), children=[
         html.Span(caption, className="pl-tile-cap"),
         html.Span(className="pl-ic-stack", children=body),
-        html.Span(branch, className="pl-tile-badge"),
     ])
 
 
@@ -1413,18 +1478,15 @@ def _model_csv_map(datafolder, dataset):
     return out
 
 
-def _first_models(grouped, limit=4):
-    """A few concrete model names from the index -- enough to find one readable
-    matrix to read the stimulus labels off."""
+def _set_models(grouped, dis, fold, limit=4):
+    """A few concrete model names from **one** (method, fold) set -- enough to find
+    one readable matrix to read that set's stimulus labels off."""
     out = []
-    for dis in (grouped or {}).get("dis_methods", []):
-        folds, _real = _dis_folds(grouped, dis)
-        for fold in folds:
-            for variants in _fold_data(grouped, dis, fold).get("index", {}).values():
-                for name in variants.values():
-                    out.append(name)
-                    if len(out) >= limit:
-                        return out
+    for variants in _fold_data(grouped, dis, fold).get("index", {}).values():
+        for name in variants.values():
+            out.append(name)
+            if len(out) >= limit:
+                return out
     return out
 
 
@@ -1484,67 +1546,76 @@ def _matrix_thumb(datafolder, dataset, model):
     return uri
 
 
-def _stem_tile(datafolder, dataset, model, stem, why):
-    """One tile of the second picker: the model **is** its matrix, its name, and an
-    (i) badge carrying the ``why`` column of ``_models.csv`` as its tooltip."""
+def _stem_tile(datafolder, dataset, model, stem, why, groupings):
+    """One tile of picker (2): the hypothesis **is** its matrix, its name, and an
+    (i) badge carrying the ``why`` column of ``_models.csv`` as its tooltip.
+
+    ``model`` is a *representative* variant -- the grouping is picked in the next
+    step, and a grouping only masks cells out of the same matrix, so the thumbnail
+    shows the hypothesis itself. The groupings the stem offers are listed under the
+    name, which is also the honest way to say that some hypotheses do not offer
+    all of them."""
     uri = _matrix_thumb(datafolder, dataset, model)
     icon = (html.Img(src=uri, className="pl-thumb", alt=stem, title=stem) if uri
             else html.Span("\u25a6", className="pl-thumb pl-thumb-none", title=stem))
+    caps = " ".join(GROUPING_TILE.get(g, (g,))[0] for g in groupings)
     return html.Span(className="pl-tile pl-tile-stem", children=[
         icon,
         html.Span(className="pl-tile-txt", children=[
             html.Span(stem, className="pl-tile-name"),
             html.Span("\u24d8", className="pl-why-ic",
                       title=why or "no description in _models.csv"),
+            html.Span(caps, className="pl-tile-grps",
+                      title="groupings this hypothesis offers"),
         ]),
     ])
 
 
-# --- first picker: one entry per concrete way of grouping the stimuli -------
-# The card's model is still ``distance method -> (fold) -> stem -> grouping``, but
-# the first three of those are *one* question for the person looking at the
-# screen: "which pairs am I comparing?". So the picker offers the (method, fold,
-# grouping) triples directly, drawn as pictures, and the three original values are
-# mirrored into hidden inputs -- every downstream callback keeps reading them
-# exactly as before.
-WAY_SEP = "\u0001"           # not a character any method / fold / grouping can hold
+# --- picker (1): one entry per stimulus set --------------------------------
+# ``_models.csv`` keys its models on (``dis_method``, ``mah_fold``), and that pair
+# is not a pair of settings -- it is **which stimulus set the RDM is built over**,
+# and therefore which models exist at all. On EmoC the two combinations are a
+# 10x10 RDM over conditions (mahalanobis / stim-wise) and a 40x40 over four
+# exemplars per condition (correlation / run-wise); a model built for one is not
+# comparable with the other's. So the card asks for the **set** first, as a picture
+# of that set, and everything downstream is filtered by it.
+SET_SEP = "\u0001"           # not a character a method or fold name can hold
 
 
-def _way_key(dis, fold, grouping):
-    return f"{dis}{WAY_SEP}{fold}{WAY_SEP}{grouping}"
+def _set_key(dis, fold):
+    return f"{dis}{SET_SEP}{fold}"
 
 
-def _split_way(way):
-    """``(dis, fold, grouping)`` for a picker value, or ``(None, None, None)``."""
-    parts = (way or "").split(WAY_SEP)
-    if len(parts) != 3 or not all(parts):
-        return None, None, None
-    return parts[0], parts[1], parts[2]
+def _split_set(value):
+    """``(dis, fold)`` for a picker value, or ``(None, None)``."""
+    parts = (value or "").split(SET_SEP)
+    if len(parts) != 2 or not all(parts):
+        return None, None
+    return parts[0], parts[1]
 
 
-def _way_entries(grouped):
-    """``[(dis, fold, grouping, branch label), ...]`` -- every way this dataset's
-    models group the stimuli, in menu order (method, then canonical grouping
-    order). The branch label names the method (and the fold, where the method
-    folds) so two tiles that draw the same picture are still told apart."""
+def _set_entries(grouped):
+    """``[(dis, fold, fold-is-a-real-choice, n models), ...]`` -- every stimulus
+    set the dataset offers, in manifest order. A method that does not fold
+    contributes its single pooled ``FOLD_ANY`` entry, and its tile names only the
+    method, since there is no fold to state."""
     out = []
     for dis in (grouped or {}).get("dis_methods", []):
         folds, real = _dis_folds(grouped, dis)
         for fold in folds:
-            index = _fold_data(grouped, dis, fold).get("index", {})
-            present = {g for variants in index.values() for g in variants}
-            label = f"{dis} \u00b7 {fold}" if real else str(dis)
-            for g in GROUPINGS:
-                if g in present:
-                    out.append((dis, fold, g, label))
+            stems = _fold_data(grouped, dis, fold).get("stems", [])
+            out.append((dis, fold, real, len(stems)))
     return out
 
 
-def _way_summary(dis, fold, grouping):
-    """The one line a chosen grouping collapses to in the card's breadcrumb."""
-    caption = GROUPING_TILE.get(grouping, (grouping,))[0]
+def _set_summary(dis, fold):
+    """The one line a chosen set collapses to in the card's breadcrumb."""
     tail = f" \u00b7 {fold}" if fold and fold != FOLD_ANY else ""
-    return f"{caption} \u00b7 {dis}{tail}"
+    return f"{dis}{tail}"
+
+
+def _grouping_summary(grouping):
+    return GROUPING_TILE.get(grouping, (grouping,))[0]
 
 
 # --- floating colour switch: every palette shown as itself -----------------
@@ -1902,48 +1973,48 @@ app.index_string = """<!DOCTYPE html>
       /* the brain view eats the wheel (slice scrubbing), so say so on hover */
       .pl-map-wrap{ cursor:crosshair; position:relative; }
 
-      /* ---- visual pickers (grouping tiles, model gallery) ----------------
-         Both are dcc.RadioItems whose option labels are components, so the
-         browser keeps the "one of these" semantics (arrow keys, form state,
-         Dash persistence) and the CSS only has to make each label look like a
-         tile. The radio dot is kept -- shrunk into the tile's corner -- so the
-         selection is still visible on an engine without :has(); :has() then
-         adds the full-tile highlight that makes the row readable at a glance. */
+      /* ---- visual pickers (stimulus set, model gallery, grouping) --------
+         Each tile is a plain button (see _tile_buttons for why not RadioItems),
+         so the selected one is marked by a class rather than by a checked input
+         and the styling is ours end to end. */
       /* A picker is temporary furniture -- it folds away as soon as it is
          answered -- so it is capped and scrolls rather than pushing the brain
          view off the screen while six cards are all being set up. */
       .pl-tiles{ display:flex; flex-wrap:wrap; gap:6px; align-content:flex-start;
                  max-height:290px; overflow-y:auto; padding-right:2px; }
-      .pl-tiles > label{
+      .pl-tile-btn{
         display:flex; align-items:flex-start; gap:4px; cursor:pointer;
         border:1px solid #d5dbe5; border-radius:8px; background:#ffffff;
-        padding:4px 6px 4px 4px; line-height:1.15; transition:border-color .12s;
+        padding:4px 6px; line-height:1.15; font:inherit; color:inherit;
+        text-align:left; transition:border-color .12s;
       }
-      .pl-panel .pl-tiles > label:hover{ border-color:#4472C4; background:#ffffff; }
-      .pl-panel .pl-tiles > label.selected,
-      .pl-panel .pl-tiles > label:has(input:checked){
-        border-color:#4472C4; box-shadow:inset 0 0 0 1px #4472C4;
-        background:#f2f6fd;
-      }
-      .pl-tiles input[type="radio"]{ margin:3px 0 0 0; accent-color:#4472C4;
-                                     width:11px; height:11px; flex:0 0 auto; }
+      .pl-tile-btn:hover{ border-color:#4472C4; }
+      .pl-tile-btn:focus-visible{ outline:2px solid #4472C4; outline-offset:1px; }
+      .pl-tile-btn.pl-sel{ border-color:#4472C4; background:#f2f6fd;
+                           box-shadow:inset 0 0 0 1px #4472C4; }
       .pl-tile{ display:flex; flex-direction:column; gap:2px; }
       .pl-tile-cap{ font-size:11px; font-weight:bold; color:#222222; }
       .pl-tile-badge{ font-size:9px; color:#667085; letter-spacing:.02em; }
 
-      /* the grouping picture: one row of icons per agent block, boxed */
+      /* the stimulus grid: one row of icons per agent block, boxed. The same
+         drawing serves picker (1) (what is in this set) and picker (3) (which of
+         its pairs enter) -- only the boxing differs, which is the point. */
       .pl-ic-stack{ display:flex; flex-direction:column; gap:2px; }
       .pl-ic-box{ border:1px solid #4472C4; border-radius:5px; padding:1px 3px;
                   background:#fbfcfe; }
-      .pl-ic-row{ display:flex; align-items:center; gap:1px; white-space:nowrap; }
+      .pl-ic-row{ display:flex; align-items:center; gap:2px; white-space:nowrap; }
       .pl-ic-dim{ opacity:.20; filter:grayscale(1); }
       .pl-ic-agent{ font-size:12px; margin-right:2px; }
-      .pl-ic-cat{ font-size:11px; }
+      .pl-ic-cat{ font-size:11px; display:inline-flex; align-items:flex-start; }
+      /* exemplars per cell -- "x4" is what separates a 10-condition set from a
+         40-stimulus one, so it rides on the icon rather than in a caption */
+      .pl-ic-rep{ font-size:7px; color:#4472C4; font-weight:bold;
+                  margin-left:-1px; line-height:1; }
       .pl-ic-link{ font-size:11px; color:#4472C4; text-align:center;
                    line-height:.9; font-weight:bold; }
 
       /* the model gallery: a model is its own dissimilarity matrix */
-      .pl-tiles-stem > label{ width:132px; }
+      .pl-tiles-stem > .pl-tile-btn{ width:138px; }
       .pl-tile-stem{ flex-direction:row; align-items:center; gap:5px; }
       .pl-thumb{ width:34px; height:34px; flex:0 0 34px; border-radius:3px;
                  image-rendering:pixelated; }
@@ -1953,8 +2024,11 @@ app.index_string = """<!DOCTYPE html>
                     min-width:0; }
       .pl-tile-name{ font-size:10.5px; color:#222222; word-break:break-word; }
       .pl-why-ic{ font-size:11px; color:#4472C4; cursor:help; }
+      /* which groupings this hypothesis offers -- step (3) will only show these */
+      .pl-tile-grps{ font-size:8px; color:#667085; flex-basis:100%;
+                     white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 
-      /* the collapsed breadcrumb the two pickers fold into once both are set */
+      /* the collapsed breadcrumb the three pickers fold into once all are set */
       .pl-crumb{ border:1px solid #d5dbe5; border-radius:999px; background:#ffffff;
                  color:#222222; font-size:11px; padding:2px 9px; cursor:pointer; }
       .pl-crumb:hover{ border-color:#4472C4; color:#4472C4; }
@@ -2250,6 +2324,23 @@ def top_bar():
     ])
 
 
+def _tile_buttons(level, card, options, value):
+    """The tiles of one picker, as ordinary buttons.
+
+    ``options`` is the familiar ``[{"label": component, "value": str}, ...]``; the
+    chosen value lives in the hidden ``pl-{card}-{level}`` input, so the rest of
+    the app still reads the cascade exactly as it always did. See the note above
+    the picker callbacks for why this is not a ``dcc.RadioItems``."""
+    return [html.Button(id={"pk": level, "card": card, "v": opt["value"]}, n_clicks=0,
+                        className=_tile_class(opt["value"], value),
+                        children=opt["label"])
+            for opt in options]
+
+
+def _tile_class(value, chosen):
+    return "pl-tile-btn" + (" pl-sel" if value == chosen else "")
+
+
 def _maptype_options():
     """Options for the floating map-type switch: a glyph over a caption, with the
     full name (``Group average`` …) as the tooltip."""
@@ -2321,43 +2412,49 @@ def card(i):
                         style={"border": "none", "background": "transparent", "color": MUTED,
                                "cursor": "pointer", "fontSize": "13px", "padding": "0 2px"}),
         ]),
-        # --- picking the model, in two *visual* steps -----------------------
-        # The analysis is still organised as distance method → (Mahalanobis fold)
-        # → model → grouping, but that is four dropdowns of jargon in front of a
-        # question with two halves: **which stimulus pairs am I comparing** and
-        # **which hypothesis am I testing**. So the card asks those two, as
-        # pictures, and derives the four values from the answers.
+        # --- picking the model, in three *visual* steps ---------------------
+        # The analysis is organised as distance method → (Mahalanobis fold) →
+        # model → grouping, which is four dropdowns of jargon. The card asks the
+        # same four values as three pictures, in the same order:
         #
-        #   ① grouping — every (method, fold, grouping) combination the dataset
-        #     offers, each drawn as its stimulus grid: one row of icons per agent
-        #     block, one icon per category, boxed to show which pairs enter.
-        #   ② model — one tile per hypothesis, showing that model's own
-        #     dissimilarity matrix and an ⓘ carrying its ``why`` note.
+        #   ① set — the (distance method, fold) pair, drawn as **the stimulus set
+        #     its RDM is built over**: a row of icons per agent block, one cell per
+        #     category, each cell carrying its exemplar count. That pair decides
+        #     which models exist at all, so picking it re-fills step ②.
+        #   ② hypothesis — one tile per model stem of that set, showing the model's
+        #     own dissimilarity matrix and an ⓘ carrying its ``why`` note.
+        #   ③ grouping — which pairs of that set enter the RSA, drawn as the same
+        #     grid boxed: one box (pooled), a box per row (within), two boxes joined
+        #     by ⇅ (cross), or a single lit row (Dog only / Human only).
         #
-        # They are shown one at a time, in order, and both collapse into a
+        # They are shown one at a time, in order, and all three collapse into a
         # breadcrumb as soon as the card knows enough to fetch a result — which is
-        # the point: the choices are on screen only while they are still open.
+        # the point: a choice is on screen only while it is still open.
         html.Div(id=f"pl-{i}-step1", children=[
-            html.Div("① how the stimuli are grouped", className="pl-step-h"),
-            dcc.RadioItems(id=f"pl-{i}-way", options=[], value=None,
-                           className="pl-tiles pl-tiles-way", persistence=True),
+            html.Div("① stimulus set", className="pl-step-h"),
+            html.Div(id=f"pl-{i}-setbox", className="pl-tiles pl-tiles-set"),
         ]),
         html.Div(id=f"pl-{i}-step2", children=[
             html.Div("② which hypothesis", className="pl-step-h"),
-            dcc.RadioItems(id=f"pl-{i}-stem", options=[], value=None,
-                           className="pl-tiles pl-tiles-stem", persistence=True),
+            html.Div(id=f"pl-{i}-stembox", className="pl-tiles pl-tiles-stem"),
         ]),
-        # Collapsed summary of both steps: click either chip to reopen that step.
+        html.Div(id=f"pl-{i}-step3", children=[
+            html.Div("③ which pairs enter", className="pl-step-h"),
+            html.Div(id=f"pl-{i}-groupbox", className="pl-tiles pl-tiles-grp"),
+        ]),
+        # Collapsed summary of the three steps: click a chip to reopen its step.
         html.Div(id=f"pl-{i}-crumbs", style={"display": "flex", "gap": "5px",
                  "flexWrap": "wrap", "alignItems": "center", "margin": "4px 0 2px"},
                  children=[
-            html.Button("", id=f"pl-{i}-crumb-way", n_clicks=0, className="pl-crumb",
-                        title="change how the stimuli are grouped"),
+            html.Button("", id=f"pl-{i}-crumb-set", n_clicks=0, className="pl-crumb",
+                        title="change the stimulus set (distance method / fold)"),
             html.Button("", id=f"pl-{i}-crumb-stem", n_clicks=0, className="pl-crumb",
                         title="change the hypothesis"),
+            html.Button("", id=f"pl-{i}-crumb-grp", n_clicks=0, className="pl-crumb",
+                        title="change which pairs enter"),
         ]),
-        # which of the two picker steps is currently expanded ("way" / "stem" / "")
-        dcc.Store(id=f"pl-{i}-open", data="way"),
+        # which picker step is expanded ("set" / "stem" / "grp" / "")
+        dcc.Store(id=f"pl-{i}-open", data="set"),
         # (data folder, dataset, model) of the matrix figure this *browser* holds.
         # Memory storage on purpose: a reload empties the graph and this together,
         # so the card knows to re-send it.
@@ -2365,15 +2462,20 @@ def card(i):
         # --- the model's "why" note from _models.csv ---
         html.Div(id=f"pl-{i}-why", style={"fontSize": "11px", "color": MUTED,
                  "fontStyle": "italic", "minHeight": "14px", "margin": "0 2px 4px"}),
-        # The cascade's three original values, mirrored out of the ① picker into
-        # hidden inputs. Every downstream callback (stem menu, matrix, map path,
-        # bar scope, sync) still reads ``pl-{i}-dis`` / ``-mahfold`` / ``-grouping``
-        # exactly as it did when they were dropdowns, so replacing the front end
-        # touched none of them.
+        # The two halves of the ① picker, mirrored into hidden inputs. Every
+        # downstream callback (stem menu, matrix, map path, bar scope, sync) still
+        # reads ``pl-{i}-dis`` / ``-mahfold`` exactly as it did when they were
+        # dropdowns, so replacing the front end touched none of them.
         html.Div(style={"display": "none"}, children=[
+            # What the three pickers above actually hold. The cascade's own two
+            # values (``-dis`` / ``-mahfold``) are split out of the ① picker by a
+            # tiny callback, so every downstream callback — stem menu, matrix, map
+            # path, bar scope, sync — still reads the ids it always read.
+            dcc.Input(id=f"pl-{i}-set", type="hidden", value="", persistence=True),
+            dcc.Input(id=f"pl-{i}-stem", type="hidden", value="", persistence=True),
+            dcc.Input(id=f"pl-{i}-grouping", type="hidden", value="", persistence=True),
             dcc.Input(id=f"pl-{i}-dis", type="hidden", value=""),
             dcc.Input(id=f"pl-{i}-mahfold", type="hidden", value=""),
-            dcc.Input(id=f"pl-{i}-grouping", type="hidden", value=""),
         ]),
         # --- display toggles: species + sync + show/hide the matrix ---
         html.Div(style={"display": "flex", "gap": "10px", "flexWrap": "wrap", "alignItems": "flex-end",
@@ -2633,67 +2735,135 @@ def cb_bar_memory(mode, _n):
     return f"Model bars: maps {what}{tail}."
 
 
-# Per-card model choice, asked as **two visual steps** and mirrored back onto the
-# cascade the rest of the app is written against.
+# Per-card model choice, asked as **three visual steps** and mirrored back onto
+# the cascade the rest of the app is written against.
 #
-#   ① ``pl-{i}-way`` — one tile per (distance method, Mahalanobis fold, grouping)
-#      the dataset actually offers, drawn as the stimulus grid that grouping
-#      selects. Its value carries all three, and a tiny callback splits it into
-#      the hidden ``-dis`` / ``-mahfold`` / ``-grouping`` inputs, so every
-#      downstream callback keeps reading exactly what it always read.
-#   ② ``pl-{i}-stem`` — the models available *under that grouping*, each shown as
-#      its own dissimilarity matrix plus an ⓘ holding its ``why`` note.
+#   ① ``pl-{i}-set`` — the (distance method, Mahalanobis fold) pair, one tile per
+#      **stimulus set**. Its value carries both, and a tiny callback splits it
+#      into the hidden ``-dis`` / ``-mahfold`` inputs, so every downstream callback
+#      keeps reading exactly what it always read. Picking a set re-fills ②: the
+#      pair decides which models exist at all, because a model built for one
+#      pairwise-similarity method is not comparable with another's.
+#   ② ``pl-{i}-stem`` — the hypotheses of that set, each shown as its own
+#      dissimilarity matrix plus an ⓘ holding its ``why`` note.
+#   ③ ``pl-{i}-grouping`` — the groupings *that stem declares*, drawn as the set's
+#      grid boxed to show which pairs enter.
 #
-# Choosing the grouping first (rather than the distance method, as the raw
-# cascade does) is what lets step ② be a gallery of comparable pictures: every
-# tile in it answers the same question about the same stimulus pairs.
+# Each level offers only what the level above allows, and each keeps a still-valid
+# persisted value (so a card comes back exactly as left) while clearing one that no
+# longer fits — which is also what re-opens the step that has become unanswered.
 
-def _register_panel_way(i):
-    @app.callback(Output(f"pl-{i}-way", "options"), Output(f"pl-{i}-way", "value"),
+# Each picker is three callbacks, and the split is what keeps a rebuild cheap:
+#
+#   **build**  fills the box with tiles whenever the level above it moves, and
+#              clears the level's own value when the old choice is no longer on
+#              offer -- which is also what re-opens that step.
+#   **click**  writes the clicked tile's value into the hidden input the cascade
+#              reads. Rebuilding resets every ``n_clicks`` to 0, so it only acts on
+#              a trigger that is a tile *and* actually carries a click.
+#   **paint**  marks the chosen tile. Selection is a class, not a rebuild: a
+#              re-render of eighteen thumbnails per click would put ~30 kB of
+#              data-URI on the wire to move one outline.
+#
+# They are buttons rather than a ``dcc.RadioItems`` because Dash 4 does not
+# re-render option labels that are components -- see ``_tile_buttons``.
+
+def _register_panel_set(i):
+    @app.callback(Output(f"pl-{i}-setbox", "children"),
+                  Output(f"pl-{i}-set", "value", allow_duplicate=True),
                   Input("ex-grouped", "data"),
                   State("ex-datafolder", "value"), State("ex-dataset", "value"),
-                  State(f"pl-{i}-way", "value"))
+                  State(f"pl-{i}-set", "value"), prevent_initial_call=True)
     def _cb(grouped, datafolder, dataset, cur):
-        entries = _way_entries(grouped)
-        agents, cats = _taxonomy(datafolder, dataset, grouped)
         opts, keys = [], []
-        for dis, fold, grouping, branch in entries:
-            key = _way_key(dis, fold, grouping)
+        for dis, fold, real, n_models in _set_entries(grouped):
+            agents, cats, reps = _set_taxonomy(datafolder, dataset, grouped, dis, fold)
+            key = _set_key(dis, fold)
             keys.append(key)
-            opts.append({"label": _way_tile(grouping, branch, agents, cats), "value": key})
-        return opts, (cur if cur in keys else None)
+            opts.append({"label": _set_tile(dis, fold, real, agents, cats, reps, n_models),
+                         "value": key})
+        # A single set is not a choice -- select it and let the card open at (2).
+        value = cur if cur in keys else (keys[0] if len(keys) == 1 else "")
+        return _tile_buttons("set", i, opts, value), value
     return _cb
 
 
-def _register_panel_way_mirror(i):
-    # One value in, the cascade's three out. Hidden dcc.Inputs rather than a Store
-    # on purpose: a Store carries its state in ``data``, and switching prop would
-    # have meant touching every callback that reads these.
+def _register_panel_set_mirror(i):
+    # One value in, the cascade's two out. Hidden dcc.Inputs rather than a Store on
+    # purpose: a Store carries its state in ``data``, and switching prop would have
+    # meant touching every callback that reads these.
     @app.callback(Output(f"pl-{i}-dis", "value"), Output(f"pl-{i}-mahfold", "value"),
-                  Output(f"pl-{i}-grouping", "value"), Input(f"pl-{i}-way", "value"))
-    def _cb(way):
-        dis, fold, grouping = _split_way(way)
-        return (dis or ""), (fold or ""), (grouping or "")
+                  Input(f"pl-{i}-set", "value"))
+    def _cb(value):
+        dis, fold = _split_set(value)
+        return (dis or ""), (fold or "")
     return _cb
 
 
 def _register_panel_stem(i):
-    @app.callback(Output(f"pl-{i}-stem", "options"), Output(f"pl-{i}-stem", "value"),
-                  Input(f"pl-{i}-way", "value"), Input("ex-grouped", "data"),
+    @app.callback(Output(f"pl-{i}-stembox", "children"),
+                  Output(f"pl-{i}-stem", "value", allow_duplicate=True),
+                  Input(f"pl-{i}-set", "value"), Input("ex-grouped", "data"),
                   State("ex-datafolder", "value"), State("ex-dataset", "value"),
-                  State(f"pl-{i}-stem", "value"))
-    def _cb(way, grouped, datafolder, dataset, cur):
-        dis, fold, grouping = _split_way(way)
+                  State(f"pl-{i}-stem", "value"), prevent_initial_call=True)
+    def _cb(value, grouped, datafolder, dataset, cur):
+        dis, fold = _split_set(value)
         fd = _fold_data(grouped, dis, fold)
         index, why = fd.get("index", {}), fd.get("why", {})
-        # Only hypotheses that *have* this grouping: the gallery must not offer a
-        # tile that resolves to no model.
-        stems = [st for st in fd.get("stems", []) if grouping in index.get(st, {})]
-        opts = [{"label": _stem_tile(datafolder, dataset, index[st][grouping], st,
-                                     why.get(st, "")), "value": st}
-                for st in stems]
-        return opts, (cur if cur in stems else None)
+        stems = [st for st in fd.get("stems", []) if index.get(st)]
+        opts = []
+        for st in stems:
+            variants = index[st]                       # {grouping: model}, canonical order
+            groupings = [g for g in GROUPINGS if g in variants]
+            rep = variants[groupings[0]] if groupings else next(iter(variants.values()))
+            opts.append({"label": _stem_tile(datafolder, dataset, rep, st,
+                                             why.get(st, ""), groupings),
+                         "value": st})
+        chosen = cur if cur in stems else ""
+        return _tile_buttons("stem", i, opts, chosen), chosen
     return _cb
+
+
+def _register_panel_grouping(i):
+    @app.callback(Output(f"pl-{i}-groupbox", "children"),
+                  Output(f"pl-{i}-grouping", "value", allow_duplicate=True),
+                  Input(f"pl-{i}-stem", "value"), Input(f"pl-{i}-set", "value"),
+                  Input("ex-grouped", "data"),
+                  State("ex-datafolder", "value"), State("ex-dataset", "value"),
+                  State(f"pl-{i}-grouping", "value"), prevent_initial_call=True)
+    def _cb(stem, value, grouped, datafolder, dataset, cur):
+        dis, fold = _split_set(value)
+        variants = _fold_data(grouped, dis, fold).get("index", {}).get(stem or "", {})
+        groups = [g for g in GROUPINGS if g in variants]
+        opts = []
+        if groups:
+            agents, cats, reps = _set_taxonomy(datafolder, dataset, grouped, dis, fold)
+            opts = [{"label": _grouping_tile(g, agents, cats, reps), "value": g}
+                    for g in groups]
+        # Keep a still-valid choice; otherwise leave it unanswered so step (3) opens
+        # rather than silently picking a different comparison than the one on screen.
+        chosen = cur if cur in groups else ""
+        return _tile_buttons("grouping", i, opts, chosen), chosen
+    return _cb
+
+
+def _register_panel_pick(i, level):
+    """click -> value, and value -> which tile is painted, for one picker."""
+    @app.callback(Output(f"pl-{i}-{level}", "value", allow_duplicate=True),
+                  Input({"pk": level, "card": i, "v": ALL}, "n_clicks"),
+                  prevent_initial_call=True)
+    def _cb_click(clicks):
+        trig = ctx.triggered_id
+        if not isinstance(trig, dict) or not any(clicks or []):
+            return no_update          # a rebuild zeroed every n_clicks, not a click
+        return trig.get("v", "")
+
+    @app.callback(Output({"pk": level, "card": i, "v": ALL}, "className"),
+                  Input(f"pl-{i}-{level}", "value"),
+                  State({"pk": level, "card": i, "v": ALL}, "id"))
+    def _cb_paint(value, ids):
+        return [_tile_class(d.get("v"), value) for d in (ids or [])]
+    return _cb_click, _cb_paint
 
 
 def _register_panel_why(i):
@@ -2707,54 +2877,69 @@ def _register_panel_why(i):
 
 # --- progressive disclosure: show a step only while it is still open --------
 # "Add a model" should not open six controls at once. A fresh card shows step ①
-# alone; answering it swaps to step ②; answering that collapses both into the
-# breadcrumb and the card gets on with drawing the map. Clicking either chip
+# alone, answering it swaps to ②, then ③, and answering that collapses all three
+# into the breadcrumb while the card gets on with drawing the map. Clicking a chip
 # reopens its step, and ``pl-{i}-open`` is the single place that state lives.
+
+_STEPS = ("set", "stem", "grp")
+
 
 def _register_panel_open(i):
     @app.callback(Output(f"pl-{i}-open", "data"),
-                  Input(f"pl-{i}-way", "value"), Input(f"pl-{i}-stem", "value"),
-                  Input(f"pl-{i}-crumb-way", "n_clicks"),
-                  Input(f"pl-{i}-crumb-stem", "n_clicks"))
-    def _cb(way, stem, _nw, _ns):
+                  Input(f"pl-{i}-set", "value"), Input(f"pl-{i}-stem", "value"),
+                  Input(f"pl-{i}-grouping", "value"),
+                  Input(f"pl-{i}-crumb-set", "n_clicks"),
+                  Input(f"pl-{i}-crumb-stem", "n_clicks"),
+                  Input(f"pl-{i}-crumb-grp", "n_clicks"))
+    def _cb(value, stem, grouping, _ns, _nh, _ng):
         trig = ctx.triggered_id
-        if trig == f"pl-{i}-crumb-way":
-            return "way"
-        if trig == f"pl-{i}-crumb-stem":
-            return "stem"
+        for step in _STEPS:
+            if trig == f"pl-{i}-crumb-{step}":
+                return step
         # Otherwise: whatever is still missing is what is on screen, and nothing
-        # missing means nothing on screen. Stated as a function of the two values
+        # missing means nothing on screen. Stated as a function of the three values
         # (rather than of which one just moved) it is the same answer on a fresh
-        # card, on a persisted reload, and after a grouping change that left the
-        # chosen hypothesis available — in that last case the gallery does not
-        # re-open, because there is nothing left to ask. A grouping change that
-        # *invalidates* the hypothesis clears it in the step-② callback, and this
-        # re-runs on that and opens the gallery.
-        if not way:
-            return "way"
+        # card, on a persisted reload, and after a change further up that left the
+        # levels below it valid — in that case nothing re-opens, because there is
+        # nothing left to ask. A change that *invalidates* a level clears it in that
+        # level's own callback, and this re-runs on that and opens it.
+        if not value:
+            return "set"
         if not stem:
             return "stem"
+        if not grouping:
+            return "grp"
         return ""
     return _cb
 
 
 def _register_panel_steps(i):
     @app.callback(Output(f"pl-{i}-step1", "style"), Output(f"pl-{i}-step2", "style"),
-                  Output(f"pl-{i}-crumbs", "style"),
-                  Output(f"pl-{i}-crumb-way", "children"),
+                  Output(f"pl-{i}-step3", "style"), Output(f"pl-{i}-crumbs", "style"),
+                  Output(f"pl-{i}-crumb-set", "children"),
                   Output(f"pl-{i}-crumb-stem", "children"),
-                  Input(f"pl-{i}-open", "data"), Input(f"pl-{i}-way", "value"),
-                  Input(f"pl-{i}-stem", "value"))
-    def _cb(open_step, way, stem):
-        dis, fold, grouping = _split_way(way)
-        show = {}
-        crumbs = {"display": "flex", "gap": "5px", "flexWrap": "wrap",
-                  "alignItems": "center", "margin": "4px 0 2px"}
-        s1 = show if (open_step == "way" or not way) else WRAP_HIDE
-        s2 = show if (open_step == "stem" or (way and not stem)) else WRAP_HIDE
-        c_way = ("◧ " + _way_summary(dis, fold, grouping)) if way else "◧ pick a grouping"
+                  Output(f"pl-{i}-crumb-grp", "children"),
+                  Output(f"pl-{i}-crumb-grp", "style"),
+                  Input(f"pl-{i}-open", "data"), Input(f"pl-{i}-set", "value"),
+                  Input(f"pl-{i}-stem", "value"), Input(f"pl-{i}-grouping", "value"))
+    def _cb(open_step, value, stem, grouping):
+        dis, fold = _split_set(value)
+        show, crumbs = {}, {"display": "flex", "gap": "5px", "flexWrap": "wrap",
+                            "alignItems": "center", "margin": "4px 0 2px"}
+        # Exactly the open step is on screen. ``pl-{i}-open`` already resolves to
+        # the first unanswered step when nothing was clicked, so this does not need
+        # to re-derive that -- and must not, or re-opening ① from the breadcrumb
+        # would leave ② showing underneath it.
+        s1 = show if open_step == "set" else WRAP_HIDE
+        s2 = show if open_step == "stem" else WRAP_HIDE
+        s3 = show if open_step == "grp" else WRAP_HIDE
+        c_set = ("◈ " + _set_summary(dis, fold)) if value else "◈ pick a stimulus set"
         c_stem = ("▦ " + stem) if stem else "▦ pick a hypothesis"
-        return s1, s2, (crumbs if way else WRAP_HIDE), c_way, c_stem
+        c_grp = ("◧ " + _grouping_summary(grouping)) if grouping else "◧ pick a grouping"
+        # The grouping chip only means something once a hypothesis names the
+        # groupings on offer, so it stays off the row until then.
+        return (s1, s2, s3, (crumbs if value else WRAP_HIDE), c_set, c_stem, c_grp,
+                {} if stem else WRAP_HIDE)
     return _cb
 
 
@@ -2770,9 +2955,12 @@ def _register_panel_cmap_face(i):
 
 
 for _i in range(MAX_MODELS):
-    _register_panel_way(_i)
-    _register_panel_way_mirror(_i)
+    _register_panel_set(_i)
+    _register_panel_set_mirror(_i)
     _register_panel_stem(_i)
+    _register_panel_grouping(_i)
+    for _level in ("set", "stem", "grouping"):
+        _register_panel_pick(_i, _level)
     _register_panel_why(_i)
     _register_panel_open(_i)
     _register_panel_steps(_i)
@@ -3252,19 +3440,43 @@ def _register_panel(i):
         #   FULL   — the deliberate top-bar actions and the two Update buttons.
         gated_triggers = {f"pl-{i}-dis", f"pl-{i}-mahfold", f"pl-{i}-stem",
                           f"pl-{i}-grouping", f"pl-{i}-maps", f"pl-{i}-maptype"}
+
+        # Which model the card is on is settled the moment the picker is clicked:
+        # it is a lookup in the in-memory index, not a read of anything. Resolve it
+        # *before* the gate so the pending branch below can say which model is
+        # waiting, and draw that model's matrix.
+        model = _resolve_model(grouped, dis, mahfold, stem, grouping)
+
         if trig in gated_triggers and "auto" not in (autoupdate or []):
+            # The gate protects the *result volume* — the expensive read. The title
+            # and the model matrix are functions of the model **name** alone (a small
+            # CSV, cached on its mtime), so holding them back only made the card
+            # contradict its own breadcrumb: pick ``mahalanobis · emotion_identity``
+            # over a ``correlation`` card and the matrix stayed on the previous
+            # model's 40x40 grid, which reads as a mis-drawn matrix rather than as a
+            # pending fetch. They follow the picker; only the map/histogram wait.
             log("skip", f"card {i + 1}  {trig} changed — gated, waiting for 🔄")
-            return (no_update, no_update, no_update, no_update, no_update, hist_wrap,
-                    no_update, no_update, "⏸ change pending — click 🔄 on this card",
-                    no_update, no_update) + hs_keep + (no_update,)
+            pend_title = html.Span([
+                status_dot(STATUS_STYLE["unlinked"][0]),
+                html.Span(model or "— pick a set, a hypothesis and a grouping —",
+                          style={"fontWeight": "bold", "color": MUTED}),
+                html.Span("  · ⏸ pending", style={"color": MUTED})])
+            mkey = [datafolder, dataset, model]
+            if show_matrix and list(matkey or []) != mkey:
+                mat, mkey_out = _model_heatmap(datafolder, dataset, model), mkey
+            else:
+                mat, mkey_out = no_update, no_update
+            return (pend_title, no_update, no_update, no_update, no_update, hist_wrap,
+                    mat, wrap_show if show_matrix else wrap_hide,
+                    "⏸ change pending — click 🔄 on this card",
+                    no_update, no_update) + hs_keep + (mkey_out,)
         # A click only moves the crosshair, and neither the in-mask histogram nor
         # the model matrix depend on it — nor do they depend on which slice or axis
         # is on screen. Only the slice figure has to be rebuilt for those.
         map_only = trig in (f"pl-{i}-cross", f"pl-{i}-frac", f"pl-{i}-axis")
 
-        model = _resolve_model(grouped, dis, mahfold, stem, grouping)
         if not model:
-            title = html.Span("— pick a grouping, then a hypothesis —",
+            title = html.Span("— pick a set, a hypothesis and a grouping —",
                               style={"color": MUTED})
             empty = niftiutil.empty_fig("select a model + grouping", height=vh, dark=True)
             mat = _model_heatmap(datafolder, dataset, None) if show_matrix else no_update

@@ -1902,6 +1902,42 @@ def apply_cluster_correction(datafolder, dataset, specie, model, rsa_model, radi
                              dis_method, rsa_method, z_threshold, cluster_threshold, forced_minimal_cluster_size=None,
                              verbose=False, mask_type=None):
     """
+    Apply cluster correction to the mean model similarity map using the distribution mean and std maps. Output is a corrected z map with clusters smaller than the minimal cluster size removed.
+    Parameters
+    ----------
+    datafolder : str
+        Path to the data folder.
+    dataset : str
+        Name of the dataset.
+    specie : str
+        Species identifier.
+    model : str
+        Model name.
+    rsa_model : str
+        RSA model name.
+    radius : int
+        Radius for the cluster correction.
+    dis_method : str
+        Dissimilarity method.
+    rsa_method : str
+        RSA method.
+    z_threshold : float
+        Z-score threshold for cluster correction.
+    cluster_threshold : float
+        Cluster size threshold.
+    forced_minimal_cluster_size : int, optional
+        Minimal cluster size to enforce.
+    verbose : bool, optional
+        If True, print verbose messages.
+    mask_type : str, optional
+        Type of mask to apply.
+
+    Returns
+    -------
+    None
+    Creates a file in the results folder with the corrected z map. If the image doesn't survive the cluster correction, the output will be an all-zero image. The output file will be named according to the input parameters and saved in the appropriate results folder.
+
+    
     """
     connectivity = 26  # based on FSL default for 3D images
     # Load cluster sizes dictionary
@@ -2180,6 +2216,7 @@ def get_minimal_cluster_size(cluster_sizes_dict_path, z_threshold, cluster_thres
         raise ValueError("p_thr must be in (0, 1).")
 
     cluster_sizes_dict = np.load(cluster_sizes_dict_path, allow_pickle=True).item()
+    print(f"Loaded cluster sizes from {cluster_sizes_dict_path}")
     key = f"z{z_threshold}"
     if key in cluster_sizes_dict:
         sizes_list = cluster_sizes_dict[key]['cluster_sizes']
@@ -2192,6 +2229,8 @@ def get_minimal_cluster_size(cluster_sizes_dict_path, z_threshold, cluster_thres
         print(f"Cluster size comparison for z>{z_threshold}, p<{cluster_threshold}:")
         for idx, s in enumerate(sizes_list):
             print(f"  Permutation {idx+1}: max cluster size = {max(s) if len(s) > 0 else 0}, all sizes = {s}")
+    # print sizes_list
+    # print(f"sizes_list: {sizes_list}")
     n_perm = len(max_per_perm)
     if n_perm == 0:
         raise ValueError("No permutations found in 'cluster_sizes'.")
@@ -3031,7 +3070,7 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
         for i, (x, y, z) in enumerate(similarity_table[:, :3]):
             xi, yi, zi = int(x), int(y), int(z)
             if i % 100 == 0 and verbose:
-                print(f"{specie}-sub-{sub_N:02d}, run-{run_N:02d}, rnd {(indx+1):04d}/{reps:04d}: voxel {i+1}/{similarity_table.shape[0]} at ({xi},{yi},{zi})")
+                print(f"{specie}-model-{rsa_model}, sub-{sub_N:02d}_run-{run_N:02d}, rnd {(indx+1):04d}/{reps:04d}: voxel {i+1}/{similarity_table.shape[0]} at ({xi},{yi},{zi})")
             voxel_meta_vector = meta_similarity_map[xi-1, yi-1, zi-1, :]  # -1 for 0-based indexing
             if np.all(np.isnan(voxel_meta_vector)):
                 # add to warning table
@@ -5543,8 +5582,9 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
 def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
                                     dis_method='pearson', rsa_method='pearson',
                                     rsa_model='emotion-valence-basic', reps_group=1000,
-                                    verbose=False):
+                                    verbose=False, min_percentage_available=0.9):
     """
+    Step 6.
     Calculate per voxel distribution. Load all group model similarity maps. Calculate per voxel mean and std across maps. Save as nifti.
     Inputs:
     - datafolder: path to data folder
@@ -5559,6 +5599,7 @@ def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, tas
     - reps_group: number of repetitions for permutations in group analysis
     - replace_file: whether to overwrite existing output file
     - verbose: whether to print messages
+    - min_percentage_available: minimum percentage of available rnd mean files required
     Outputs:
     - writes mean distribution map
     - writes std distribution map
@@ -5584,6 +5625,13 @@ def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, tas
             missing_files.append(group_mean_map_path)
     print(f"Found {len(available_files)} available rnd mean files.")
     print(f"Missing {len(missing_files)} rnd mean files.")
+    # check if enough files are available
+    if len(available_files) / reps_group < min_percentage_available:
+        print(f"Not enough available rnd mean files. Found {len(available_files)} out of {reps_group}. Minimum required is {min_percentage_available*100:.2f}%. Skipping...")
+        return False
+
+
+
     # add to log
     log.append(f"Found {len(available_files)} available rnd mean files.")
     log.append(f"Missing {len(missing_files)} rnd mean files.")
@@ -5636,9 +5684,17 @@ def calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
                                         model, rsa_model, 'mean',
                                         f'{mask_type}-{specie}-r-{radius}_{dis_method}_{rsa_method}_z.nii.gz')
 
-    # load images
+    ## load images
+    # check if files exist
+    if not os.path.exists(group_mean_map_path):
+        raise FileNotFoundError(f"Group mean map not found: {group_mean_map_path}")
     ref_img   = nib.load(group_mean_map_path)         # reference space
     mean_arr  = ref_img.get_fdata()
+    # check if distribution maps exist
+    if not os.path.exists(distribution_mean_map_path):
+        raise FileNotFoundError(f"Distribution mean map not found: {distribution_mean_map_path}")
+    if not os.path.exists(distribution_std_map_path):
+        raise FileNotFoundError(f"Distribution std map not found: {distribution_std_map_path}")
     dmean_arr = nib.load(distribution_mean_map_path).get_fdata()
     dstd_arr  = nib.load(distribution_std_map_path).get_fdata()
 
@@ -5675,7 +5731,8 @@ def calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
 def calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
                                     dis_method='pearson', rsa_method='pearson',
                                     rsa_model='emotion-valence-basic',
-                                    verbose=False, reps_group=1000, replace_file=False):
+                                    verbose=False, reps_group=1000, replace_file=False, 
+                                    shuffle_order=False):
 
     """
     Calculate z map by comparing group model similarity map with the distribution mean and std maps.
@@ -5700,10 +5757,18 @@ def calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
     # check how many rnd mean files are available
     available_files = []
     missing_files = []
-    for rnd_N in range(0, reps_group):
+
+    # create list of rnd_Ns to process
+    rnd_N_list = list(range(0, reps_group))
+    # if shuffle_order is True, shuffle the list
+    if shuffle_order:
+        print('order shuffled')
+        random.shuffle(rnd_N_list)
+
+    for indx,rnd_N in enumerate(rnd_N_list):
         # clean output and print status
         if verbose:
-            print(f"Processing rnd {rnd_N+1}/{reps_group}...")
+            print(f"Processing rnd {indx+1}/{reps_group}. rnd {rnd_N}...")
 
         group_mean_map_path = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'mean' + os.sep +
@@ -5716,11 +5781,24 @@ def calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
             print(f"Z map {group_z_map_path} already exists. Skipping...")
             available_files.append(group_z_map_path)
             continue
-        # check if file exists
+        # check if z map already exist
+        if os.path.exists(group_z_map_path):
+            if replace_file:
+                if verbose:
+                    print(f"Z map {group_z_map_path} already exists. Replacing...")
+            else:
+                print(f"Z map {group_z_map_path} already exists. Skipping...")
+                # add to available files
+                available_files.append(group_z_map_path)
+                continue
+        
+        # check if mean file exists
         if os.path.exists(group_mean_map_path):
             # print
             if verbose:
-                print(f"Calculating z map for {group_mean_map_path}...")
+                print(f"Prerequisite mean map exists {group_mean_map_path}...")
+            # check if z map already exists
+
             # load file
             group_mean_img = nib.load(group_mean_map_path).get_fdata()
             # calculate z map
@@ -5787,7 +5865,7 @@ def shuffle_vector(vector, verbose=False):
 def calculate_cluster_size_distribution(
     datafolder, dataset, model, rsa_model, radius, specie,
     dis_method, rsa_method, z_threshold=3.1,
-    verbose=False
+    verbose=False, replace_file=False,
 ):
     """
     Calculate cluster size distribution for rnd z maps.
@@ -5811,6 +5889,11 @@ def calculate_cluster_size_distribution(
                         'results' + os.sep + 'RSA' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'dist' + os.sep +
                         f"{specie}-r-{radius}_{dis_method}_{rsa_method}_dist.npy")
+    # if replace_file is True, delete existing file
+    if replace_file and os.path.exists(cluster_sizes_dict_path):
+        os.remove(cluster_sizes_dict_path)
+        print(f"Deleted existing cluster sizes file {cluster_sizes_dict_path} due to replace_file=True.")
+    
     # check if file exists
     if os.path.exists(cluster_sizes_dict_path):
         cluster_sizes_dict = np.load(cluster_sizes_dict_path, allow_pickle=True).item()

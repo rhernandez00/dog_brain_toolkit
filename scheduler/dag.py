@@ -51,7 +51,8 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
                     mah_fold="stim-wise",
                     replace_rnd_files=False,
                     verbose=True,
-                    priority=DEFAULT_PRIORITY):
+                    priority=DEFAULT_PRIORITY,
+                    min_percentage_available=1.0):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.  Steps below start_step are never
@@ -123,6 +124,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "rsa_method": rsa_method,
             "dis_method": dis_method,
             "mah_fold": mah_fold,
+            "min_percentage_available": min_percentage_available,
             "z_threshold": z_threshold,
             "reps": reps,
             "reps_group": reps_group,
@@ -143,7 +145,8 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                      mah_fold="stim-wise", participant=None,
                      radius=None, mask_type=None,
                      replace_file=False, replace_rnd_files=False,
-                     verbose=True, priority=DEFAULT_PRIORITY):
+                     verbose=True, priority=DEFAULT_PRIORITY,
+                     min_percentage_available=1.0):
     """Build a single, *independent* job dict (no dependencies, status=pending).
 
     Used by the dashboard's "schedule missing" / per-map buttons: the user has
@@ -153,8 +156,9 @@ def build_single_job(dataset, model, rsa_model, specie, step,
     ``participant=None`` schedules the whole step (the single group map for the
     group steps 3/5/6/7/8/9/10).
 
-    The extra ``radius`` / ``mask_type`` / ``replace_file`` fields are honoured
-    by ``run_jobs.build_command`` (they are absent from classic scheduler jobs,
+    The extra ``radius`` / ``mask_type`` / ``replace_file`` /
+    ``min_percentage_available`` fields are honoured by
+    ``run_jobs.build_command`` (they are absent from classic scheduler jobs,
     which read them with ``.get()`` and fall back to searchlight's defaults).
 
     ``priority`` (1 = first, 3 = last, the default) decides the order
@@ -180,6 +184,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
         "rsa_method": rsa_method,
         "dis_method": dis_method,
         "mah_fold": mah_fold,
+        "min_percentage_available": min_percentage_available,
         "z_threshold": z_threshold,
         "reps": reps,
         "reps_group": reps_group,

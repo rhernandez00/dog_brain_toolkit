@@ -42,6 +42,7 @@ The memory cache is stored per-user at:
 """
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -65,14 +66,36 @@ from scheduler.jobs import (create_job, normalize_priority,  # noqa: E402
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "2.1.0"
-LAST_CHANGE = ("Added a 'priority' selector (1/2/3, default 3) to the parameter panel. "
-               "Every job scheduled from this UI — Sched missing, Sched from here, and "
-               "the per-participant / group Schedule buttons in the detail panel — is "
-               "stamped with the selected priority, and run_jobs.py drains all pending "
-               "priority-1 jobs before any priority-2, then priority-3. Priority is not "
-               "part of the cache signature (it changes nothing on disk), so existing "
-               "cache entries stay valid.")
+VERSION = "2.5.0"
+LAST_CHANGE = ("The rsa_model menu is now filtered by dis_method, not just by fold. "
+               "It offered every model _models.csv classifies, because it queried the "
+               "manifest by mah_fold alone (mahalanobis) or not at all (any other "
+               "method) — and a fold name is not unique across methods, so e.g. "
+               "correlation listed the mahalanobis models too. Both menus now go "
+               "through models_manifest.concrete_models_for(dis_method, mah_fold): "
+               "mahalanobis lists that fold's models, every other method lists its own "
+               "models with the fold ignored, and the mah_fold menu itself lists only "
+               "the selected method's folds. The dis_method menu marks which methods "
+               "the manifest actually classifies. Also (2.4.0): following the cache "
+               "file is a switch — '⟳ live' next to the "
+               "verbose toggle, off by default and remembered per browser. Off, the page "
+               "behaves exactly as it always did: it re-reads the cache only when you "
+               "press a button or change a parameter, and the poll interval is disabled "
+               "so it does not even stat the file. On, a 3 s poll compares the cache "
+               "file's mtime with the last one rendered and redraws when it moved, so "
+               "results written by another process (tools/bulk_check.py, a second "
+               "dashboard, the other machine's copy of the file) appear without touching "
+               "the page; switching it on also picks up anything written while it was "
+               "off. The status line under the buttons says which of the two you are in. "
+               "Also (2.2.0): model-independent steps are now cached once and shared. Step 1 (pairwise "
+               "similarity) writes into the subject folder, not the model folder, so its "
+               "result is stored under a reduced signature (dataset/model/specie/dis_method/"
+               "radius, plus mah_fold and — for the stim-wise fold, whose expected pairs come "
+               "from the model CSV — a fingerprint of the model's categories); step 0 (beta "
+               "maps) is shared over dataset/model/specie. Checking either step for one "
+               "rsa_model now fills it in for every matching model, and Clear / Clear all "
+               "drop the shared entry. Per-parameter-set entries written before this are "
+               "still read as a fallback, so nothing already cached is lost.")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10
@@ -140,6 +163,11 @@ NOT_CHECKED_COLOR = '#9aa0a6'
 DATAFOLDER, _, _ = get_paths()
 CACHE_PATH = os.path.join(os.path.expanduser('~'), '.rsa_pipeline_dashboard_cache.json')
 
+# How often the page re-stats the cache file to see whether another process
+# (tools/bulk_check.py, a second dashboard) wrote to it. It is a local stat, and
+# the page only re-renders when the mtime actually moved.
+CACHE_POLL_MS = 3000
+
 
 def _log(msg):
     """Print to the console the app was launched from, so button presses that
@@ -170,6 +198,164 @@ def save_cache(cache):
 
 def signature(params):
     return " | ".join(f"{k}={params.get(k)}" for k in PARAM_KEYS)
+
+
+# ---------------------------------------------------------------------------
+# Model-independent steps — checked once, shared by every matching model
+# ---------------------------------------------------------------------------
+# Some steps do not write into the rsa_model's own folder, so their result does
+# not depend on which rsa_model is selected:
+#
+#   step 0 (beta maps)      GLM/{model}/{specie}-sub-NN/.../stats/pe*.nii.gz
+#                           -> depends on dataset, GLM model and specie only.
+#   step 1 (pairwise maps)  RSA/{model}/{specie}-sub-NN/r-{radius}_{dis_method}_{a}_{b}.nii.gz
+#                           -> the *files* are shared by every rsa_model; only which
+#                              pairs are expected can differ, and only for mahalanobis
+#                              + the stim-wise fold, where the pair labels are the
+#                              model CSV's categories (every other fold derives them
+#                              from the config's stim_types / model_dict). rsa_method,
+#                              mask_type, z_threshold, reps and reps_group appear
+#                              nowhere in those names.
+#
+# Such a step is cached under a *reduced* signature, so checking it once for one
+# model shows it as checked for every other model that would look for exactly the
+# same files. Every other step stays keyed by the full parameter signature.
+SHARED_STEPS = (0, 1)
+
+
+def effective_radius(params):
+    """The radius the probe will really use (None means auto: 3 dog / 4 human)."""
+    r = params.get('radius')
+    if r is not None:
+        return r
+    return 3 if params.get('specie') == 'D' else 4
+
+
+_CATEGORIES_CACHE = {}
+
+
+def model_categories(dataset, rsa_model):
+    """The RSA model CSV's categories, or None if they can't be read.
+
+    Memoised per process (the CSV sits on the network disk); ``clear_model_cache``
+    drops it, and is called from the same place that re-reads _models.csv."""
+    key = (dataset, rsa_model)
+    if key in _CATEGORIES_CACHE:
+        return _CATEGORIES_CACHE[key]
+    cats = None
+    try:
+        import rsa_utils
+        path = os.path.join(DATAFOLDER, dataset, 'rsa_models', f'{rsa_model}.csv')
+        cats = rsa_utils.read_model_dict(path).get('categories') or None
+    except Exception as e:
+        _log(f"  categories of {rsa_model!r} not read ({e}) — step 1 cached per model "
+             f"instead of shared")
+    _CATEGORIES_CACHE[key] = cats
+    return cats
+
+
+def clear_model_cache():
+    _CATEGORIES_CACHE.clear()
+
+
+def _categories_fingerprint(params):
+    """Short stable id of the model's category set, or None if unavailable.
+
+    The *set* is what matters: two models over the same categories expect the same
+    pairs (in either filename orientation — see ``_pair_present`` in
+    pipeline_console.py), whatever order their CSV columns are in."""
+    cats = model_categories(params.get('dataset'), params.get('rsa_model'))
+    if not cats:
+        return None
+    uniq = sorted({str(c) for c in cats})
+    h = hashlib.sha1('|'.join(uniq).encode('utf-8')).hexdigest()[:10]
+    return f"{h}({len(uniq)})"
+
+
+def shared_signature(params, step):
+    """Reduced cache key for a model-independent step, or None if not shared.
+
+    Returning None makes the caller fall back to the full parameter signature —
+    which is what happens when the model's categories can't be read, since then we
+    cannot prove that two models expect the same step-1 files."""
+    if step == 0:
+        return "shared-step0 | " + " | ".join(
+            f"{k}={params.get(k)}" for k in ('dataset', 'model', 'specie'))
+    if step == 1:
+        dis = (params.get('dis_method') or '').strip()
+        parts = [f"dataset={params.get('dataset')}", f"model={params.get('model')}",
+                 f"specie={params.get('specie')}", f"dis_method={dis}",
+                 f"radius={effective_radius(params)}"]
+        if dis.lower() == 'mahalanobis':
+            fold = params.get('mah_fold') or 'stim-wise'
+            parts.append(f"mah_fold={fold}")
+            if fold == 'stim-wise':
+                fp = _categories_fingerprint(params)
+                if fp is None:
+                    return None
+                parts.append(f"categories={fp}")
+        return "shared-step1 | " + " | ".join(parts)
+    return None
+
+
+def shared_note(params, step):
+    """One line saying what a shared step's cached result covers (or '')."""
+    if step == 0:
+        return (f"shared — step 0 depends only on dataset / GLM model / specie, so this "
+                f"one check covers every rsa_model of {params.get('model')} "
+                f"({params.get('specie')}).")
+    if step == 1 and shared_signature(params, 1):
+        dis = (params.get('dis_method') or '').strip()
+        extra = ''
+        if dis.lower() == 'mahalanobis':
+            fold = params.get('mah_fold') or 'stim-wise'
+            extra = f" / {fold}"
+            if fold == 'stim-wise':
+                extra += ", over the same set of model categories"
+        return (f"shared — step-1 maps live in the subject folder, so this one check "
+                f"covers every rsa_model run with {dis}{extra} at radius "
+                f"{effective_radius(params)}.")
+    return ''
+
+
+def cached_step(cache, params, step):
+    """The remembered result for one step, or None.
+
+    Shared steps are looked up under their reduced key first, then under the full
+    signature — the latter is where entries written before sharing existed live."""
+    ssig = shared_signature(params, step)
+    if ssig:
+        hit = cache.get(ssig, {}).get('steps', {}).get(str(step))
+        if hit:
+            return hit
+    return cache.get(signature(params), {}).get('steps', {}).get(str(step))
+
+
+def store_step(cache, params, step, result):
+    """Remember one step's result under the right key (shared or per-model)."""
+    ssig = shared_signature(params, step)
+    if ssig:
+        result = dict(result, shared=True, checked_with_model=params.get('rsa_model'))
+        entry = cache.setdefault(ssig, {'params': {}, 'steps': {}})
+        # the reduced key's own fields, so the cache file stays self-describing
+        entry['params'] = dict(part.split('=', 1) for part in ssig.split(' | ')[1:])
+        entry['steps'][str(step)] = result
+        # A per-model copy of the same step is now shadowed by the shared entry —
+        # drop it so a stale verdict can never resurface.
+        cache.get(signature(params), {}).get('steps', {}).pop(str(step), None)
+    else:
+        entry = cache.setdefault(signature(params), {'params': params, 'steps': {}})
+        entry['params'] = params
+        entry['steps'][str(step)] = result
+    return result
+
+
+def forget_step(cache, params, step):
+    """Forget one step, in both the shared and the per-parameter-set slot."""
+    ssig = shared_signature(params, step)
+    if ssig:
+        cache.get(ssig, {}).get('steps', {}).pop(str(step), None)
+    cache.get(signature(params), {}).get('steps', {}).pop(str(step), None)
 
 
 def params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
@@ -433,6 +619,8 @@ def param_panel():
                                 'verticalAlign': 'middle', 'marginRight': '10px'}),
             html.Label('dis_method'),
             dcc.Dropdown(id='p-dis_method',
+                         # seeded here so the value has a label on first paint;
+                         # populate_dis_methods re-labels them from the manifest
                          options=[{'label': m, 'value': m} for m in DIS_METHODS],
                          value=DEFAULTS['dis_method'], clearable=False,
                          style={'width': '150px', 'display': 'inline-block',
@@ -490,7 +678,18 @@ app.layout = html.Div([
             value=[],
             style={'display': 'inline-block', 'color': '#57606a', 'marginRight': '10px'},
         ),
+        dcc.Checklist(
+            id='live-refresh',
+            options=[{'label': ' ⟳ Live — follow the cache file (updates by itself while '
+                               'tools/bulk_check.py or another dashboard writes to it)',
+                      'value': 'on'}],
+            value=[],
+            persistence=True, persistence_type='local',
+            style={'display': 'inline-block', 'color': '#57606a', 'marginRight': '10px'},
+        ),
         html.Span(id='sig-label', style={'color': '#57606a', 'marginLeft': '10px'}),
+        html.Div(id='cache-status', style={'color': '#57606a', 'fontSize': '12px',
+                                           'marginTop': '4px'}),
     ], style={'margin': '14px 0'}),
     html.Div(id='schedule-msg', style={'margin': '8px 0', 'minHeight': '20px'}),
     html.Div(id='status-table'),
@@ -550,6 +749,36 @@ app.layout = html.Div([
             "* Scheduled jobs are created with **no dependencies** — they run as soon "
             "as a worker is free, so make sure a map's inputs (earlier steps) already "
             "exist before scheduling it.\n"
+            "* **Steps 0 and 1 are shared between models** (marked ⇄ in the table). "
+            "Their files do not live in the rsa_model's folder — step 0 writes GLM "
+            "beta maps, step 1 writes pairwise maps straight into the subject folder "
+            "— so checking one of them once fills it in for every other model that "
+            "would look for the same files: same dataset / GLM model / specie for step "
+            "0, and additionally the same `dis_method`, `radius` and (for mahalanobis) "
+            "`mah_fold` for step 1. The `stim-wise` fold names those maps after the "
+            "model's *categories*, so there the shared result is limited to models over "
+            "the same category set. `rsa_method`, `mask_type`, `z_threshold`, `reps` "
+            "and `reps_group` never appear in step-0/1 filenames and so never split the "
+            "shared result. **Clear** on a shared step (and **Clear all**) forgets it "
+            "for all the models it covers.\n"
+            "* The **rsa_model** menu lists only models that `rsa_models/_models.csv` "
+            "classifies under the selected **dis_method** (and, for `mahalanobis`, "
+            "under the selected **mah_fold** — for any other method the fold decides "
+            "nothing about which models exist, so it is ignored and greyed out). A "
+            "fold name is not unique across methods, so this is what keeps e.g. "
+            "`correlation` from listing the mahalanobis models. Press **⟳ reload "
+            "models** after editing the manifest.\n"
+            "* **⟳ Live** (next to the verbose toggle) decides whether the page "
+            "follows the cache file. **Off** (the default, remembered per browser) it "
+            "re-reads the cache only when you press a button or change a parameter — "
+            "nothing happens on its own. **On**, it re-stats the file every 3 s and "
+            "redraws when it changed, so a bulk check running in a terminal "
+            "(`tools/bulk_check.py`), a second dashboard, or a cache file copied from "
+            "the other machine fills the table in front of you; switching it on also "
+            "picks up whatever was written while it was off. The line under the buttons "
+            "says which mode you are in and which version of the file is on screen. "
+            "Either way nothing is re-probed: the poll is a local stat, never a scan of "
+            "the data disk.\n"
             "* Results are remembered in `~/.rsa_pipeline_dashboard_cache.json`. "
             "Use a step's **Clear** or **Clear all** after you redo a step so it "
             "gets re-checked.\n"
@@ -561,26 +790,56 @@ app.layout = html.Div([
     ]),
     dcc.Store(id='cache-version', data=0),
     dcc.Store(id='selected-step', data=None),
+    # Follow the cache file itself, not just this page's own button presses —
+    # see poll_cache_file below.
+    dcc.Store(id='cache-mtime', data=0),
+    dcc.Interval(id='cache-poll', interval=CACHE_POLL_MS, n_intervals=0,
+                 disabled=True),   # switched on by the '⟳ Live' checkbox
 ], style={'maxWidth': '1100px', 'margin': '0 auto', 'fontFamily': 'system-ui, sans-serif'})
+
+
+# ---------------------------------------------------------------------------
+# Callback: label the dis_method menu with what the manifest classifies
+# ---------------------------------------------------------------------------
+# Every searchlight distance method stays selectable — a run can predate the
+# manifest — but the ones _models.csv actually has models for are marked, since
+# picking any other now yields an empty rsa_model menu rather than the whole file.
+@app.callback(
+    Output('p-dis_method', 'options'),
+    Input('p-dataset', 'value'),
+    Input('reload-models', 'n_clicks'),
+)
+def populate_dis_methods(dataset, _n):
+    dirs = mm.rsa_models_dirs(DATAFOLDER, (dataset or '').strip())
+    known = set(mm.dis_methods(dirs))
+    return [{'label': m + (' — in _models.csv' if m in known else ''), 'value': m}
+            for m in DIS_METHODS]
 
 
 # ---------------------------------------------------------------------------
 # Callback: populate the mah_fold dropdown from the central _models.csv manifest
 # ---------------------------------------------------------------------------
-# The manifest's folds (e.g. stim-wise, run-wise) lead the list; the remaining
-# searchlight folding strategies (which _models.csv may not classify) are still
-# offered afterwards so any run parameter set can be checked.
+# Scoped to the selected distance method: a fold name is not unique across methods
+# (EmoC classifies its correlation models as 'run-wise' and its mahalanobis ones as
+# 'stim-wise'), so offering every fold in the file would let you pick one that has
+# no model under this method and get an empty rsa_model menu. For a method that
+# does not fold at all, mm.folds_for_dis_method returns nothing and the plain
+# searchlight list is offered — the dropdown is disabled there anyway, but its
+# value is still part of the cache signature, so it has to hold something. Either
+# way the remaining searchlight folding strategies follow the manifest's own, so
+# any run parameter set can still be checked.
 @app.callback(
     Output('p-mah_fold', 'options'),
     Output('p-mah_fold', 'value'),
     Input('p-dataset', 'value'),
+    Input('p-dis_method', 'value'),
     Input('reload-models', 'n_clicks'),
     State('p-mah_fold', 'value'),
 )
-def populate_mah_folds(dataset, _n, current):
+def populate_mah_folds(dataset, dis_method, _n, current):
     mm.clear_cache()  # re-read _models.csv so manifest edits show up on reload
     dirs = mm.rsa_models_dirs(DATAFOLDER, (dataset or '').strip())
-    manifest_folds = mm.folds(dirs)
+    manifest_folds = mm.folds_for_dis_method(dirs, (dis_method or '').strip())
     ordered = manifest_folds + [m for m in MAH_FOLD_OPTIONS if m not in manifest_folds]
     if not ordered:
         ordered = list(MAH_FOLD_OPTIONS)
@@ -594,9 +853,10 @@ def populate_mah_folds(dataset, _n, current):
 # Callback: populate rsa_model dropdown from _models.csv, keyed to dis_method
 # ---------------------------------------------------------------------------
 # The menu lists ONLY models classified in _models.csv (never the loose folder
-# scan). mah_fold applies to 'mahalanobis' alone: with that method the list is
-# filtered to the selected fold's models; with any other distance method the fold
-# is meaningless, so the filter is dropped and every manifest model (all folds) is
+# scan), and only those of the selected **dis_method**. mah_fold applies to
+# 'mahalanobis' alone: with that method the list is narrowed further to the
+# selected fold's models; with any other distance method the fold decides nothing
+# about which models exist, so it is ignored and every model of that method is
 # offered. Only models whose CSV exists on disk are kept.
 @app.callback(
     Output('p-rsa_model', 'options'),
@@ -613,13 +873,13 @@ def populate_models(dataset, dis_method, mah_fold, _n, current):
     _log(f"reloading rsa_model list dataset={dataset!r} dis_method={dis_method!r} "
          f"mah_fold={mah_fold!r} ...")
     mm.clear_cache()
+    clear_model_cache()  # model CSVs may have changed too (step-1 sharing key)
     dirs = mm.rsa_models_dirs(DATAFOLDER, dataset)
     on_disk = {m for m in pc.list_rsa_models(DATAFOLDER, dataset)[0] if not m.startswith('_')}
-    if dis_method == 'mahalanobis':
-        candidates = mm.concrete_models_for_fold(dirs, mah_fold or '')   # fold-filtered
-        note = f"mahalanobis / {mah_fold}"
+    candidates = mm.concrete_models_for(dirs, dis_method, mah_fold)
+    if mm.uses_fold(dis_method):
+        note = f"{dis_method} / {mah_fold}"
     else:
-        candidates = mm.all_concrete_models(dirs)                        # fold ignored
         note = f"{dis_method or 'non-mahalanobis'} (fold ignored)"
     models = [m for m in candidates if m in on_disk]
     _log(f"  {len(models)} model(s) from _models.csv — {note}")
@@ -711,41 +971,48 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
         return no_update, no_update, _msg_span('⚠ pick an rsa_model first', ok=False)
     sig = signature(params)
     cache = load_cache()
-    entry = cache.setdefault(sig, {'params': params, 'steps': {}})
-    entry['params'] = params
     selected = no_update
     msg = no_update
 
     if prop.startswith('check-all'):
         _log(f"'Check all steps' pressed (verbose={verbose}) — {sig}")
         t0 = datetime.now()
+        results = {}
         for step in pc.STEPS:
-            entry['steps'][str(step)] = run_probe(params, step, verbose=verbose)
+            results[step] = store_step(cache, params, step,
+                                       run_probe(params, step, verbose=verbose))
         elapsed = (datetime.now() - t0).total_seconds()
         _log(f"'Check all steps' done in {elapsed:.1f}s")
         # focus the first incomplete step
         selected = None
         for step in pc.STEPS:
-            v = entry['steps'][str(step)]['verdict']
-            if v not in (pc.DONE, pc.NA):
+            if results[step]['verdict'] not in (pc.DONE, pc.NA):
                 selected = step
                 break
     elif prop.startswith('clear-all'):
         _log(f"'Clear all' pressed — {sig}")
         cache.pop(sig, None)
+        # the shared steps are shown in this table too, so clearing "everything"
+        # has to drop them as well — that also un-checks them for the other
+        # models they are shared with, which is the point of re-verifying.
+        for step in SHARED_STEPS:
+            forget_step(cache, params, step)
         save_cache(cache)
         return (version or 0) + 1, None, no_update
     elif ttype == 'step-check':
         step = idd.get('index')
         if step is not None:
             _log(f"'Check' pressed for step {step} (verbose={verbose}) — {sig}")
-            entry['steps'][str(step)] = run_probe(params, step, verbose=verbose)
+            store_step(cache, params, step, run_probe(params, step, verbose=verbose))
+            if shared_signature(params, step):
+                _log(f"  step {step} cached as shared — every model matching "
+                     f"{shared_signature(params, step)} now shows this result")
             selected = step
     elif ttype == 'step-clear':
         step = idd.get('index')
         if step is not None:
             _log(f"'Clear' pressed for step {step} — {sig}")
-            entry['steps'].pop(str(step), None)
+            forget_step(cache, params, step)
             selected = no_update
     elif ttype == 'step-details':
         step = idd.get('index')
@@ -759,8 +1026,8 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
                  f"priority={params['priority']}) — {sig}")
             # probe fresh so we schedule exactly what is missing right now, and
             # remember the result so the table/detail reflect it.
-            result = run_probe(params, step, verbose=verbose)
-            entry['steps'][str(step)] = result
+            result = store_step(cache, params, step,
+                                run_probe(params, step, verbose=verbose))
             selected = step
             msg = _schedule_missing(params, step, result, overwrite)
     elif ttype == 'step-schedule-from-here':
@@ -793,32 +1060,86 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
 
 
 # ---------------------------------------------------------------------------
+# Callback: the '⟳ Live' switch — optionally follow the cache file
+# ---------------------------------------------------------------------------
+# The table is rendered from the cache file, but the only things that re-read it
+# are this page's own buttons and parameter inputs. A result written by *another*
+# writer — tools/bulk_check.py, a second dashboard, a copy of the file from the
+# other machine — therefore sits on disk unseen until you click something.
+#
+# Switched on, this polls the file's modification time (a local stat; the cache
+# lives in your home folder, not on the data disk) and bumps a store only when it
+# actually moved, so the render callbacks stay idle the rest of the time.
+# Switched off, the interval itself is disabled — the page does not stat anything
+# and behaves exactly as it did before the switch existed: it shows what it last
+# rendered until you check a step, change a parameter or reload.
+#
+# Note that either way this only re-reads the *cache*. It never probes the data
+# disk, so a job finishing in run_jobs.py still does not move the table until
+# something checks that step.
+LIVE_OFF_MSG = ('⏸ live off — the table shows the cache as of your last check, '
+                'parameter change or reload')
+
+
+@app.callback(
+    Output('cache-poll', 'disabled'),
+    Output('cache-mtime', 'data'),
+    Output('cache-status', 'children'),
+    Input('live-refresh', 'value'),
+    Input('cache-poll', 'n_intervals'),
+    State('cache-mtime', 'data'),
+)
+def follow_cache_file(live_value, _n, known):
+    live = 'on' in (live_value or [])
+    if not live:
+        # `disabled` is returned unconditionally (never no_update) so that a
+        # persisted "on" restored on page load actually starts the interval,
+        # whose layout default is disabled.
+        return True, no_update, LIVE_OFF_MSG
+    try:
+        mtime = os.path.getmtime(CACHE_PATH)
+    except OSError:
+        return False, no_update, no_update
+    if known and mtime <= known:
+        return False, no_update, no_update
+    # A newer file than the one on screen — including anything written while the
+    # switch was off, which is picked up by the first tick after switching on.
+    stamp = datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
+    return False, mtime, f'⟳ live — showing the cache file as written at {stamp}'
+
+
+# ---------------------------------------------------------------------------
 # Callback: render the status table (cheap — reads cache only, never scans)
 # ---------------------------------------------------------------------------
 @app.callback(
     Output('status-table', 'children'),
     Output('sig-label', 'children'),
     Input('cache-version', 'data'),
+    Input('cache-mtime', 'data'),
     Input('p-dataset', 'value'), Input('p-model', 'value'), Input('p-rsa_model', 'value'),
     Input('p-specie', 'value'), Input('p-dis_method', 'value'), Input('p-mah_fold', 'value'),
     Input('p-rsa_method', 'value'),
     Input('p-radius', 'value'), Input('p-z_threshold', 'value'), Input('p-mask_type', 'value'),
     Input('p-reps', 'value'), Input('p-reps_group', 'value'),
 )
-def render_table(_v, dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
+def render_table(_v, _m, dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
                  radius, z_threshold, mask_type, reps, reps_group):
     params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
                                 rsa_method, radius, z_threshold, mask_type, reps, reps_group)
     sig = signature(params)
     cache = load_cache()
-    steps_cache = cache.get(sig, {}).get('steps', {})
 
     header = html.Tr([html.Th(h, style={'textAlign': 'left', 'padding': '6px 10px'})
                       for h in ['#', 'Step', 'Status', 'Last checked', 'Actions']])
     rows = [header]
     for step in pc.STEPS:
         label = pc.STEP_LABELS.get(step, f'Step {step}')
-        c = steps_cache.get(str(step))
+        note = shared_note(params, step)
+        if note:
+            label = html.Span([label, html.Span(' ⇄ shared', title=note,
+                                                style={'color': '#57606a',
+                                                       'fontSize': '11px'})])
+        c = cached_step(cache, params, step)
         if c:
             verdict = c['verdict']
             color = VERDICT_COLOR.get(verdict, NOT_CHECKED_COLOR)
@@ -876,21 +1197,22 @@ def render_table(_v, dataset, model, rsa_model, specie, dis_method, mah_fold, rs
     Output('detail-panel', 'children'),
     Input('selected-step', 'data'),
     Input('cache-version', 'data'),
+    Input('cache-mtime', 'data'),
     State('p-dataset', 'value'), State('p-model', 'value'), State('p-rsa_model', 'value'),
     State('p-specie', 'value'), State('p-dis_method', 'value'), State('p-mah_fold', 'value'),
     State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
 )
-def render_detail(step, _v, dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
+def render_detail(step, _v, _m, dataset, model, rsa_model, specie, dis_method, mah_fold,
+                  rsa_method,
                   radius, z_threshold, mask_type, reps, reps_group):
     if step is None:
         return html.Span('Select a step\'s "Details" (or "Check" a step) to see the '
                          'per-participant breakdown here.', style={'color': '#57606a'})
     params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
                                 rsa_method, radius, z_threshold, mask_type, reps, reps_group)
-    sig = signature(params)
-    c = load_cache().get(sig, {}).get('steps', {}).get(str(step))
+    c = cached_step(load_cache(), params, step)
     label = pc.STEP_LABELS.get(step, f'Step {step}')
     if not c:
         return html.Div([html.B(f'Step {step} — {label}'), html.Br(),
@@ -909,6 +1231,13 @@ def render_detail(step, _v, dataset, model, rsa_model, specie, dis_method, mah_f
         html.Div(f'checked at {c.get("checked_at", "")}',
                  style={'color': '#57606a', 'fontSize': '12px', 'margin': '4px 0'}),
     ]
+    note = shared_note(params, step)
+    if note:
+        via = c.get('checked_with_model')
+        if via and via != params.get('rsa_model'):
+            note += f' Checked while rsa_model={via} was selected.'
+        blocks.append(html.Div('⇄ ' + note,
+                               style={'color': '#57606a', 'fontSize': '12px'}))
     if c.get('resolve_note'):
         blocks.append(html.Div('note: ' + c['resolve_note'],
                                style={'color': '#bf8700', 'fontSize': '12px'}))

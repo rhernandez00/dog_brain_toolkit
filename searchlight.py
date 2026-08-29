@@ -180,7 +180,7 @@ Input arguments:
 
 --reps: Number of repetitions for permutations in individual run (default: 100)
 --reps_group: Number of repetitions for permutations in group analysis (default: 1000)
---min_percentage_available: Minimum percentage of database available to process (default: 0.8)
+--min_percentage_available: Minimum percentage of database available to process (default: 1.0)
 --min_dist_mm: Minimum distance between peaks in mm (default: 8.0)
 --atlas_type: Type of atlas to use in case of dogs (default: 'Nitzsche')
 --replace_file: Overwrite existing output files (default: False)
@@ -248,6 +248,8 @@ def parse_arguments():
                         help='Shuffle participants order in permutations')
     parser.add_argument('--skip_if_done', action='store_true',
                         help='From step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100 percent of the participants where available)')
+    parser.add_argument('--comparison_model', type=str, default=None,
+                        help='Comparison model to use for step 14 onwards')
     parser.add_argument('--shuffle_runs', action='store_true',
                         help='Shuffle runs order in permutations (only for step 1)')
     parser.add_argument('--allow_space_mismatch', action='store_true',
@@ -288,6 +290,7 @@ def main():
     rsa_model = args.rsa_model
     rsa_method = args.rsa_method
     rsa_class = args.rsa_class
+    comparison_model = args.comparison_model
     specie = args.specie
     mask_type = args.mask_type
     radius = args.radius
@@ -727,7 +730,6 @@ def main():
             #Map computing
         if step == 6: # Calculate per voxel distribution. Load all group model similarity maps. Calculate per voxel mean and std across maps. Save as nifti.
             print("### Step 6: Calculating voxelwise distribution maps from permutations ###")
-            verbose = False
             result = rsa_utils.calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
                                         dis_method=dis_method, rsa_method=rsa_method,
                                         rsa_model=rsa_model, reps_group=reps_group,
@@ -740,8 +742,8 @@ def main():
             result_rnd = rsa_utils.calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
                                         dis_method=dis_method, rsa_method=rsa_method,
                                         rsa_model=rsa_model,
-                                        verbose=verbose, replace_file=True,
-                                        reps_group=reps_group)
+                                        verbose=verbose, replace_file=replace_file,
+                                        reps_group=reps_group, shuffle_order=args.shuffle_participants)
             ## Z -score mean from real data with mean and std from rnd distribution
             result_real = rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie,
                                                 model, radius,
@@ -760,7 +762,8 @@ def main():
             # this function calculates the cluster size distribution
             result = rsa_utils.calculate_cluster_size_distribution(
             datafolder, dataset, model, rsa_model, radius, specie,
-            dis_method=dis_method, rsa_method=rsa_method, z_threshold=z_threshold, verbose=verbose
+            dis_method=dis_method, rsa_method=rsa_method, z_threshold=z_threshold, 
+            verbose=verbose, replace_file=replace_file,
             )
             print("### Done computing cluster size distribution ###")
             if result:
@@ -872,7 +875,31 @@ def main():
                         preprocess_functions.fwd(par_file, radius_fwd, threshold_fwd, output_file=mov_txt, add_movement_params=False)
                     else:
                         raise ValueError("Specie must be 'D' for Dog or 'H' for Human")
+        if step == 14.1: # Calculate group model similarity map
+                    print("### Step 2: Computing group similarity maps ###")
+                    # build session_and_run_all_dict    
+                    session_and_run_all_dict = {}
+                    for sub_N in participants:
+                        session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                        session_and_run_all_dict[sub_N] = session_and_run_dict
+                    
+                    rsa_utils.calculate_similarity_maps_by_class(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict,
+                                                specie=specie, model=model, comparison_model=comparison_model, model_dict=model_dict, task=task, radius=radius,
+                                                    dis_method=dis_method, mask=mask,
+                                                    replace_file=False, min_percentage_available=1.0,
+                                                    verbose=True, avoid_pairs_by_label='actor')
+        if step == 14.2:  # Calculate group model similarity map by stim list
+                    print("### Step 3: Computing group model difference map###")
+                    rsa_utils.calculate_difference_map(datafolder, dataset, specie, model,
+                                                    comparison_model, radius, dis_method,
+                                                    replace_file=False, verbose=True)
         
+        
+                    # rsa_utils.calculate_similarity_maps_by_list(datafolder, dataset, session_and_run_all_dict,
+                    #                         specie, model, stim_list, category_name, mask_img, task, radius,
+                    #                         dis_method, replace_file=False, min_percentage_available=1.0,
+                    #                         verbose=False)
+                    print("### Done computing group model similarity map ###")
     print("### All steps completed! ###")
         
 

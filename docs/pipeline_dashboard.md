@@ -33,7 +33,7 @@ Then open **http://127.0.0.1:8060** in a browser.
 ## Using it
 
 1. **Set the parameters** at the top: `dataset`, `model`, `rsa_model`
-   (dropdown, populated from `{datafolder}/{dataset}/rsa_models/`), `specie`,
+   (dropdown, filtered by `dis_method` — see below), `specie`,
    `method`, `mah_fold` (dropdown; see below), `rsa_method`, `radius`
    (blank = auto: 3 dog / 4 human), `z_threshold`, `mask_type`, `reps`,
    `reps_group`. Press **⟳ reload models** if you add a new model CSV while the
@@ -85,12 +85,126 @@ Results are remembered per **parameter set** in a per-user cache file:
 - The cache lives in your home folder (not on the shared data disk), so two
   machines don't overwrite each other's view.
 
+### ⟳ Live — following the cache file
+
+The table is drawn from the cache file, and the dashboard is not its only
+writer: [`tools/bulk_check.py`](../tools/bulk_check.py) running in a terminal, a
+second dashboard on another port, or a copy of the file from the other machine
+all write the same file. Whether the page notices is a switch, **⟳ Live**, next
+to the verbose toggle. The line under the buttons always says which mode you are
+in.
+
+**Off** (the default, remembered per browser):
+
+```
+⏸ live off — the table shows the cache as of your last check, parameter change or reload
+```
+
+The page behaves exactly as it always has — it re-reads the cache only when you
+press a button or change a parameter. The poll interval is `disabled`, so the
+page makes no requests at all while it sits there.
+
+**On**:
+
+```
+⟳ live — showing the cache file as written at 2026-08-25 07:30:11
+```
+
+The page re-stats the file every 3 s (`CACHE_POLL_MS`) and redraws only when its
+modification time actually moved, so a bulk check fills the table in front of
+you. Switching it on also picks up whatever was written while it was off.
+
+Either way it does **not** re-probe anything: the poll is a local `stat` on a
+file in your home folder, never a scan of the data disk. Job completions still
+do not change the table until something checks the disk again.
+
+### Bulk-filling the cache
+
+Checking a 50-model battery by hand is one button press per model per step.
+[`tools/bulk_check.py`](../tools/bulk_check.py) runs the same probes over every
+model in `_models.csv` and writes the same cache:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" tools\bulk_check.py `
+    --dataset EmoC --specie D --dis_method correlation --steps 5,7
+```
+
+Switch **⟳ Live** on and leave the dashboard open while it runs — the table
+fills in as it goes. Every
+parameter it does not take from you defaults to the dashboard's own defaults,
+because a cached result is keyed by the *full* parameter signature: change
+`z_threshold` in the panel and the page reads a different entry.
+
+### Steps 0 and 1 are shared between models (⇄)
+
+Two steps do **not** write into the rsa_model's own folder, so their result does
+not depend on which model is selected — the table marks them `⇄ shared`:
+
+| Step | Files | Shared over |
+|---|---|---|
+| 0 — beta maps | `GLM/{model}/{specie}-sub-NN/…/stats/pe*.nii.gz` | `dataset`, GLM `model`, `specie` |
+| 1 — pairwise similarity | `RSA/{model}/{specie}-sub-NN/r-{radius}_{dis_method}_{a}_{b}.nii.gz` | the above **+** `dis_method`, `radius`, and (mahalanobis only) `mah_fold` |
+
+Checking one of them once fills it in for **every** other model that would look
+for exactly the same files, so you don't re-scan the same 15 subject folders
+once per model. `rsa_method`, `mask_type`, `z_threshold`, `reps` and
+`reps_group` appear nowhere in those filenames, so they never split the shared
+result either.
+
+One caveat, and it is why the key is not simply "everything except rsa_model":
+under `mahalanobis` + the `stim-wise` fold the pairwise maps are named after the
+**model's categories** (`searchlight.py` passes `categories=rsa_model_dict['categories']`),
+so two models with different category sets expect different files. For that
+fold the shared key therefore carries a fingerprint of the model's category set,
+and the result is shared only among models over the same categories. (For the
+whole EmoC battery that is one group: all 50 stim-wise models use the same 10
+categories, so step 1 is checked once for all of them.) If the model CSV can't
+be read, the step falls back to being cached per parameter set, so a model whose
+categories are unknown never inherits another model's verdict.
+
+The detail panel names the model the shared scan was run under ("Checked while
+rsa_model=… was selected").
+
 ### Clearing memory (when you redo a step)
 
 - **Clear** on a step removes just that step's remembered result, so the next
-  **Check** re-scans it. Use this after you recompute a step.
+  **Check** re-scans it. Use this after you recompute a step. On a `⇄ shared`
+  step this forgets it for every model it covers — which is what you want after
+  recomputing pairwise maps.
 - **🗑 Clear all (this parameter set)** forgets every step for the current
-  parameters.
+  parameters, including the shared steps 0 and 1.
+
+Entries written before sharing existed (one step-1 result per full parameter
+set) are still read as a fallback, so nothing already cached was lost — the
+first re-**Check** of a step promotes it to the shared key.
+
+## Which models the `rsa_model` menu offers
+
+The menu is driven by the dataset's central manifest,
+`{datafolder}/{dataset}/rsa_models/_models.csv`, read through
+[`models_manifest.py`](../tools/models_manifest.py). It lists **only models that
+manifest classifies under the parameters you have selected** — never a loose scan
+of the folder — intersected with the model CSVs that actually exist on disk:
+
+| Selected `dis_method` | The menu offers |
+|---|---|
+| `mahalanobis` | that method's models **for the selected `mah_fold`** (fold dropdown enabled, listing that method's folds) |
+| anything else | that method's models, **all folds** (fold dropdown greyed out — there the fold decides nothing about which models exist) |
+| a method with no rows in the manifest | nothing; the `dis_method` menu marks which methods the manifest knows with *— in \_models.csv* |
+
+The distance method is the filter that matters, because **a fold name is not
+unique across methods**: EmoC classifies its 41 correlation models as `run-wise`
+and its 50 mahalanobis models as `stim-wise`. Filtering by fold alone (what the
+dashboard did until v2.5.0) mixed the two together — selecting `correlation`
+offered all 91 models, and `mahalanobis` + `run-wise` offered the correlation
+ones. The status line under the buttons reports what the filter produced, e.g.
+`50 model(s) from _models.csv — mahalanobis / stim-wise`.
+
+Press **⟳ reload models** after editing `_models.csv` or adding a model CSV; it
+re-reads the manifest and the on-disk file list.
+[`tools/bulk_check.py`](../tools/bulk_check.py) selects models exactly the same
+way (`--dis_method`, optional `--mah_fold`), so the CLI and the page always agree
+on what exists.
 
 ## `mah_fold` — telling mahalanobis folds apart
 

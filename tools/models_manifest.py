@@ -321,15 +321,26 @@ def concrete_models_for_fold(dirs, mah_fold):
     return out
 
 
-def concrete_models_for_dis_method(dirs, dis_method):
-    """Flat, ordered, de-duplicated concrete model names for a ``dis_method``
-    (e.g. 'mahalanobis' or 'correlation'), each family expanded over its groupings.
-    Reads the manifest's ``dis_method`` column; rows without it default to
-    'mahalanobis'."""
+def concrete_models_for(dirs, dis_method, mah_fold=None):
+    """Flat, ordered, de-duplicated concrete model names for one ``dis_method``,
+    optionally restricted to one Mahalanobis fold. Each family is expanded over
+    its groupings; rows without a ``dis_method`` column default to 'mahalanobis'.
+
+    This is the query a model menu wants: a fold name is not unique across
+    distance methods (EmoC's correlation rows are 'run-wise', its mahalanobis rows
+    'stim-wise'), so filtering by fold alone mixes methods together, and filtering
+    by neither offers models that cannot be run with the selected method at all.
+
+    ``mah_fold`` is honoured only where ``uses_fold(dis_method)`` says the fold is
+    a real choice (mahalanobis); for every other method it is ignored, because
+    there the fold decides nothing about which models exist."""
     want = normalize_dis_method(dis_method)
+    by_fold = uses_fold(want) and mah_fold not in (None, "", FOLD_ANY)
     seen, out = set(), []
     for r in load_rows(dirs):
         if r["dis_method"] != want:
+            continue
+        if by_fold and r["mah_fold"] != mah_fold:
             continue
         for g in r["groupings"]:
             name = concrete_model_name(dirs, r["model"], g)
@@ -337,6 +348,11 @@ def concrete_models_for_dis_method(dirs, dis_method):
                 seen.add(name)
                 out.append(name)
     return out
+
+
+def concrete_models_for_dis_method(dirs, dis_method):
+    """Every concrete model name of one ``dis_method``, all folds pooled."""
+    return concrete_models_for(dirs, dis_method)
 
 
 def classified_models(dirs):

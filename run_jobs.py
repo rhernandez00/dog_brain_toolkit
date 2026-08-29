@@ -59,6 +59,8 @@ def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None
         cmd += ["--radius", str(job["radius"])]
     if job.get("mask_type"):
         cmd += ["--mask_type", str(job["mask_type"])]
+    if job.get("min_percentage_available") is not None:
+        cmd += ["--min_percentage_available", str(job["min_percentage_available"])]
     if job.get("participant") is not None:
         # Scope a per-participant job to a single subject.
         cmd += ["--participants_forced", str(job["participant"])]
