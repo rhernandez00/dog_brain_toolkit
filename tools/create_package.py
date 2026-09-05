@@ -18,8 +18,17 @@ Usage (from the repo root, with the full Anaconda interpreter -- see CLAUDE.md):
 ``--all-stim-wise`` expands to every stim-wise model x grouping in the dataset's
 ``rsa_models/_models.csv`` (via tools/models_manifest.py) -- 50 models for EmoC.
 
-If the participant's 45 step-1 pairwise maps already exist on disk, they are
-bundled and the manifest flags ``step1_done`` so Colab skips step 1.
+If the participant's 45 step-1 pairwise maps already exist on disk they are
+bundled and the manifest flags ``step1_done`` so Colab skips step 1 -- but only
+if they pass a freshness gate, because bundling makes Colab skip step 1 and those
+maps, not the verified betas beside them, then feed every model. A map may be
+reused when it sits on the mask's voxel grid and, where step 0.5 actually
+resampled the run (``transform`` set in ``beta_manifest.json`` -- humans), was
+written after that resampling. Where step 0.5 only copied the pe maps
+(``transform: null`` -- dogs, already normalised), age carries no information and
+the grid check alone decides. Maps that fail are left out and Colab recomputes
+step 1 from the aligned betas. ``--no_reuse_step1`` always recomputes;
+``--reuse_stale_step1`` overrides the gate (legacy reproduction only).
 
 Only the Mahalanobis ``stim-wise`` path is supported (the pipeline default and the
 one the GPU port accelerates).
@@ -104,27 +113,41 @@ def resolve_models(datafolder, dataset, explicit, all_flag, all_stim_wise, dis_m
     return out
 
 
+def scan_dir(path):
+    """``{lowercased filename: DirEntry}`` for one folder, ``{}`` if it is absent.
+
+    One scandir instead of a stat per candidate: the network disk costs ~50 ms
+    per stat, and the correlation path probes 780 pairs x 2 orientations per run
+    folder. The DirEntry also carries mtime, which the freshness gate needs.
+    Names are folded to lowercase because the disk is case-insensitive.
+    """
+    try:
+        return {e.name.lower(): e for e in os.scandir(path) if e.is_file()}
+    except OSError:
+        return {}
+
+
 def step1_maps_on_disk(datafolder, dataset, model, specie, sub_N, radius, pairs):
-    """Mahalanobis: return the 45 existing step-1 map paths (either orientation) as
-    ``(arcname, src)`` if ALL present, else None."""
-    base = os.path.join(datafolder, dataset, "results", "RSA", model, f"{specie}-sub-{sub_N:02d}")
+    """Mahalanobis: return the 45 existing step-1 maps (either orientation) as
+    ``(arcname, src, mtime)`` if ALL present, else None."""
     sub = f"{specie}-sub-{sub_N:02d}"
+    base = os.path.join(datafolder, dataset, "results", "RSA", model, sub)
+    entries = scan_dir(base)
     found = []
     for c1, c2 in pairs:
-        a = os.path.join(base, f"r-{radius}_mahalanobis_{c1}_{c2}.nii.gz")
-        b = os.path.join(base, f"r-{radius}_mahalanobis_{c2}_{c1}.nii.gz")
-        src = a if os.path.exists(a) else (b if os.path.exists(b) else None)
-        if src is None:
+        e = (entries.get(f"r-{radius}_mahalanobis_{c1}_{c2}.nii.gz".lower())
+             or entries.get(f"r-{radius}_mahalanobis_{c2}_{c1}.nii.gz".lower()))
+        if e is None:
             return None
-        arc = f"data/{dataset}/results/RSA/{model}/{sub}/{os.path.basename(src)}"
-        found.append((arc, src))
+        arc = f"data/{dataset}/results/RSA/{model}/{sub}/{e.name}"
+        found.append((arc, e.path, e.stat().st_mtime))
     return found
 
 
 def step1_corr_maps_on_disk(datafolder, dataset, model, specie, sub_N, radius, task,
                             runs, pairs):
-    """Correlation: return all per-run step-1 map paths (one orientation each) as
-    ``(arcname, src)`` if ALL 780 pairs exist in EVERY run folder, else None."""
+    """Correlation: return all per-run step-1 maps (one orientation each) as
+    ``(arcname, src, mtime)`` if ALL 780 pairs exist in EVERY run folder, else None."""
     sub = f"{specie}-sub-{sub_N:02d}"
     found = []
     for entry in runs:
@@ -132,22 +155,121 @@ def step1_corr_maps_on_disk(datafolder, dataset, model, specie, sub_N, radius, t
         run_N = int(entry["run_N"])
         run_folder = f"ses-{session}_task-{task}_run-{run_N:02d}"
         base = os.path.join(datafolder, dataset, "results", "RSA", model, sub, run_folder)
+        entries = scan_dir(base)
         for s1, s2 in pairs:
-            a = os.path.join(base, f"r-{radius}_correlation_{s1}_{s2}.nii.gz")
-            b = os.path.join(base, f"r-{radius}_correlation_{s2}_{s1}.nii.gz")
-            src = a if os.path.exists(a) else (b if os.path.exists(b) else None)
-            if src is None:
+            e = (entries.get(f"r-{radius}_correlation_{s1}_{s2}.nii.gz".lower())
+                 or entries.get(f"r-{radius}_correlation_{s2}_{s1}.nii.gz".lower()))
+            if e is None:
                 return None
-            arc = (f"data/{dataset}/results/RSA/{model}/{sub}/{run_folder}/"
-                   f"{os.path.basename(src)}")
-            found.append((arc, src))
+            arc = (f"data/{dataset}/results/RSA/{model}/{sub}/{run_folder}/{e.name}")
+            found.append((arc, e.path, e.stat().st_mtime))
     return found
+
+
+# ---------------------------------------------------------------------------
+# Step-1 reuse gate
+#
+# Bundling existing step-1 maps makes Colab skip step 1 entirely, so a stale map
+# silently overrides the aligned betas shipped beside it. Any step-1 output
+# produced before step 0.5 was derived from scanner-native betas (and masked with
+# the native-grid mask), which is exactly the failure the aligned layout exists to
+# prevent -- so reuse has to be earned, not assumed.
+# ---------------------------------------------------------------------------
+def grid_sample(found, cap=45):
+    """Evenly spaced subset of ``found``, at most ``cap`` entries.
+
+    All step-1 maps of a participant come from one step-1 run against one mask,
+    so a bounded sample is diagnostic; the correlation path would otherwise
+    header-load thousands of files across the network.
+    """
+    if len(found) <= cap:
+        return list(found)
+    stride = len(found) / cap
+    return [found[int(i * stride)] for i in range(cap)]
+
+
+def beta_alignment_cutoff(datafolder, dataset, model, specie, sub_N, task, runs):
+    """When step 0.5 last *changed the data*, as an mtime cutoff. ``(cutoff, note)``.
+
+    Step 0.5 does one of two things, and the manifest says which. When it records
+    a ``transform`` it resampled the pe maps onto the template grid (humans, whose
+    FEAT stats are scanner-native), so anything computed before it used different
+    voxels. When ``transform`` is null it only copied the pe maps under their
+    stimulus names (dogs, already normalised into Nitzsche space), so the betas
+    step 1 consumed are identical to the aligned ones and their age says nothing.
+
+    * ``None`` -- a run has no readable manifest. No provenance, so nothing can be
+      certified and reuse is refused.
+    * ``0.0`` -- step 0.5 only copied; no map can be too old, and the grid check
+      alone decides.
+    * otherwise -- newest mtime among the runs that were actually resampled.
+    """
+    resampled = []
+    for entry in runs:
+        path = rsa_utils.beta_manifest_path(
+            datafolder, dataset, model, specie, sub_N,
+            entry["session"], entry["run_N"], task)
+        try:
+            with open(path) as f:
+                manifest = json.load(f)
+            mtime = os.path.getmtime(path)
+        except (OSError, ValueError):
+            return None, "no readable beta_manifest.json for every run"
+        if manifest.get("transform"):
+            resampled.append(mtime)
+    if not resampled:
+        return 0.0, "step 0.5 copied the pe maps without resampling"
+    return max(resampled), f"step 0.5 resampled {len(resampled)}/{len(runs)} runs"
+
+
+def validate_step1_reuse(found, mask_src, cutoff, context=""):
+    """Decide whether existing step-1 maps may be bundled.
+
+    Returns ``(ok, reason)``. Two independent staleness tests:
+
+    * **age** -- a map older than ``cutoff`` (see ``beta_alignment_cutoff``) was
+      computed before step 0.5 moved the betas, so it used different voxels.
+      Skipped when step 0.5 did not resample anything.
+    * **grid** -- the maps must sit on the current mask grid. Step-1 output built
+      against a native-space mask lands on that mask's grid, so this catches the
+      case even when the timestamps happen to look fine (restored backups,
+      copied folders, a disk that lost mtimes).
+
+    A failure is not fatal: it just disables reuse, and Colab recomputes step 1.
+    """
+    if cutoff is None:
+        return False, "step-0.5 beta_manifest.json missing for at least one run"
+
+    stale = [(arc, mt) for arc, _src, mt in found if mt < cutoff]
+    if stale:
+        oldest = datetime.datetime.fromtimestamp(min(mt for _a, mt in stale))
+        aligned = datetime.datetime.fromtimestamp(cutoff)
+        return False, (
+            f"{len(stale)}/{len(found)} maps predate the aligned betas "
+            f"(oldest {oldest:%Y-%m-%d %H:%M:%S} < betas {aligned:%Y-%m-%d %H:%M:%S})")
+
+    sample = grid_sample(found)
+    try:
+        rsa_utils.check_same_space(
+            (f"mask {os.path.basename(mask_src)}", mask_src),
+            [(os.path.basename(src), src) for _arc, src, _mt in sample],
+            context=context,
+            strict=True,
+        )
+    except rsa_utils.SpaceMismatchError as exc:
+        # check_same_space lists the offending images indented by two spaces, under
+        # a "Reference grid:" header line -- quote the first of those, not the header.
+        first = next((ln.strip() for ln in str(exc).splitlines()
+                      if ln.startswith("  ") and ln.strip()), "grid mismatch")
+        return False, f"maps are not on the mask grid ({first})"
+    return True, ""
 
 
 # ---------------------------------------------------------------------------
 def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model,
                   radius, dis_method, mah_fold, rsa_method, reps, mask_type, out_dir,
-                  verbose=True, allow_space_mismatch=False):
+                  verbose=True, allow_space_mismatch=False, no_reuse_step1=False,
+                  reuse_stale_step1=False):
     if specie not in ("D", "H"):
         raise ValueError("specie must be 'D' or 'H'")
     if dis_method not in ("mahalanobis", "correlation"):
@@ -179,33 +301,9 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
     if not runs:
         raise ValueError(f"No runs found for {specie}-sub-{sub_N:02d} in the database.")
 
-    if dis_method == "correlation":
-        existing_step1 = step1_corr_maps_on_disk(
-            datafolder, dataset, model, specie, sub_N, radius, task, runs, pairs)
-    else:
-        existing_step1 = step1_maps_on_disk(
-            datafolder, dataset, model, specie, sub_N, radius, pairs)
-    step1_done = existing_step1 is not None
-
     mask_src = os.path.join(datafolder, dataset, "ROI", specie, f"{mask_type}.nii.gz")
     if not os.path.exists(mask_src):
         raise FileNotFoundError(f"Mask not found: {mask_src}")
-
-    manifest = {
-        "created": datetime.datetime.now().isoformat(timespec="seconds"),
-        "dataset": dataset, "model": model, "specie": specie, "sub_N": sub_N,
-        "task": task, "radius": radius, "mask_type": mask_type,
-        "dis_method": dis_method, "mah_fold": mah_fold, "rsa_method": rsa_method,
-        "reps": reps, "stim_types": stim_types, "categories": categories,
-        "pairs": pairs, "runs": runs, "models": model_list, "step1_done": step1_done,
-        # gpu_rsa runs the same voxel-grid check on Colab; without this the package
-        # would build here and then fail there
-        "allow_space_mismatch": bool(allow_space_mismatch),
-    }
-
-    os.makedirs(out_dir, exist_ok=True)
-    zip_name = f"pkg_{specie}-sub-{sub_N:02d}_{dataset}_{model}_{dis_method}.zip"
-    zip_path = os.path.join(out_dir, zip_name)
 
     # The GPU port masks and folds these betas by array index exactly as the CPU
     # pipeline does, so the same voxel-grid invariant applies -- check before
@@ -235,9 +333,65 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
         strict=not allow_space_mismatch,
     )
 
+    # ---- step-1 reuse decision ----------------------------------------------
+    # Bundling step-1 maps makes Colab skip step 1, so these maps -- not the
+    # verified betas above -- become the input to every model. They therefore get
+    # the same scrutiny before they are allowed in.
+    if no_reuse_step1:
+        existing_step1, step1_reason = None, "disabled with --no_reuse_step1"
+    else:
+        if dis_method == "correlation":
+            existing_step1 = step1_corr_maps_on_disk(
+                datafolder, dataset, model, specie, sub_N, radius, task, runs, pairs)
+        else:
+            existing_step1 = step1_maps_on_disk(
+                datafolder, dataset, model, specie, sub_N, radius, pairs)
+        if existing_step1 is None:
+            step1_reason = "not all step-1 maps present on disk"
+        else:
+            cutoff, note = beta_alignment_cutoff(
+                datafolder, dataset, model, specie, sub_N, task, runs)
+            if verbose:
+                print(f"  step-1 reuse check: {note}")
+            ok, why = validate_step1_reuse(
+                existing_step1, mask_src, cutoff,
+                context=f"step-1 reuse for {specie}-sub-{sub_N:02d} of {dataset}")
+            if ok:
+                step1_reason = ""
+            elif reuse_stale_step1:
+                step1_reason = f"REUSED DESPITE FAILING THE FRESHNESS GATE: {why}"
+                print(f"  WARNING: bundling step-1 maps that failed validation -- {why}")
+                print("           results built on them are not valid; "
+                      "--reuse_stale_step1 is for reproducing legacy runs only.")
+            else:
+                existing_step1, step1_reason = None, why
+
+    step1_done = existing_step1 is not None
+    if verbose and not step1_done:
+        print(f"  step 1 will be recomputed on Colab ({step1_reason}).")
+
+    manifest = {
+        "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        "dataset": dataset, "model": model, "specie": specie, "sub_N": sub_N,
+        "task": task, "radius": radius, "mask_type": mask_type,
+        "dis_method": dis_method, "mah_fold": mah_fold, "rsa_method": rsa_method,
+        "reps": reps, "stim_types": stim_types, "categories": categories,
+        "pairs": pairs, "runs": runs, "models": model_list, "step1_done": step1_done,
+        # why step 1 is or is not bundled -- provenance for unpack_results and for
+        # anyone reading the package months later
+        "step1_reason": step1_reason,
+        # gpu_rsa runs the same voxel-grid check on Colab; without this the package
+        # would build here and then fail there
+        "allow_space_mismatch": bool(allow_space_mismatch),
+    }
+
+    os.makedirs(out_dir, exist_ok=True)
+    zip_name = f"pkg_{specie}-sub-{sub_N:02d}_{dataset}_{model}_{dis_method}.zip"
+    zip_path = os.path.join(out_dir, zip_name)
+
     n_betas = 0
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
-        # betas (only the odd pe maps actually used)
+        # betas (step-0.5 aligned maps, one per stimulus per run)
         for rel, src in beta_srcs:
             zf.write(src, arcname=rel)
             n_betas += 1
@@ -251,7 +405,7 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
         zf.write(cfg_path, arcname=f"data/{dataset}/config_files/{specie}_{model}.yaml")
         # bundled step-1 maps (if already computed) -- arcnames come from the helper
         if step1_done:
-            for arc, src in existing_step1:
+            for arc, src, _mtime in existing_step1:
                 zf.write(src, arcname=arc)
         # code + notebook
         zf.write(os.path.join(COLAB_DIR, "gpu_rsa.py"), arcname="code/gpu_rsa.py")
@@ -277,7 +431,8 @@ def _package_readme(m, zip_name):
         f"{m['specie']}-sub-{m['sub_N']:02d}  {m['dataset']}/{m['model']}  "
         f"dis_method={m['dis_method']}  radius={m['radius']}  "
         f"rsa_method={m['rsa_method']}  reps={m['reps']}\n"
-        f"models: {len(m['models'])}   step1_done: {m['step1_done']}\n\n"
+        f"models: {len(m['models'])}   step1_done: {m['step1_done']}"
+        + (f"  ({m['step1_reason']})" if m.get("step1_reason") else "") + "\n\n"
         "To run on Colab:\n"
         "  1. Upload this .zip to a Google Drive folder.\n"
         "  2. Open colab_rsa.ipynb in Colab (GPU runtime: L4 or T4, High-RAM).\n"
@@ -314,6 +469,15 @@ def parse_args():
                           "anyway. Recorded in the manifest so the Colab run honours "
                           "it too. The betas are then masked and folded by array "
                           "index regardless of their affines."))
+    ap.add_argument("--no_reuse_step1", action="store_true",
+                    help=("Never bundle existing step-1 maps; always recompute step 1 "
+                          "on the GPU. Use after re-running step 0.5, or whenever you "
+                          "want the package to depend on nothing but the betas."))
+    ap.add_argument("--reuse_stale_step1", action="store_true",
+                    help=("Bundle existing step-1 maps even when they fail the "
+                          "freshness gate (older than the aligned betas, or on a "
+                          "different grid than the mask). For reproducing legacy runs "
+                          "only -- results produced that way are not valid."))
     return ap.parse_args()
 
 
@@ -321,7 +485,9 @@ def main():
     a = parse_args()
     build_package(a.specie, a.sub_N, a.models, a.all_flag, a.all_stim_wise, a.dataset,
                   a.model, a.radius, a.dis_method, a.mah_fold, a.rsa_method, a.reps,
-                  a.mask_type, a.out, allow_space_mismatch=a.allow_space_mismatch)
+                  a.mask_type, a.out, allow_space_mismatch=a.allow_space_mismatch,
+                  no_reuse_step1=a.no_reuse_step1,
+                  reuse_stale_step1=a.reuse_stale_step1)
 
 
 if __name__ == "__main__":

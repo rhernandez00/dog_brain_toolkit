@@ -1,11 +1,12 @@
 # colab_gpu/ — GPU acceleration for RSA steps 1, 2, 4 and 3, 5, 6, 7
 
-Two halves that chain:
+Two halves that chain, plus a step-5-only shortcut:
 
 | Half | Scope | Package | Notebook | Writes |
 |---|---|---|---|---|
 | **participant** — steps 1, 2, 4 | one participant × many models | `tools/create_package.py` | `colab_rsa.ipynb` | `result_step1_*.zip`, `result_<model>_<specie>-sub-NN.zip` |
 | **group** — steps 3, 5, 6, 7 | all participants × many models | `tools/create_group_package.py` | `colab_rsa_group.ipynb` | `result_group_<model>_<specie>.zip` |
+| **step 5 only** | all participants × many models | *none needed* | `colab_rsa_step5.ipynb` | `result_step5_<model>_<specie>.zip` |
 
 The group half's input is the participant half's **output folder**: it reads the
 per-participant maps straight out of the `result_*.zip` files already sitting in
@@ -13,6 +14,9 @@ OUT_DIR, so nothing has to come down to the workstation and go back up in
 between. Afterwards `tools/unpack_results.py` merges either kind of zip and
 `searchlight.py` continues — from step 3 after a participant run, from step 8
 after a group run.
+
+The third row is for when you want **step 5 and nothing else** — see
+[Step 5 on its own](#step-5-on-its-own) below.
 
 Two distance methods are supported (`--dis_method`, read from `_models.csv`):
 
@@ -105,13 +109,16 @@ python tools/check_space.py --dataset EmoC --specie H --model basic-block
 | File | What it is |
 |---|---|
 | `gpu_rsa.py` | PyTorch step 1/2/4 kernels: `batched_ledoit_wolf`, `batched_crossnobis`, `crossnobis_searchlight`, `run_step1`, `run_model`, plus per-part zip helpers. Copied into every package. Depends only on torch/numpy/nibabel. |
-| `run_colab.py` | Orchestrator for steps 1/2/4: step 1 once + steps 2/4 per model, one `result_*.zip` per part, resumable. Importable (`run_package`) or a CLI. |
+| `run_colab.py` | Orchestrator for steps 1/2/4: step 1 once + steps 2/4 per model, one `result_*.zip` per part, resumable. Importable (`run_package`) or a CLI. `run_package(..., calculate_step1=True)` ignores any step-1 maps bundled in the package (or a manifest that claims `step1_done`) and recomputes on the GPU regardless — for a package built before you decided the bundled maps shouldn't have been reused, without rebuilding and re-uploading the (often multi-GB) zip. `delete_step1=True` additionally deletes any step-1 maps already unpacked into the package before deciding, which on its own also forces the recompute; pair it with `calculate_step1` when the bundled maps might sit under the *other* pair orientation (`catB_catA` instead of `catA_catB`) from what a fresh compute writes, since a stale file in the other orientation would not simply get overwritten. Both flags default to `False` and are exposed in `colab_rsa.ipynb` as `CALCULATE_STEP1`/`DELETE_STEP1`, and on the CLI as `--calculate_step1`/`--delete_step1`. See also `tools/purge_step1_from_package.py`, which strips bundled step-1 maps out of already-uploaded package zips in place, for when you'd rather shrink the zip on Drive than have Colab discard them at unpack time. |
 | `colab_rsa.ipynb` | The Colab notebook for steps 1/2/4 — check GPU, mount Drive, unzip package, run. |
 | `gpu_group.py` | PyTorch step 3/5/6/7 kernels: `ResultStore` (reads participant maps out of the result zips), `draw_group_indices`, `group_permutation_stats`, `run_group_model`, `zip_group_result`. Also the pipeline path builders for every group output. Imports `gpu_rsa` for the voxel-grid check. |
 | `run_colab_group.py` | Orchestrator for steps 3/5/6/7: one `result_group_<model>_<specie>.zip` per model, resumable. Importable (`run_group_package`) or a CLI. |
 | `colab_rsa_group.ipynb` | The Colab notebook for steps 3/5/6/7. |
+| `gpu_step5.py` | **Step 5 alone**, with no package and no mask: `scan_results` recovers every pipeline parameter from the arcnames inside the result zips, and `run_step5`/`run_step5_all` build the group null. Self-contained (torch/numpy/nibabel only, imports nothing else in this folder) so it can be dropped next to the notebook on Drive. Importable or a CLI. |
+| `colab_rsa_step5.ipynb` | The Colab notebook for step 5 on its own. Needs only `gpu_step5.py` and the folder of `result_*.zip`. |
 | `validate_gpu.py` | Correctness harness vs the CPU pipeline (LW, crossnobis, kendall, step-1 vs disk maps, step-2). Run on the workstation. |
 | `validate_group.py` | Correctness harness for the group steps: builds a synthetic dataset, runs both paths, compares steps 3/5/6/7, and checks that the result zip merges via `unpack_results.py` and that step 8's glob finds the z maps. |
+| `validate_step5.py` | Correctness harness for `gpu_step5.py`: compares every output map against a plain **full-volume** mean of the same drawn files (the reduction `nifti_mean` performs), over the stim-wise and per-run layouts, ragged permutation counts and a stem with no `{mask_type}-` prefix. Also checks arcname parsing, the availability gate, that prefetching reads changes nothing byte-wise, and that the zip merges via `unpack_results.py`. |
 | `packages/` | Default output folder for `tools/create_package.py` and `tools/create_group_package.py` (git-ignored contents). |
 
 ## Workflow
@@ -164,6 +171,65 @@ and is what a real run should use.
 null std`, so step 7 needs step 3's output. Keep `3` in `STEPS`, or make sure the
 step-3 mean map is already in `RESULTS_DIR`.
 
+## Step 5 on its own
+
+`colab_rsa_step5.ipynb` + `gpu_step5.py` run **step 5 and nothing else**, and
+unlike everything else here they need **no package** — just the folder of
+`result_<model>_<specie>-sub-NN.zip` on Drive. Copy the one file across and go:
+
+```
+REM workstation, Anaconda Prompt
+copy \github\dog_brain_toolkit\tools\colab_gpu\gpu_step5.py "G:\My Drive\rsa_colab\"
+```
+
+Two things make the package unnecessary:
+
+* **No manifest.** Dataset, GLM model, radius, `dis_method`, `rsa_method`,
+  `mah_fold`, the per-run layout, who has which permutation indices — all of it
+  is in the arcnames inside the zips, and `scan_results` reads it back out. It
+  refuses to proceed if two zips of one model disagree on any of it, since that
+  would build one null out of two analyses.
+* **No mask.** Step 5 calls `nifti_mean(files_list, result_map_path=...)`
+  *without* `mask_img`, so it is a plain voxelwise mean over full volumes. A
+  voxel that is 0 in every input is 0 in the output, so restricting the
+  arithmetic to the union of the inputs' support is exact — and that union comes
+  from the maps themselves. It is what keeps the accumulator to 1.2 GB instead
+  of 7.2 GB on the human grid (159 198 of 902 629 voxels, measured on EmoC).
+
+  The support is *grown* as maps arrive rather than taken from the first map,
+  because a Kendall tau does land on exactly 0.0: on EmoC H-sub-01 about 1 000
+  voxels differ in support between two maps of the same participant, and a real
+  run expanded 18 times before settling.
+
+**When to use it instead of `colab_rsa_group.ipynb`.** Only when you want step 5
+by itself. Its output is bulky — 1000 group mean maps are ~450 MB per model on
+the human grid — and those maps feed steps 6 and 7 and nothing else. If you want
+6 and 7 too, `colab_rsa_group.ipynb` with `WRITE_GROUP_MEANS = False` does
+3/5/6/7 in one pass and brings back a few megabytes.
+
+**The availability gate needs a denominator.** The CPU compares against the
+config's participant list; there is no config on Drive, so
+`EXPECTED_PARTICIPANTS` says what to compare against: `'auto'` (every
+`<specie>-sub-NN` appearing in *any* result zip in the folder — so a participant
+who finished other models but not this one still counts as expected), an integer,
+or `'found'` to disable the check. Availability is counted in **participants**,
+not participant-runs, because maps arrive one zip per participant.
+
+**Reads dominate.** Each map is read exactly once (the CPU re-reads each one
+`reps_group × units / maps` times — 10× at EmoC human scale), and the reads are
+prefetched on a thread pool while being *applied in order*, so the result stays
+bit-identical to a serial run. Measured on `action_tendency__all` [H], 32
+participants off a local Drive mount: `--read_workers 1` took 118 s, the default
+8 took 11 s.
+
+```powershell
+$env:KMP_DUPLICATE_LIB_OK = "TRUE"
+& "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\gpu_step5.py `
+    --results "G:\My Drive\rsa_colab\results" --out <scratch-out> `
+    --specie H --models action_tendency__all --reps_group 1000 `
+    --min_percentage_available 0.5 --cpu
+```
+
 For a quick local smoke test without Colab (CPU torch is fine):
 
 ```powershell
@@ -179,6 +245,7 @@ For a quick local smoke test without Colab (CPU torch is fine):
 ```powershell
 & "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\validate_gpu.py
 & "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\validate_group.py
+& "C:\ProgramData\anaconda3\python.exe" tools\colab_gpu\validate_step5.py
 ```
 Each exits non-zero if any kernel diverges from the CPU beyond tolerance. Both need
 `KMP_DUPLICATE_LIB_OK=TRUE` on this machine (Anaconda and torch each ship an OpenMP

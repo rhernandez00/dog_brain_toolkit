@@ -337,7 +337,7 @@ def main():
     # Load config.yaml
     with open(config_path, 'r') as f:
         config = yaml.safe_load(f)
-
+    print(f"Loaded config from: {config_path}")
     # stim_types = config['stim_types']
     
 
@@ -379,6 +379,8 @@ def main():
     # GLM parameters
     radius_fwd = config["radius_fwd"]
     threshold_fwd = config["threshold_fwd"]
+    print(f"Dataset: {dataset}, Task: {task}, Specie: {specie}, Model: {model}, RSA model: {rsa_model}, RSA method: {rsa_method} ")
+    print(f"Threshold for fwd calculation from config: {threshold_fwd}")
     smooth = config["smooth"]
     img_type = config["img_type"]
     # if model_dict is in config, get it, otherwise set it to None
@@ -555,7 +557,7 @@ def main():
             print("#### Done computing beta maps ####")
             _write_marker(job_marker_dir, 0)
 
-        if step == 0.5: # materialise beta maps on the template grid
+        if step == 0.5: # put beta maps on the template grid
             print("### Step 0.5: Writing aligned beta maps ###")
             if specie == 'H':
                 print("Humans: applying reg/example_func2standard.mat with flirt "
@@ -821,7 +823,8 @@ def main():
             rsa_utils.calculate_leave_one_out_cross_participant_similarity(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie, mask=mask, model = model, task=task, radius=radius, rsa_class=rsa_class, dis_method=dis_method, rsa_method=rsa_method,rsa_model=rsa_model, verbose=verbose)
             print("### Done computing leave-one-out cross-participant similarity ###")
                 
-        if step == 12: # Calculate similarity across all pairs in a model, save files as txt
+        if step == 12: # Calculate similarity across all pairs in a model, save files as txt as            
+            #datafolder/dataset/results/RSA_sphere/model/{specie}-sub-{sub_N:02d}/ses-{session}_task-{task}_run-{run_N:02d}/r-{radius}_{dis_method}_{rsa_model}_voxel-{X}_{Y}_{Z}.txt
             print("### Step 12: DSM extraction: ###")
             # load roi_database
             # "P:\userdata\raulh87\data\EmoB\ROI\roi_database.csv"
@@ -856,6 +859,8 @@ def main():
             print("### Done computing similarity across all pairs in a model ###")
         if step == 13: # get movement .par files from each run using mcflirt outputs
             print("### Step 13: running mcflirt to get movement parameters (.par) ###")
+            # print threshold for fwd calculation
+            print(f"Threshold for fwd calculation: {threshold_fwd}")
             # go over each participant
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)

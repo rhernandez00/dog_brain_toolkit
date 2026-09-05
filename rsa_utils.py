@@ -895,7 +895,8 @@ def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_a
                                         rsa_model, voxel_coords, config_path, verbose=False, shuffle_participants=True,
                                         shuffle_runs=False, wait_time=300):
     '''
-    Calculates similarity across all pairs in a model, saves files as txt.
+    Calculates similarity across all pairs in a model, saves files as txt as
+    datafolder/dataset/results/RSA_sphere/model/{specie}-sub-{sub_N:02d}/ses-{session}_task-{task}_run-{run_N:02d}/r-{radius}_{dis_method}_{rsa_model}_voxel-{X}_{Y}_{Z}.txt
     '''
     if shuffle_participants:
         random.shuffle(participants)

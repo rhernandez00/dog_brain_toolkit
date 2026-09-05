@@ -603,6 +603,101 @@ def probe_step2(ctx, verbose=False):
     return _summarize(per_sub, done, partial, "model-similarity maps", detail=detail)
 
 
+# ---------------------------------------------------------------------------
+# Step 4 — locating and retiring the per-participant permutation maps
+# ---------------------------------------------------------------------------
+# Step 4 is by far the bulkiest thing on the disk: ``reps`` permutation maps per
+# participant per run. Step 5 is its only consumer (it samples those maps to
+# build the group permutation maps), so once step 5 is complete they can be
+# deleted — that is what ``tools/bulk_check.py --delete_step4`` does.
+#
+# The pipeline's rule is that a finished step leaves a file behind, because
+# every reader infers "never ran" from an absent file. Deleting step 4's output
+# would break that inference and invite the dashboard to re-queue a hundred
+# permutations per participant, so the purge leaves this receipt in the
+# participant's RSA_rnd folder and ``probe_step4`` reads it: no maps *and* a
+# receipt means done-then-purged, no maps and no receipt still means missing.
+PURGE_RECEIPT = 'step4_purged.json'
+
+
+def step4_sub_dir(ctx, sub):
+    """The participant's RSA_rnd folder for this model (and fold)."""
+    return os.path.join(_model_result_root(ctx, rnd=True), ctx.sub_folder(sub))
+
+
+def step4_receipt_path(ctx, sub):
+    return os.path.join(step4_sub_dir(ctx, sub), PURGE_RECEIPT)
+
+
+def read_step4_receipt(ctx, sub):
+    """The purge receipt written for this participant, or ``None``."""
+    try:
+        with open(step4_receipt_path(ctx, sub), 'r') as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _purged_note(ctx, sub):
+    """Per-participant note for a step-4 folder that was purged, else ``None``.
+
+    Read only when no permutation map was found, so an ordinary probe never
+    pays for it."""
+    receipt = read_step4_receipt(ctx, sub)
+    if not receipt:
+        return None
+    n = receipt.get('n_files', '?')
+    when = str(receipt.get('purged_at', ''))[:10]
+    return f"purged after step 5 ({n} perms deleted{', ' + when if when else ''})"
+
+
+def step4_map_prefixes(ctx):
+    """Filename stems a step-4 permutation map can start with.
+
+    Mirrors ``_model_result_candidates``: with a mask type the pipeline may
+    have written either the mask-prefixed or the plain name, and the probe
+    counts both, so a purge has to consider both too."""
+    base = f"r-{ctx.radius}_{ctx.dis_method}_{ctx.rsa_method}_"
+    return [f"{ctx.mask_type}-{base}", base] if ctx.mask_type else [base]
+
+
+def scan_step4_maps(ctx, sub):
+    """``(folders, [(path, size_bytes), ...])`` for one participant's step-4 maps.
+
+    Same folders and same filename rule ``probe_step4`` counts over — the index
+    after the ``r-{radius}_{dis}_{rsa}_`` stem is what separates a permutation
+    map from anything else in the folder — so what this returns is exactly what
+    that probe called present.
+
+    One ``scandir`` per folder, sizes taken off the directory entry: a stat per
+    file costs ~56 ms on the network disk and there are ``reps`` files per run.
+    """
+    folders = _model_result_folders(ctx, sub, rnd=True)
+    if folders is None:
+        # run list unreadable — fall back to whatever run folders are on disk
+        folders = sorted(glob.glob(os.path.join(step4_sub_dir(ctx, sub), 'ses-*run-*')))
+    prefixes = step4_map_prefixes(ctx)
+    found = []
+    for folder in folders:
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            continue
+        for entry in entries:
+            name = entry.name
+            if not name.endswith('.nii.gz'):
+                continue
+            for prefix in prefixes:
+                if name.startswith(prefix) and name[len(prefix):-7].isdigit():
+                    try:
+                        size = entry.stat().st_size
+                    except OSError:
+                        size = 0
+                    found.append((entry.path, size))
+                    break
+    return folders, found
+
+
 def probe_step4(ctx, verbose=False):
     """RND permuted model similarity (per participant)."""
     if not ctx.participants:
@@ -623,7 +718,11 @@ def probe_step4(ctx, verbose=False):
             if verbose:
                 for found in sorted(matches):
                     detail.append({'sub': sub, 'path': found, 'status': DONE})
-            per_sub.append(_grade_count(sub, len(indices), None))
+            note = _purged_note(ctx, sub) if not indices else None
+            if note:
+                per_sub.append((sub, DONE, note)); done += 1
+            else:
+                per_sub.append(_grade_count(sub, len(indices), None))
             continue
 
         n = 0
@@ -643,7 +742,11 @@ def probe_step4(ctx, verbose=False):
         elif n > 0:
             per_sub.append((sub, PARTIAL, f"{n} / {expected} perms")); partial += 1
         else:
-            per_sub.append((sub, MISSING, f"0 / {expected} perms"))
+            note = _purged_note(ctx, sub)
+            if note:
+                per_sub.append((sub, DONE, note)); done += 1
+            else:
+                per_sub.append((sub, MISSING, f"0 / {expected} perms"))
     return _summarize(per_sub, done, partial, "permutations", detail=detail)
 
 

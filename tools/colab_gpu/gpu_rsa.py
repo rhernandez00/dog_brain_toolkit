@@ -992,15 +992,23 @@ def _step1_glob(manifest):
     return f"r-{radius}_mahalanobis_*.nii.gz"
 
 
+def _step1_tag(manifest):
+    """Short dis_method tag ('mah'/'corr') for step-1 result filenames -- without it,
+    a participant's mahalanobis and correlation packages both write
+    result_step1_{specie}-sub-NN.zip into the same OUT_DIR and overwrite each other."""
+    return "corr" if manifest.get("dis_method", "mahalanobis") == "correlation" else "mah"
+
+
 def zip_step1_result(pkg_root, manifest, out_dir):
-    """Zip the step-1 maps -> result_step1_{specie}-sub-NN.zip (per-run for correlation)."""
+    """Zip the step-1 maps -> result_step1_{mah,corr}_{specie}-sub-NN.zip (per-run
+    for correlation)."""
     data_root = os.path.join(pkg_root, "data")
     dataset, model, specie, sub_N = (
         manifest["dataset"], manifest["model"], manifest["specie"], manifest["sub_N"])
     base = os.path.join(data_root, dataset, "results", "RSA", model,
                         f"{specie}-sub-{sub_N:02d}")
     paths = sorted(glob.glob(os.path.join(base, _step1_glob(manifest)), recursive=True))
-    name = f"result_step1_{specie}-sub-{sub_N:02d}.zip"
+    name = f"result_step1_{_step1_tag(manifest)}_{specie}-sub-{sub_N:02d}.zip"
     return _zip_paths(os.path.join(out_dir, name), data_root, paths)
 
 

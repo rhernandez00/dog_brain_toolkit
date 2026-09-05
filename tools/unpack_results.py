@@ -13,7 +13,7 @@ steps 8-10 after a group run (``result_group_<model>_<specie>.zip``).
 Usage (from the repo root, full Anaconda interpreter -- see CLAUDE.md):
 
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\unpack_results.py DOWNLOADS_DIR
-    & "C:\\ProgramData\\anaconda3\\python.exe" tools\\unpack_results.py result_step1_H-sub-40.zip --dry-run
+    & "C:\\ProgramData\\anaconda3\\python.exe" tools\\unpack_results.py result_step1_mah_H-sub-40.zip --dry-run
 
 Accepts any mix of ``result_*.zip`` files and directories containing them. Existing
 files are left untouched unless ``--replace`` is given; ``--dry-run`` reports the

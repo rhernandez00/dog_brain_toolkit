@@ -980,8 +980,8 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session, smo
     Reorients file
     """
 
-    # path to design.fsf, current directory followed by design.fsf
-    design_path = os.path.join(os.getcwd(), 'FSL_designs' + os.sep + 'preprocess.fsf')
+    
+    
 
     ## determine input file and output directory ## 
 
@@ -992,7 +992,7 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session, smo
 
     # print filename
     print('Input file: ' + filename)
-
+    
     # get TR and number of volumes
     TR,volumes = utils.extract_params(filename)
 
@@ -1055,6 +1055,8 @@ def preprocess_run(sub_N, run_N, dataset, task, specie, datafolder, session, smo
 
     # fill in the design.fsf file
     design_path = os.path.join(os.getcwd(), 'FSL_designs'  + os.sep + 'preprocess_slice_timming_from_JSON.fsf')
+    # design_path = os.path.join(os.getcwd(), 'FSL_designs' + os.sep + 'preprocess_no-slice-timing.fsf')
+    print('Design path: ' + design_path)
     design_modified_path = os.path.join(os.getcwd(), 'FSL_designs'  + os.sep + 'preprocess_modified.fsf')
 
     if run_prepro:
@@ -1521,8 +1523,9 @@ from scipy.signal import detrend as _sp_detrend
 
 def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", output_file=None, add_movement_params=True):
     """
-    Compute framewise displacement (FD) and return a binary mask of frames below threshold.
-    Also optionally saves the motion parameters and FD mask to a text file.
+    Compute framewise displacement (FD) and return a binary mask of frames above threshold.
+    If written to disk, the file includes the 6 motion parameters followed by one
+    additional censoring column per volume that exceeded the FD threshold.
 
     Parameters
     ----------
@@ -1535,13 +1538,14 @@ def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", outp
     detrend_type : str, optional
         Detrending method: 'linear-demean', 'linear-nodemean', or 'none' (default is 'linear-demean').
     output_file : str or Path, optional
-        If provided, saves a .txt file with motion params and the FD mask as the last column.
+        If provided, saves a .txt file with the 6 motion parameters followed by one
+        censoring column for each excluded volume.
     add_movement_params : bool, optional
         If True, includes motion parameters in the output file (default is True).
     Returns
     -------
     numpy.ndarray
-        Array of 1s and 0s where 1 = frame below or equal to threshold, 0 = above.
+        Array of 1s and 0s where 1 = frame above or equal to threshold, 0 = below.
     """
     par_file = Path(par_file)
     motion = np.loadtxt(par_file, ndmin=2, dtype=float)
@@ -1556,15 +1560,20 @@ def fwd(par_file, radius=50.0, threshold=0.5, detrend_type="linear-demean", outp
     mask = (fd >= threshold).astype(np.int8)
 
     if output_file:
-        if add_movement_params: # version where the motion parameters are included
-            output_data = np.hstack([motion, mask[:, None]])
+        if add_movement_params:
+            excluded_idx = np.flatnonzero(mask)
+            censor_columns = np.zeros((motion.shape[0], excluded_idx.size), dtype=float)
+            if excluded_idx.size > 0:
+                censor_columns[excluded_idx, np.arange(excluded_idx.size)] = 1.0
+            output_data = np.hstack([motion, censor_columns])
             np.savetxt(output_file, output_data, fmt="%.6f", delimiter="\t")
-            print(f"Motion parameters and FD column saved to {output_file}")
-        else: # version where only the mask is included
-            np.savetxt(output_file, mask, fmt="%d", delimiter="\t")
-            # print output file
-            print(f"FD column saved to {output_file}")
-
+            print(f"Motion parameters and {excluded_idx.size} censoring columns saved to {output_file}")
+        else:
+            if mask.size == 0:
+                np.savetxt(output_file, np.empty((0, 0)), fmt="%d", delimiter="\t")
+            else:
+                np.savetxt(output_file, mask, fmt="%d", delimiter="\t")
+            print(f"FD mask saved to {output_file}")
 
     return mask
 

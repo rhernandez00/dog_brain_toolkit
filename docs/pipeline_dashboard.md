@@ -135,6 +135,31 @@ parameter it does not take from you defaults to the dashboard's own defaults,
 because a cached result is keyed by the *full* parameter signature: change
 `z_threshold` in the panel and the page reads a different entry.
 
+### Reclaiming the step-4 permutation maps
+
+Step 4 writes `reps` permutation maps per participant **per run** — the bulkiest
+thing the pipeline leaves behind. Step 5 is their only consumer (it samples them
+into the `reps_group` group permutation maps) and steps 6+ read only step 5's
+output, so once step 5 is complete they are dead weight.
+`bulk_check.py --delete_step4` deletes them, per model, **only where that
+model's step 5 probes DONE**. Look first:
+
+```
+python \github\dog_brain_toolkit\tools\bulk_check.py --dataset EmoC --specie D --dis_method mahalanobis --steps 4,5 --delete_step4 --delete_dry_run
+```
+
+then drop `--delete_dry_run` to actually delete. Step 5 is re-probed fresh for
+every model even under `--skip_checked`, so the decision never rests on a stale
+cache entry, and the empty per-run folders are removed with the files.
+
+Each purged participant folder keeps a `step4_purged.json` receipt — when, how
+many maps, how many bytes, the step-5 verdict that justified it, and the full
+parameter set. `probe_step4` reads it, so the dashboard shows step 4 as **DONE
+(purged after step 5)** rather than MISSING. That distinction is the point:
+without the receipt a purged model looks exactly like one that never ran, and
+the obvious next move would be to queue a hundred permutations per participant
+all over again.
+
 ### Steps 0 and 1 are shared between models (⇄)
 
 Two steps do **not** write into the rsa_model's own folder, so their result does
