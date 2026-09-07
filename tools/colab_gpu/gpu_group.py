@@ -1,15 +1,25 @@
 #!/usr/bin/env python
-"""gpu_group.py -- GPU (PyTorch) reimplementation of RSA pipeline steps 3, 5, 6, 7.
+"""gpu_group.py -- GPU (PyTorch) reimplementation of RSA pipeline steps 3, 5, 6, 7, 8.
 
 Companion to ``gpu_rsa.py`` (steps 1, 2, 4). Where that module works on *one*
 participant, this one works on the *group*: it consumes the per-participant maps
 that a Colab run already produced -- the ``result_{model}_{specie}-sub-NN.zip``
-files sitting in OUT_DIR -- and reduces them to the group maps steps 8-10 expect:
+files sitting in OUT_DIR -- and reduces them to what steps 9-10 expect:
 
   * Step 3 -- ``calculate_group_model_similarity_map``   (mean/std of the real maps)
   * Step 5 -- ``calculate_group_model_similarity_map_rnd`` (reps_group group perms)
   * Step 6 -- ``calculate_voxelwise_rnd_distribution``   (mean/std across those)
   * Step 7 -- ``calculate_z_maps_rnd`` + ``calculate_z_map_real_data``
+  * Step 8 -- ``calculate_cluster_size_distribution``    (cluster sizes per z map)
+
+Why step 8 belongs here rather than on the workstation: steps 5 and 7 each write
+``reps_group`` whole-brain maps, and they are read by steps 6-7 and step 8
+respectively -- all of which now run in this same pass. Measured on EmoC humans
+at ``reps_group=1000`` that is 727 MB + 1273 MB per model of pure intermediate.
+With ``write_group_means``/``write_z_maps`` off (the default) a model ships about
+4 MB instead of 2 GB, and step 8 works on the z maps while they are still in
+memory. Step 8 also computes **several thresholds in one pass**, since labelling
+is cheap next to reading the participant maps and the z maps are not kept.
 
 Why the GPU helps here at all: step 5 is a *sampling* reduction. For every one of
 ``reps_group`` group permutations it draws one of each participant's ``reps``
@@ -48,12 +58,16 @@ so it runs on a stock Colab runtime.
 """
 
 import contextlib
+import datetime
 import glob
 import gzip
 import io
 import json
 import os
+import re
+import shutil
 import sys
+import threading
 import time
 import zipfile
 import zlib
@@ -69,8 +83,88 @@ if HERE not in sys.path:
 
 import gpu_rsa  # noqa: E402  -- check_same_space / pick_device / load_reference_mask
 
+# ===========================================================================
+# Version -- bump VERSION and rewrite LAST_CHANGE on every edit to this file.
+#
+# This half of the toolkit runs somewhere else: three files are copied to Drive
+# by hand (gpu_group.py, run_colab_group.py, colab_rsa_group.ipynb) and Colab
+# caches imported modules across cell runs, so "am I running the code I just
+# fixed?" is a real and recurring question. A single number cannot answer it,
+# because any one of the three can be stale on its own -- hence
+# ``check_versions()``, which compares all three and says which to re-copy.
+#
+# Patch bump for a fix or tweak, minor for a new parameter or behaviour, major
+# for anything that changes what a run produces or what it needs as input.
+# ===========================================================================
+VERSION = "3.1.0"
+LAST_CHANGE = (
+    "Per-model manifests. A results folder can hold more than one analysis -- "
+    "EmoC's mixes 50 mahalanobis (per-participant) models with 41 correlation "
+    "(per-run) ones -- and discovery used to derive ONE dis_method from a sample "
+    "of zips and apply it to every model, so whichever half lost the vote built "
+    "paths that did not exist and failed to load. discover_model_manifests() now "
+    "probes one zip per model and describes each by its own data; "
+    "discover_manifest() raises instead of guessing when a selection mixes "
+    "analyses."
+)
+
 DTYPE = torch.float64
-STEPS_ALL = (3, 5, 6, 7)
+STEPS_ALL = (3, 5, 6, 7, 8)
+DEFAULT_Z_THRESHOLDS = (3.1, 3.5, 4.0, 4.5, 5.0)
+
+
+def version_banner():
+    """One line naming the version, for the top of a run."""
+    return f"gpu_group v{VERSION}"
+
+
+def check_versions(notebook_version=None, strict=True, verbose=True):
+    """Confirm the files that travel to Drive are all from the same release.
+
+    Colab keeps an imported module across cell runs, and the three files are
+    copied over separately, so the common failure is running a fixed
+    ``gpu_group.py`` against a stale notebook, or the reverse. Compares
+    ``gpu_group.VERSION``, ``run_colab_group.VERSION`` and the notebook's own
+    constant, and names whichever is behind.
+
+    Returns True when they agree. With ``strict`` it raises instead of warning,
+    because a silent mismatch is what wastes the next hour.
+    """
+    found = {"gpu_group.py": VERSION}
+    try:
+        import run_colab_group
+        found["run_colab_group.py"] = getattr(run_colab_group, "VERSION", "?")
+    except ImportError:
+        found["run_colab_group.py"] = "(not importable)"
+    if notebook_version is not None:
+        found["colab_rsa_group.ipynb"] = str(notebook_version)
+
+    if verbose:
+        print(f"  {version_banner()}  --  {LAST_CHANGE[:96]}...")
+        for name, v in found.items():
+            print(f"    {name:24s} v{v}")
+        print(f"    module loaded from       {os.path.abspath(__file__)}")
+
+    versions = set(found.values())
+    if len(versions) == 1:
+        return True
+    behind = [n for n, v in found.items() if v != VERSION]
+    message = (
+        f"Version mismatch across the Colab files: {found}.\n"
+        f"These are behind gpu_group.py v{VERSION}: {', '.join(behind)}.\n"
+        "Re-copy them to Drive from the workstation:\n"
+        "  copy \\github\\dog_brain_toolkit\\tools\\colab_gpu\\gpu_group.py "
+        "\"G:\\My Drive\\rsa_colab\\\"\n"
+        "  copy \\github\\dog_brain_toolkit\\tools\\colab_gpu\\run_colab_group.py "
+        "\"G:\\My Drive\\rsa_colab\\\"\n"
+        "  copy \\github\\dog_brain_toolkit\\tools\\colab_gpu\\colab_rsa_group.ipynb "
+        "\"G:\\My Drive\\rsa_colab\\\"\n"
+        "then RESTART THE COLAB RUNTIME (Runtime -> Restart session) so the old "
+        "module is dropped, and run from the top.")
+    if strict:
+        raise RuntimeError(message)
+    print(f"WARNING: {message}")
+    return False
 
 
 class MissingMapsError(RuntimeError):
@@ -91,6 +185,458 @@ class OffMaskError(ValueError):
 def load_manifest(pkg_root):
     with open(os.path.join(pkg_root, "manifest.json"), "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+# ---------------------------------------------------------------------------
+# Manifest without a package: recover it from the result zips + a refs folder
+#
+# ``tools/create_group_package.py`` builds the manifest from the dataset config
+# on the network disk, which makes every group run depend on that share being
+# up. Almost none of it has to come from there: the arcnames inside the result
+# zips already state the dataset, GLM model, RSA model, specie, radius,
+# dis_method, rsa_method, mah_fold, mask_type, the per-run layout, and which
+# permutation indices each participant has.
+#
+# Exactly three things do not survive in an arcname, and they live in
+# ``tools/colab_gpu/refs/`` (built once by ``refs/build_refs.py``, committed, a
+# few tens of kB):
+#
+#   * the mask -- needed as THE reference voxel grid, and to verify that every
+#     participant map is zero outside it. The group arithmetic itself would be
+#     fine without one (see gpu_step5's argument: off-mask voxels are 0 in every
+#     input, so they stay 0), but the grid and that check are worth keeping;
+#   * the participant list -- the denominator of the availability check. A
+#     participant who has produced nothing leaves no trace on Drive, so "32
+#     participants have maps" cannot become a percentage without it;
+#   * ``runs_by_sub`` and ``task``, which only the per-run layouts need.
+# ---------------------------------------------------------------------------
+_SUB_RE = re.compile(r"^(?P<specie>[DH])-sub-(?P<sub>\d+)$")
+_RUN_RE = re.compile(r"^ses-(?P<session>\d+)_task-(?P<task>.+)_run-(?P<run>\d+)$")
+_STEM_RE = re.compile(
+    r"^(?:(?P<mask_type>.+?)-)?r-(?P<radius>\d+)"
+    r"_(?P<dis_method>[^_]+)_(?P<rsa_method>[^_]+)"
+    r"(?:_(?P<rnd_index>\d+))?\.nii\.gz$")
+_ZIP_NAME_RE = re.compile(
+    r"^result_(?P<model>.+)_(?P<specie>[DH])-sub-(?P<sub>\d+)\.zip$", re.IGNORECASE)
+# result_step1_mah_H-sub-03.zip matches _ZIP_NAME_RE with model="step1_mah", but
+# it holds step-1 pairwise distance maps, not model-similarity maps -- "step1_mah"
+# is not an RSA model. result_group_/result_step5_ are a previous group run's own
+# output. All three have to be excluded by name, because discovery deliberately
+# does not open zips to find out what is inside them.
+_NOT_A_MODEL = ("result_step1_", "result_group_", "result_step5_")
+
+
+def parse_arcname(rel):
+    """Decode one participant-map arcname into its pipeline parameters.
+
+    Returns a dict, or ``None`` when the member is not a participant
+    model-similarity map (a group ``mean/`` map, a log, anything else).
+    """
+    parts = rel.replace("\\", "/").lstrip("./").split("/")
+    if len(parts) < 6 or parts[1] != "results" or parts[2] not in ("RSA", "RSA_rnd"):
+        return None
+    dataset, _results, kind, glm_model, rsa_model = parts[:5]
+    rest = parts[5:]
+
+    mah_fold = None
+    if not _SUB_RE.match(rest[0]):
+        mah_fold, rest = rest[0], rest[1:]     # fold-isolated participant root
+    if not rest:
+        return None
+    sub_m = _SUB_RE.match(rest[0])
+    if not sub_m:
+        return None                            # e.g. the group 'mean/' folder
+    rest = rest[1:]
+
+    session = run_N = task = None
+    if len(rest) == 2:
+        run_m = _RUN_RE.match(rest[0])
+        if not run_m:
+            return None
+        session, run_N = int(run_m.group("session")), int(run_m.group("run"))
+        task = run_m.group("task")
+        rest = rest[1:]
+    if len(rest) != 1:
+        return None
+    stem_m = _STEM_RE.match(rest[0])
+    if not stem_m:
+        return None
+
+    rnd = kind == "RSA_rnd"
+    idx = stem_m.group("rnd_index")
+    if rnd != (idx is not None):
+        return None                            # rnd maps are indexed, real ones are not
+    return {
+        "dataset": dataset, "model": glm_model, "rsa_model": rsa_model,
+        "mah_fold": mah_fold, "specie": sub_m.group("specie"),
+        "sub_N": int(sub_m.group("sub")), "session": session, "run_N": run_N,
+        "task": task, "mask_type": stem_m.group("mask_type"),
+        "radius": int(stem_m.group("radius")),
+        "dis_method": stem_m.group("dis_method"),
+        "rsa_method": stem_m.group("rsa_method"),
+        "rnd": rnd, "rnd_index": None if idx is None else int(idx),
+    }
+
+
+def load_refs(refs_dir, dataset):
+    """Read ``{dataset}_refs.json`` from a refs folder (see refs/build_refs.py)."""
+    path = os.path.join(refs_dir, f"{dataset}_refs.json")
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"No reference snapshot at {path}. Build one on the workstation while "
+            "the data share is up:\n"
+            "  python \\github\\dog_brain_toolkit\\tools\\colab_gpu\\refs\\build_refs.py")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def refs_mask_path(refs_dir, dataset, specie, mask_type):
+    """``refs/{dataset}/{specie}_{mask_type}.nii.gz``, the mask carried with the refs."""
+    return os.path.join(refs_dir, dataset, f"{specie}_{mask_type}.nii.gz")
+
+
+def load_group_mask(manifest, pkg_root=None, refs_dir=None):
+    """The reference voxel grid, from a package's ``data/`` or from the refs folder."""
+    if pkg_root:
+        return gpu_rsa.load_reference_mask(os.path.join(pkg_root, "data"), manifest)
+    path = refs_mask_path(refs_dir, manifest["dataset"], manifest["specie"],
+                          manifest["mask_type"])
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"Mask not found at {path}. The refs folder must carry the mask the "
+            f"participant maps were computed against ({manifest['mask_type']!r}, "
+            f"read from the result zips' arcnames).")
+    img = nib.load(path)
+    return img, np.asarray(img.dataobj).astype(bool)
+
+
+def _open_zip_resilient(path, attempts=3):
+    """Open a zip, retrying once or twice if the Drive mount hiccups.
+
+    Colab's ``drive.mount`` FUSE endpoint drops under sustained access and every
+    subsequent call raises ``OSError: [Errno 107] Transport endpoint is not
+    connected`` until it is remounted. A short retry rides out a blip; a real
+    disconnect is re-raised with an instruction, because nothing here can fix it.
+    """
+    last = None
+    for i in range(attempts):
+        try:
+            return zipfile.ZipFile(path)
+        except OSError as exc:
+            last = exc
+            if getattr(exc, "errno", None) != 107:
+                raise
+            time.sleep(1.0 + i)
+    raise OSError(
+        f"{last}\n\nThe Google Drive mount dropped while reading\n  {path}\n"
+        "Re-run the mount cell (`drive.mount('/content/drive', force_remount=True)`) "
+        "and run this cell again -- finished models are skipped, so it resumes.")
+
+
+def scan_result_zip_names(results_dir, specie=None, models=None, verbose=True):
+    """Which models and participants exist, from the **file names only**.
+
+    ``gpu_rsa.zip_model_result`` names them
+    ``result_{rsa_model}_{specie}-sub-NN.zip``, so the model and the participant
+    are both in the name and nothing has to be opened. That matters: a full EmoC
+    human battery is ~3 700 zips, and opening every one of them to read a
+    namelist is what makes Colab's Drive FUSE endpoint drop
+    (``OSError: [Errno 107]``). Returns
+    ``({(rsa_model, specie): {sub_N: path}}, {specie: {sub_N}})``.
+    """
+    results_dir = os.path.abspath(str(results_dir))
+    if not os.path.isdir(results_dir):
+        raise FileNotFoundError(f"Results folder not found: {results_dir}")
+    by_model, seen = {}, {}
+    n_zips = 0
+    for n in os.listdir(results_dir):
+        if not n.lower().endswith(".zip"):
+            continue
+        n_zips += 1
+        if n.startswith(_NOT_A_MODEL):
+            continue          # step-1 output, or a previous group run's
+        m = _ZIP_NAME_RE.match(n)
+        if not m:
+            continue
+        sp, sub = m.group("specie").upper(), int(m.group("sub"))
+        seen.setdefault(sp, set()).add(sub)
+        if specie and sp != specie:
+            continue
+        if models and m.group("model") not in models:
+            continue
+        by_model.setdefault((m.group("model"), sp), {})[sub] = \
+            os.path.join(results_dir, n)
+    if verbose:
+        tally = ", ".join(f"{k}:{len(v)}" for k, v in sorted(seen.items())) or "none"
+        n_sel = sum(len(v) for v in by_model.values())
+        print(f"[scan] {results_dir}: {n_zips} zip(s) -> {len(by_model)} model(s), "
+              f"{n_sel} zip(s) selected (participants seen -- {tally})")
+    if not by_model:
+        raise MissingMapsError(
+            "No result zips matched. Expected files named "
+            f"result_{{rsa_model}}_{{specie}}-sub-NN.zip in {results_dir}")
+    return by_model, seen
+
+
+def scan_result_zips(results_dir, specie=None, models=None, verbose=True):
+    """Index a folder of ``result_*.zip`` into ``{(rsa_model, specie): info}``.
+
+    Opens every selected zip, so it is only for the per-model paths that need
+    the member list. Discovery uses :func:`scan_result_zip_names` instead.
+    """
+    results_dir = os.path.abspath(str(results_dir))
+    if not os.path.isdir(results_dir):
+        raise FileNotFoundError(f"Results folder not found: {results_dir}")
+    names = [n for n in os.listdir(results_dir) if n.lower().endswith(".zip")]
+
+    seen = {}                                    # specie -> {sub_N}
+    wanted = []
+    for n in names:
+        if n.startswith(_NOT_A_MODEL):
+            continue          # step-1 output, or a previous group run's
+        m = _ZIP_NAME_RE.match(n)
+        if not m:
+            continue
+        sp = m.group("specie").upper()
+        seen.setdefault(sp, set()).add(int(m.group("sub")))
+        if specie and sp != specie:
+            continue
+        if models and m.group("model") not in models:
+            continue
+        wanted.append(os.path.join(results_dir, n))
+
+    if verbose:
+        tally = ", ".join(f"{k}:{len(v)}" for k, v in sorted(seen.items())) or "none"
+        print(f"[scan] {results_dir}: {len(names)} zip(s), {len(wanted)} match the "
+              f"selection (participants seen -- {tally})")
+    if not wanted:
+        raise MissingMapsError(
+            "No result zips matched. Expected files named "
+            f"result_{{rsa_model}}_{{specie}}-sub-NN.zip in {results_dir}")
+
+    found, conflicts = {}, {}
+    for zip_path in sorted(wanted):
+        with _open_zip_resilient(zip_path) as zf:
+            members = zf.namelist()
+        for member in members:
+            info = parse_arcname(member)
+            if info is None:
+                continue
+            key = (info["rsa_model"], info["specie"])
+            params = {k: info[k] for k in ("dataset", "model", "task", "radius",
+                                           "mask_type", "dis_method", "rsa_method",
+                                           "mah_fold")}
+            entry = found.setdefault(key, {"params": params, "units": {},
+                                           "reps": 0, "zips": set()})
+            entry["zips"].add(zip_path)
+            for k, v in params.items():
+                if k == "task" and v is None:
+                    continue                     # only the per-run layout names it
+                if entry["params"].get(k) != v:
+                    conflicts.setdefault(key, set()).add(k)
+            unit = (info["sub_N"], info["session"], info["run_N"])
+            u = entry["units"].setdefault(unit, {"real": False, "rnd": set()})
+            if info["rnd"]:
+                u["rnd"].add(info["rnd_index"])
+                entry["reps"] = max(entry["reps"], info["rnd_index"] + 1)
+            else:
+                u["real"] = True
+
+    if conflicts:
+        detail = "; ".join(f"{m} [{s}]: {sorted(k)}" for (m, s), k in conflicts.items())
+        raise ValueError(
+            "Result zips for the same model disagree on pipeline parameters "
+            f"({detail}). Mixing settings would build one null distribution out of "
+            "two analyses -- move the odd zips out of the results folder.")
+    return found
+
+
+def probe_zip_params(zip_path):
+    """Read one zip's arcnames for the pipeline parameters and its max rnd index."""
+    with _open_zip_resilient(zip_path) as zf:
+        members = zf.namelist()
+    params, reps, per_run = None, 0, False
+    for member in members:
+        info = parse_arcname(member)
+        if info is None:
+            continue
+        if params is None:
+            params = {k: info[k] for k in ("dataset", "model", "task", "radius",
+                                           "mask_type", "dis_method",
+                                           "rsa_method", "mah_fold")}
+        if info["rnd"]:
+            reps = max(reps, info["rnd_index"] + 1)
+        per_run |= info["session"] is not None
+    if params is None:
+        raise MissingMapsError(
+            f"{zip_path} holds no participant model-similarity maps.")
+    return params, reps, per_run
+
+
+def _build_manifest(params, reps, refs, sp, model_names, reps_group,
+                    min_percentage_available, allow_space_mismatch,
+                    allow_off_mask):
+    """Assemble a manifest dict from probed parameters plus the refs snapshot."""
+    sp_refs = refs.get("species", {}).get(sp)
+    if sp_refs is None:
+        raise KeyError(
+            f"The reference snapshot has no entry for specie {sp!r} "
+            f"(has {sorted(refs.get('species', {}))}). Rebuild it with "
+            f"refs/build_refs.py --species {sp}")
+    return {
+        "created": datetime.datetime.now().isoformat(timespec="seconds"),
+        "kind": "group-discovered",
+        "datafolder": refs.get("datafolder", ""),
+        "dataset": params["dataset"], "model": params["model"], "specie": sp,
+        "task": params["task"] or sp_refs.get("task", params["dataset"]),
+        "radius": params["radius"], "mask_type": params["mask_type"],
+        "dis_method": params["dis_method"],
+        "mah_fold": params["mah_fold"] or "stim-wise",
+        "rsa_method": params["rsa_method"],
+        "reps": reps, "reps_group": int(reps_group),
+        "min_percentage_available": float(min_percentage_available),
+        "participants": [int(x) for x in sp_refs["participants"]],
+        "runs_by_sub": sp_refs.get("runs_by_sub") or {},
+        "models": list(model_names),
+        "allow_space_mismatch": bool(allow_space_mismatch),
+        "allow_off_mask": bool(allow_off_mask),
+    }
+
+
+def manifest_signature(m):
+    """The parameters that decide where a model's participant maps live."""
+    return (m["dataset"], m["model"], m["dis_method"], m["mah_fold"],
+            m["rsa_method"], m["radius"], m["mask_type"], is_per_run(m))
+
+
+def discover_model_manifests(results_dir, refs_dir, specie=None, models=None,
+                             reps_group=1000, min_percentage_available=1.0,
+                             allow_space_mismatch=False, allow_off_mask=False,
+                             verbose=True):
+    """One manifest **per model**, each carrying that model's own parameters.
+
+    A results folder can hold more than one analysis, and EmoC's does: 50 models
+    are ``mahalanobis`` stim-wise (one map per participant) and 41 are
+    ``correlation`` (one map per participant *run* -- a different folder layout
+    entirely). Deriving a single ``dis_method`` from a sample of zips and
+    applying it to every model is therefore wrong: for whichever half loses the
+    vote, the group steps build paths that do not exist and every one of those
+    models fails to load. That is the bug this replaced, and it was silent --
+    the failure looked like missing data rather than a mislabelled analysis.
+
+    Costs one zip open per model (91 for a full EmoC human battery, a couple of
+    seconds) instead of one per zip (3 640, which is what made Colab's Drive
+    endpoint drop). Each model is described by its own data rather than a guess.
+    """
+    by_model, _seen = scan_result_zip_names(results_dir, specie=specie,
+                                            models=models, verbose=verbose)
+    species = {k[1] for k in by_model}
+    if len(species) > 1:
+        raise ValueError(
+            f"Result zips for more than one specie ({sorted(species)}). Pass "
+            "specie= to pick one.")
+    sp = species.pop()
+    refs, out, skipped = None, {}, []
+    t0 = time.time()
+    for (model, _sp) in sorted(by_model):
+        subs = sorted(by_model[(model, _sp)])
+        try:
+            params, reps, _pr = probe_zip_params(by_model[(model, _sp)][subs[0]])
+        except MissingMapsError as exc:
+            skipped.append((model, str(exc)))
+            continue
+        if refs is None:
+            refs = load_refs(refs_dir, params["dataset"])
+        m = _build_manifest(params, reps, refs, sp, [model], reps_group,
+                            min_percentage_available, allow_space_mismatch,
+                            allow_off_mask)
+        m["zips_per_model"] = {model: subs}
+        out[model] = m
+    if not out:
+        raise MissingMapsError(
+            "No model had readable participant maps:\n  "
+            + "\n  ".join(f"{m}: {w}" for m, w in skipped))
+    if verbose:
+        print(f"[discover] probed {len(out)} model(s) in {time.time() - t0:.1f}s "
+              f"(one zip each)")
+        groups = {}
+        for model, m in out.items():
+            groups.setdefault(manifest_signature(m), []).append(model)
+        for sig, ms in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+            (_ds, _glm, dis, fold, rsa, rad, mask, per_run) = sig
+            fold_s = f"/{fold}" if dis == "mahalanobis" else ""
+            layout = "per-run" if per_run else "per-participant"
+            print(f"[discover]   {len(ms):3d} model(s): {dis}{fold_s}/{rsa}  "
+                  f"r-{rad}  mask={mask}  {layout}   e.g. {sorted(ms)[0]}")
+        if skipped:
+            print(f"[discover]   skipped {len(skipped)}: "
+                  f"{', '.join(m for m, _ in skipped[:5])}")
+    return out
+
+
+def discover_manifest(results_dir, refs_dir, specie=None, models=None,
+                      reps_group=1000, min_percentage_available=1.0,
+                      allow_space_mismatch=False, allow_off_mask=False,
+                      sample=None, verbose=True):
+    """A single manifest, for a selection that really is all one analysis.
+
+    Thin wrapper over :func:`discover_model_manifests`: it probes every selected
+    model and **raises** when they disagree, rather than silently adopting one
+    model's parameters for all of them. ``sample`` is accepted and ignored -- it
+    existed when this guessed from a few zips, which is what went wrong.
+    """
+    per_model = discover_model_manifests(
+        results_dir, refs_dir, specie=specie, models=models,
+        reps_group=reps_group, min_percentage_available=min_percentage_available,
+        allow_space_mismatch=allow_space_mismatch, allow_off_mask=allow_off_mask,
+        verbose=verbose)
+    groups = {}
+    for model, m in per_model.items():
+        groups.setdefault(manifest_signature(m), []).append(model)
+    if len(groups) > 1:
+        detail = "\n  ".join(
+            f"{len(ms):3d} model(s): dis={sig[2]} fold={sig[3]} rsa={sig[4]} "
+            f"r={sig[5]} per_run={sig[7]}  e.g. {sorted(ms)[0]}"
+            for sig, ms in groups.items())
+        raise ValueError(
+            "This results folder holds more than one analysis:\n  " + detail +
+            "\n\nA single manifest cannot describe them. Use "
+            "discover_model_manifests() -- run_group_package() does that for "
+            "you -- or narrow the run with models=.")
+    manifest = next(iter(per_model.values()))
+    manifest["models"] = sorted(per_model)
+    manifest["zips_per_model"] = {m: v["zips_per_model"][m]
+                                  for m, v in per_model.items()}
+    if verbose:
+        fold = (f"/{manifest['mah_fold']}"
+                if manifest["dis_method"] == "mahalanobis" else "")
+        print(f"[discover] {manifest['specie']}  {manifest['dataset']}/"
+              f"{manifest['model']}  r-{manifest['radius']}  "
+              f"{manifest['dis_method']}{fold}/{manifest['rsa_method']}  "
+              f"mask={manifest['mask_type']}  reps={manifest['reps']}  "
+              f"reps_group={manifest['reps_group']}")
+        print(f"[discover] {len(manifest['models'])} model(s); config lists "
+              f"{len(manifest['participants'])} participant(s)")
+    return manifest
+
+
+def coverage(manifest, results_dir=None, verbose=False):
+    """``{rsa_model: (n_participants_with_a_zip, n_participants_expected)}``.
+
+    Counted from **file names** -- one zip per participant per model, so a
+    missing participant is a missing name. Nothing is opened, which is what makes
+    the preflight cheap enough to run over a 3 700-zip folder on Drive without
+    knocking the mount over. Falls back to re-listing the folder only if the
+    manifest predates ``zips_per_model`` (i.e. came from a package).
+    """
+    per_model = manifest.get("zips_per_model")
+    if per_model is None:
+        by_model, _seen = scan_result_zip_names(
+            results_dir, specie=manifest["specie"], models=manifest["models"],
+            verbose=verbose)
+        per_model = {k[0]: sorted(v) for k, v in by_model.items()}
+    total = len(manifest["participants"])
+    return {m: (len(subs), total) for m, subs in sorted(per_model.items())}
 
 
 def is_per_run(manifest):
@@ -206,6 +752,18 @@ def group_rnd_log_rel(manifest, rsa_model, kind):
                      rsa_model, "mean", f"{_group_stem(manifest)}_{kind}_log.txt"])
 
 
+def cluster_dist_rel(manifest, rsa_model):
+    """Step 8's cluster-size distribution ``.npy``.
+
+    Mirrors ``calculate_cluster_size_distribution``: it lives under **RSA**, not
+    ``RSA_rnd``, in a ``dist/`` folder, and carries no ``{mask_type}-`` prefix --
+    ``get_minimal_cluster_size`` (step 9) rebuilds this exact path.
+    """
+    return "/".join([manifest["dataset"], "results", "RSA", manifest["model"],
+                     rsa_model, "dist",
+                     f"{_group_stem(manifest)}_dist.npy"])
+
+
 def distribution_rel(manifest, rsa_model, kind):
     """Step 6 voxelwise null distribution. ``kind`` in {'mean', 'std'}."""
     return "/".join([manifest["dataset"], "results", "RSA_rnd", manifest["model"],
@@ -285,20 +843,37 @@ class ResultStore:
             src = os.path.abspath(str(src))
             if not os.path.isdir(src):
                 raise FileNotFoundError(f"Result source not found: {src}")
-            looks_like_tree = (
-                dataset and os.path.isdir(os.path.join(src, dataset, "results")))
-            if not looks_like_tree:
-                # also accept a root holding exactly one dataset folder
-                looks_like_tree = any(
-                    os.path.isdir(os.path.join(src, d, "results"))
-                    for d in os.listdir(src)
-                    if os.path.isdir(os.path.join(src, d)))
+            # ONE scandir for the whole folder. This used to be os.listdir plus an
+            # os.path.isdir per entry -- and the generator evaluated it twice per
+            # entry, so a 3 700-zip results folder cost ~7 400 stat calls before
+            # anything was read. On Colab's Drive FUSE that is ten silent minutes.
+            # entry.is_dir() reuses the dirent the listing already returned.
+            t0 = time.time()
+            subdirs, zips = [], []
+            with os.scandir(src) as it:
+                for e in it:
+                    try:
+                        if e.is_dir():
+                            subdirs.append(e.name)
+                        elif e.name.lower().endswith(".zip"):
+                            zips.append(e.name)
+                    except OSError:
+                        continue
+            # a data root is one holding {dataset}/results/ -- only subdirectories
+            # can qualify, and a results folder has approximately none
+            looks_like_tree = False
+            for d in ([dataset] if dataset and dataset in subdirs else subdirs):
+                if os.path.isdir(os.path.join(src, d, "results")):
+                    looks_like_tree = True
+                    break
             if looks_like_tree:
                 self.trees.append(src)
-            zips = [n for n in os.listdir(src) if n.lower().endswith(".zip")]
             if zips:
                 self.zip_dirs.append(src)
                 self._zip_names[src] = zips
+            if verbose:
+                print(f"[store] listed {len(zips)} zip(s) + {len(subdirs)} "
+                      f"subdir(s) in {time.time() - t0:.1f}s: {src}")
         if verbose:
             print(f"[store] {len(self.trees)} data tree(s), "
                   f"{sum(len(v) for v in self._zip_names.values())} zip(s) in "
@@ -323,7 +898,7 @@ class ResultStore:
     def _index_zip(self, zip_path):
         idx = self._members.get(zip_path)
         if idx is None:
-            with zipfile.ZipFile(zip_path) as zf:
+            with _open_zip_resilient(zip_path) as zf:
                 idx = {n.replace("\\", "/").lstrip("./"): n for n in zf.namelist()}
             self._members[zip_path] = idx
         return idx
@@ -367,6 +942,56 @@ class ResultStore:
         return refs
 
 
+def prefetch_model_zips(store, manifest, rsa_model, cache_dir, workers=8,
+                        verbose=True):
+    """Copy one model's result zips to local disk and return a store reading them.
+
+    **Measured to be a net loss on a Windows Drive mount, and off by default.**
+    Two untouched models, 38 zips / ~1.6 GB each, cold cache, 8 threads:
+
+        direct   (read members off Drive)      128.0 s   12.6 MB/s
+        prefetch (copy 119.8 s + read 56.1 s)  175.9 s    9.3 MB/s
+
+    The premise behind prefetching was that the mount is *latency*-bound on many
+    small member reads, so one bulk sequential copy would beat them. It is not:
+    direct member reads already sustain the same MB/s as a bulk copy (12.6 vs
+    14), so the mount is **bandwidth**-bound at this thread count, and prefetch
+    just adds a full local re-read (56 s) for nothing.
+
+    Kept as an option because it is mount-dependent -- it can only win where
+    per-member latency really does dominate, which a different FUSE layer might.
+    Measure before turning it on; ``load_participant_maps`` reads every member of
+    every zip, so prefetch is always the same bytes twice.
+
+    Returns ``(store, cache_dir)``; the original store comes back untouched when
+    there is nothing to copy, so the caller can always use the result.
+    """
+    zips = store.zips_for(manifest, rsa_model)
+    if not zips:
+        return store, None
+    os.makedirs(cache_dir, exist_ok=True)
+
+    def one(src):
+        dst = os.path.join(cache_dir, os.path.basename(src))
+        size = os.path.getsize(src)
+        if os.path.exists(dst) and os.path.getsize(dst) == size:
+            return 0                     # already cached by an earlier attempt
+        shutil.copyfile(src, dst)
+        return size
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(zips)))) as ex:
+        sizes = list(ex.map(one, zips))
+    total = sum(sizes)
+    copied = sum(1 for s in sizes if s)
+    if verbose and copied:
+        dt = time.time() - t0
+        print(f"[prefetch] {rsa_model}: copied {copied} zip(s), "
+              f"{total / 1e6:.0f} MB in {dt:.1f}s "
+              f"({total / 1e6 / max(dt, 1e-6):.0f} MB/s, {workers} threads)")
+    return ResultStore([cache_dir], dataset=manifest["dataset"], verbose=False), cache_dir
+
+
 def _read_ref(ref, open_zips):
     if ref[0] == "file":
         return nib.load(ref[1])
@@ -399,7 +1024,8 @@ def _load_unit(manifest, rsa_model, unit, refs, mask_img, mask_bool, mask_flat,
     real_vec, rnd = None, {}
     loaded = []
     with contextlib.ExitStack() as stack:
-        open_zips = {p: stack.enter_context(zipfile.ZipFile(p)) for p in zip_paths}
+        open_zips = {p: stack.enter_context(_open_zip_resilient(p))
+                     for p in zip_paths}
         for (kind, i), ref in sorted(wanted.items(), key=lambda kv: (kv[0][0], kv[0][1] or 0)):
             img = _read_ref(ref, open_zips)
             label = f"{unit_label(unit)} {kind}{'' if i is None else f'-{i:04d}'}"
@@ -448,17 +1074,50 @@ def load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
     refs = store.index_model(manifest, rsa_model)
     mask_flat = np.flatnonzero(mask_bool.reshape(-1))
     all_units = units(manifest)
-    reps = manifest["reps"]
+    # Re-derive reps from what is actually on disk rather than trusting the
+    # manifest. A discovered manifest reads it off a small sample of zips, and a
+    # participant who happens to have more permutations than the sample would
+    # otherwise have the extras silently ignored.
+    observed = 0
+    for rel in refs:
+        info = parse_arcname(rel)
+        if info and info["rnd"]:
+            observed = max(observed, info["rnd_index"] + 1)
+    reps = max(int(manifest.get("reps") or 0), observed)
     strict_space = not manifest.get("allow_space_mismatch", False)
     strict_mask = not manifest.get("allow_off_mask", False)
 
     t0 = time.time()
     n_workers = max(1, min(workers, len(all_units)))
+    if verbose:
+        print(f"[load] {rsa_model}: reading up to {len(all_units) * reps} map(s) "
+              f"from {len(all_units)} unit(s), {n_workers} thread(s)...", flush=True)
+
+    # Progress as units land, not just a summary at the end. This is the longest
+    # phase by far -- on Colab's Drive it is minutes per model -- and reporting
+    # only on completion makes a slow run indistinguishable from a hung one.
+    done = {"n": 0}
+    lock = threading.Lock()
+
+    def one(u):
+        out = _load_unit(manifest, rsa_model, u, refs, mask_img, mask_bool,
+                         mask_flat, reps, want_real, strict_space, strict_mask)
+        if verbose:
+            with lock:
+                done["n"] += 1
+                n, total = done["n"], len(all_units)
+                if n == 1 or n == total or n % max(1, total // 10) == 0:
+                    dt = time.time() - t0
+                    # no ETA off the first unit: the pool is still spinning up,
+                    # so extrapolating from it reads ~7x too pessimistic
+                    eta = (f", ~{dt / n * (total - n):.0f}s left"
+                           if n_workers < n < total else "")
+                    print(f"[load]   {n}/{total} unit(s), {dt:.0f}s elapsed{eta}",
+                          flush=True)
+        return out
+
     with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        results = list(ex.map(
-            lambda u: _load_unit(manifest, rsa_model, u, refs, mask_img, mask_bool,
-                                 mask_flat, reps, want_real, strict_space, strict_mask),
-            all_units))
+        results = list(ex.map(one, all_units))
 
     real_units, real_rows = [], []
     rnd_units, rnd_blocks = [], []
@@ -622,7 +1281,146 @@ def mean_std(rows, device=None):
 
 
 # ===========================================================================
-# Steps 3 / 5 / 6 / 7 -- driver
+# Step 8 -- cluster-size distribution, computed on the z maps still in memory
+#
+# This is the step that lets the rnd z maps stay on Colab. They are step 8's
+# only consumer, they are the bulk of the output (measured on EmoC H: 1273 kB
+# each, so 1.27 GB per model at reps_group=1000), and step 8 reduces all of them
+# to one small .npy. Computing it here turns ~1.3 GB per model crossing Drive
+# into a few kB.
+#
+# Faithful to ``rsa_utils.calculate_cluster_size_distribution`` ->
+# ``count_clusters_sizes`` -> ``_count_on_3d``:
+#   * ``np.nan_to_num`` first (so the NaNs step 7 leaves off-mask become 0, and
+#     an infinity from a zero null-std becomes a huge finite value that does
+#     cross the threshold -- same as on the CPU);
+#   * a strict ``> threshold`` test, positives only (``two_sided=False``);
+#   * ``generate_binary_structure(rank=3, connectivity=3)``, i.e. 26-connected,
+#     matching FSL's default;
+#   * sizes from ``np.bincount(labels.ravel())[1:]``, sorted descending, as a
+#     plain Python list -- what ``get_minimal_cluster_size`` iterates over.
+# ===========================================================================
+def _mask_bbox(mask_flat, shape):
+    """Smallest box containing every mask voxel, as a tuple of slices.
+
+    Labelling inside this box is exact rather than an approximation: every voxel
+    outside the searchlight mask is 0 in a group map, so no cluster can reach
+    beyond the box, and connectivity within it is unchanged. It is worth doing --
+    on the EmoC human grid the box is a little over a third of the volume, and
+    step 8 labels ``reps_group x len(thresholds)`` times.
+    """
+    idx = np.unravel_index(mask_flat, shape)
+    return tuple(slice(int(i.min()), int(i.max()) + 1) for i in idx)
+
+
+def cluster_size_distribution(z_rnd, mask_flat, shape, thresholds,
+                              connectivity=3, workers=8, verbose=True):
+    """Cluster sizes of every rnd z map, at every threshold, without writing them.
+
+    ``z_rnd`` is the ``(reps_group, n_mask_voxels)`` array step 7 produced.
+    Returns ``{f"z{threshold}": {"number_of_images": G, "cluster_sizes": ...}}``
+    -- the dict layout ``get_minimal_cluster_size`` expects, with
+    ``cluster_sizes`` an object array of one list per permutation.
+    """
+    try:
+        from scipy.ndimage import label, generate_binary_structure
+    except ImportError as exc:                    # pragma: no cover
+        raise ImportError(
+            "Step 8 needs scipy (preinstalled on Colab): pip install scipy") from exc
+    if connectivity not in (1, 2, 3):
+        raise ValueError("connectivity must be 1, 2, or 3 for 3D images.")
+
+    thresholds = [float(t) for t in thresholds]
+    if not thresholds:
+        raise ValueError("At least one z threshold is required for step 8.")
+    structure = generate_binary_structure(rank=3, connectivity=connectivity)
+    box = _mask_bbox(mask_flat, shape)
+    n_vox = int(np.prod(shape))
+    G = z_rnd.shape[0]
+    out = {t: np.zeros((G,), dtype=object) for t in thresholds}
+
+    def one(g):
+        vol = np.full(n_vox, np.nan, dtype=np.float64)   # step 7's off-mask fill
+        vol[mask_flat] = z_rnd[g]
+        vol = np.nan_to_num(vol.reshape(shape))[box]
+        sizes = {}
+        for t in thresholds:
+            labels, n = label(vol > t, structure=structure)
+            if n == 0:
+                sizes[t] = []
+            else:
+                counts = np.bincount(labels.ravel())[1:]
+                sizes[t] = np.sort(counts)[::-1].tolist()
+        return g, sizes
+
+    t0 = time.time()
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        for g, sizes in ex.map(one, range(G)):
+            for t in thresholds:
+                out[t][g] = sizes[t]
+
+    dist = {}
+    for t in thresholds:
+        # the key format get_minimal_cluster_size builds from a float
+        # --z_threshold, so "z3.1" and "z4.0"
+        dist[f"z{t}"] = {"number_of_images": G, "cluster_sizes": out[t]}
+    if verbose:
+        for t in thresholds:
+            per_perm = np.array([max(s) if len(s) else 0 for s in out[t]])
+            print(f"[step8]   z>{t}: max cluster per permutation "
+                  f"median={int(np.median(per_perm))} "
+                  f"p95={int(np.percentile(per_perm, 95))} "
+                  f"max={int(per_perm.max())}")
+        print(f"[step8] {G} map(s) x {len(thresholds)} threshold(s) in "
+              f"{time.time() - t0:.1f}s")
+    return dist
+
+
+def merge_cluster_distribution(path, dist):
+    """Fold new thresholds into an existing ``_dist.npy`` instead of replacing it.
+
+    The file is keyed by threshold and the CPU step appends to it one key at a
+    time, so a run that computes z4.0 must not drop a z3.1 someone already
+    computed. Only matters when a scratch tree is reused; the keys computed here
+    win on a collision, being the ones from this run's z maps.
+    """
+    if not os.path.exists(path):
+        return dist
+    try:
+        existing = np.load(path, allow_pickle=True).item()
+    except Exception as exc:
+        print(f"WARNING: could not read {path} ({exc}); writing a fresh one.")
+        return dist
+    merged = dict(existing)
+    merged.update(dist)
+    return merged
+
+
+def write_cluster_distribution(path, dist, manifest, rsa_model, thresholds):
+    """Save the dict as ``.npy`` plus the ``_log.txt`` the CPU step writes."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = merge_cluster_distribution(path, dist)
+    with open(path, "wb") as f:
+        np.save(f, payload)
+    lines = ["\n" + "=" * 50 + "\n",
+             f"Log date and time: "
+             f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]
+    for t in thresholds:
+        key = f"z{float(t)}"
+        n = dist[key]["number_of_images"]
+        lines.append(f"Z threshold: {t}")
+        lines.append(f"Processed {n} z map files for cluster size distribution.")
+        lines.append(f"Data added to cluster_sizes_dict under key {key}.")
+    lines.append(f"Computed on GPU by tools/colab_gpu/gpu_group.py v{VERSION} "
+                 "from the z maps in memory; the rnd z maps themselves were "
+                 "not written.")
+    lines.append(f"Keys now in the file: {sorted(payload)}")
+    write_text(path.replace(".npy", "_log.txt"), "\n".join(lines))
+    return path
+
+
+# ===========================================================================
+# Steps 3 / 5 / 6 / 7 / 8 -- driver
 # ===========================================================================
 def _step3_log(manifest, rsa_model, maps, mask_file_rel):
     """Reproduce the ``.json`` sidecar ``calculate_group_model_similarity_map``
@@ -650,7 +1448,8 @@ def _step3_log(manifest, rsa_model, maps, mask_file_rel):
         "output_mean_file": target_path(manifest, group_real_rel(manifest, rsa_model, "mean")),
         "output_std_file": target_path(manifest, group_real_rel(manifest, rsa_model, "std")),
         "mask_file": target_path(manifest, mask_file_rel),
-        "notes": ["computed on GPU by tools/colab_gpu/gpu_group.py"],
+        "notes": [f"computed on GPU by tools/colab_gpu/gpu_group.py v{VERSION}"],
+        "gpu_group_version": VERSION,
     }
 
 
@@ -670,8 +1469,10 @@ def _dump_log_json(path, payload):
 
 def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
                     steps=STEPS_ALL, device=None, seed=None, vox_batch=20000,
-                    g_batch=64, write_group_means=True, workers=8, verbose=True):
-    """Run steps 3/5/6/7 for one RSA model. Returns the written paths.
+                    g_batch=64, write_group_means=False, write_z_maps=False,
+                    z_thresholds=DEFAULT_Z_THRESHOLDS, connectivity=3, workers=8,
+                    refs_dir=None, verbose=True):
+    """Run steps 3/5/6/7/8 for one RSA model. Returns the written paths.
 
     Outputs land under ``{work_root}/data/`` with pipeline-relative paths, ready
     to be zipped by :func:`zip_group_result` and merged with
@@ -679,15 +1480,20 @@ def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
     """
     steps = tuple(sorted(set(int(s) for s in steps)))
     device = device or gpu_rsa.pick_device()
-    data_root = os.path.join(pkg_root, "data")
     out_root = os.path.join(work_root, "data")
     reps_group = manifest["reps_group"]
     min_pct = manifest.get("min_percentage_available", 1.0)
+    if 8 in steps and 7 not in steps:
+        raise ValueError(
+            "Step 8 here reads the rnd z maps out of memory rather than off disk, "
+            "so step 7 has to run in the same pass. Add 7 to steps (or run step 8 "
+            "on the workstation against z maps you have already merged).")
 
-    mask_img, mask_bool = gpu_rsa.load_reference_mask(data_root, manifest)
+    mask_img, mask_bool = load_group_mask(manifest, pkg_root=pkg_root,
+                                          refs_dir=refs_dir)
     shape, affine = mask_bool.shape, mask_img.affine
 
-    need_rnd = any(s in steps for s in (5, 6, 7))
+    need_rnd = any(s in steps for s in (5, 6, 7, 8))
     need_real = 3 in steps
     maps = load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
                                  workers=workers, want_real=need_real,
@@ -793,11 +1599,13 @@ def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
             z_rnd = (group_means - dist_mean[None, :]) / dist_std[None, :]
         # off-mask voxels are (0-0)/0 on the CPU, i.e. NaN -- keep them NaN so a
         # map written here is byte-comparable with one written by the pipeline
-        jobs = [dict(vec=z_rnd[g], mask_flat=mask_flat, shape=shape, affine=affine,
-                     path=out(group_rnd_rel(manifest, rsa_model, "z", g)),
-                     fill=np.nan)
-                for g in range(reps_group)]
-        written += _save_many(jobs, workers=workers)
+        if write_z_maps:
+            jobs = [dict(vec=z_rnd[g], mask_flat=mask_flat, shape=shape,
+                         affine=affine,
+                         path=out(group_rnd_rel(manifest, rsa_model, "z", g)),
+                         fill=np.nan)
+                    for g in range(reps_group)]
+            written += _save_many(jobs, workers=workers)
         written.append(write_text(
             out(group_rnd_log_rel(manifest, rsa_model, "z")),
             "\n".join([
@@ -805,7 +1613,10 @@ def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
                 f"{target_path(manifest, distribution_rel(manifest, rsa_model, 'mean'))}",
                 f"Loaded distribution std map: "
                 f"{target_path(manifest, distribution_rel(manifest, rsa_model, 'std'))}",
-                f"Calculated z maps for {reps_group} available rnd mean files.",
+                f"Calculated z maps for {reps_group} available rnd mean files."
+                + ("" if write_z_maps else
+                   " Not written to disk (write_z_maps=False); consumed in memory "
+                   "by step 8 in the same run."),
                 "Missing 0 rnd mean files."])))
 
         if real_mean is None:
@@ -823,8 +1634,23 @@ def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
             out(group_real_rel(manifest, rsa_model, "z")),
             fill=0.0, header=mean_header, astype=np.float32))
         if verbose:
-            print(f"[step7] {rsa_model}: {reps_group} rnd z map(s) + real z map "
-                  f"in {time.time() - t0:.1f}s")
+            how = "written" if write_z_maps else "kept in memory for step 8"
+            print(f"[step7] {rsa_model}: {reps_group} rnd z map(s) ({how}) + "
+                  f"real z map in {time.time() - t0:.1f}s")
+
+    # ---- Step 8: cluster-size distribution ---------------------------------
+    if 8 in steps:
+        dist = cluster_size_distribution(
+            z_rnd, mask_flat, shape, z_thresholds, connectivity=connectivity,
+            workers=workers, verbose=verbose)
+        path = out(cluster_dist_rel(manifest, rsa_model))
+        written.append(write_cluster_distribution(
+            path, dist, manifest, rsa_model, z_thresholds))
+        written.append(path.replace(".npy", "_log.txt"))
+        if verbose:
+            print(f"[step8] {rsa_model}: thresholds "
+                  f"{', '.join(str(float(t)) for t in z_thresholds)} -> "
+                  f"{os.path.basename(path)}")
     return written
 
 
@@ -853,6 +1679,7 @@ def group_output_globs(manifest, rsa_model):
     d, m, s = manifest["dataset"], manifest["model"], manifest["specie"]
     return [
         f"{d}/results/RSA/{m}/{rsa_model}/mean/*",
+        f"{d}/results/RSA/{m}/{rsa_model}/dist/*",
         f"{d}/results/RSA_rnd/{m}/{rsa_model}/mean/*",
         f"{d}/results/RSA_rnd/{m}/{s}-{rsa_model}_mean.nii.gz",
         f"{d}/results/RSA_rnd/{m}/{s}-{rsa_model}_std.nii.gz",

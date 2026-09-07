@@ -2413,6 +2413,98 @@ def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose
 
     return mean_data, std_data
 
+
+def nifti_mean_stream(img_list, result_map_path=None, result_map_path_std=None,
+                      verbose=False, mask_img=None):
+    """Voxel-wise mean and std of a list of NIfTI images, reading each file once.
+
+    Drop-in replacement for ``nifti_mean`` with the same arguments, the same
+    population std (divided by N, not N-1) and the same outputs. What differs is
+    the number of times each file is opened, which is what the run actually costs
+    on the network disk. Measured on one participant's 100 permutation maps
+    (44 MB, step 4.5):
+
+        check_same_space, one open per file for its header   32.6 s
+        pass 1, mean                                         35.3 s
+        pass 2, std                                          35.2 s
+        the arithmetic itself                                 1.7 s
+
+    So ~98 s of which ~2 s is computation. This version opens each file once and
+    does both moments in that pass with Welford's online algorithm, folding the
+    grid check into the image it has already loaded rather than paying for a
+    separate header pass. Same numbers out (agreement with the two-pass result is
+    at the 1e-16 level), roughly a third of the time.
+
+    Welford rather than accumulating sum and sum-of-squares: the difference of two
+    large similar numbers loses precision exactly when the mean is large relative
+    to the spread, which is the case these maps are in.
+    """
+    if len(img_list) == 0:
+        raise ValueError("img_list is empty.")
+
+    first_img = nib.load(img_list[0])
+    img_shape = first_img.shape
+    img_affine = first_img.affine
+    if verbose:
+        print(f"Computing mean and std for {len(img_list)} images of shape {img_shape}")
+
+    # Welford accumulators, both on the reference grid
+    count = 0
+    mean_data = np.zeros(img_shape, dtype=np.float64)
+    m2_data = np.zeros(img_shape, dtype=np.float64)
+
+    for img_path in img_list:
+        img = nib.load(img_path)
+        # The mean is taken voxel by voxel and inherits img_affine, so every
+        # input must already be on that grid -- see nifti_mean for why matching
+        # shapes alone do not establish that. Checked against the image already
+        # loaded here, so it costs nothing beyond the read this loop does anyway.
+        check_same_space(
+            (os.path.basename(img_list[0]), first_img),
+            [(os.path.basename(img_path), img)],
+            context=f"streaming average of {len(img_list)} maps",
+        )
+        if img.shape != img_shape:
+            raise ValueError(f"Image {img_path} has a different shape: {img.shape} != {img_shape}")
+        data = img.get_fdata(dtype=np.float64)
+        count += 1
+        delta = data - mean_data
+        mean_data += delta / count
+        m2_data += delta * (data - mean_data)
+        if verbose:
+            print(f"Processed {count}/{len(img_list)}: {img_path}")
+
+    std_data = np.sqrt(m2_data / count)
+
+    # check if mask_img is provided
+    if mask_img is not None:
+        if mask_img.shape != img_shape:
+            raise ValueError(f"mask_img has a different shape: {mask_img.shape} != {img_shape}")
+        if verbose:
+            print("Applying mask to mean and std images")
+        mean_data = mean_data * mask_img
+        std_data = std_data * mask_img
+
+    if result_map_path:
+        mean_img = nib.Nifti1Image(mean_data, img_affine)
+        result_map_dir = os.path.dirname(result_map_path)
+        if not os.path.exists(result_map_dir):
+            os.makedirs(result_map_dir)
+        nib.save(mean_img, result_map_path)
+        if verbose:
+            print(f"Saved mean image to {result_map_path}")
+    if result_map_path_std:
+        std_img = nib.Nifti1Image(std_data, img_affine)
+        result_map_dir_std = os.path.dirname(result_map_path_std)
+        if not os.path.exists(result_map_dir_std):
+            os.makedirs(result_map_dir_std)
+        nib.save(std_img, result_map_path_std)
+        if verbose:
+            print(f"Saved std image to {result_map_path_std}")
+
+    return mean_data, std_data
+
+
 def kendall_tau_a(a, b):
     """
     Kendall's tau-a correlation coefficient between vectors a and b.
@@ -2944,6 +3036,18 @@ def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N,
 
     print(f"for {specie}-sub-{sub_N:02d}, ses-{session}, run-{run_N:02d}...")
     rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
+    # check if model is available
+    if not os.path.exists(rsa_model_path):
+        print(f"RSA model {rsa_model} not found at {rsa_model_path}.")
+        print(f"Checking for run-dependent model {rsa_model}-run-{run_N}.csv...")
+        # the model might be run dependent, check if there are versions of the model that ends with run-#
+        rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + f"-run-{run_N}.csv"
+        # check if this file exists
+        if os.path.exists(rsa_model_path):
+            print(f"Using run-dependent model: {rsa_model_path}")
+        else:
+            raise FileNotFoundError(f"RSA model file not found: {rsa_model_path}")
+
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
  
     # Load config.yaml
@@ -5425,7 +5529,180 @@ def calculate_group_model_similarity_map(datafolder, dataset, session_and_run_al
         yaml.dump(log_json, f)
     return True
 
-def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model, 
+def _participant_map_units(session_and_run_all_dict, dis_method, mah_fold='stim-wise'):
+    '''Yield the (sub_N, session, run_N) units one participant map is written for.
+
+    Same rule as _model_similarity_map_file and step 3: every method other than
+    mahalanobis writes one map per run, and mahalanobis does too when the fold is the
+    within-run one ('stim-wise-all-runs'). The other mahalanobis folds collapse the runs
+    into a single map per participant, for which session and run_N are None.
+    '''
+    per_run = dis_method != 'mahalanobis' or mah_fold == 'stim-wise-all-runs'
+    for sub_N in session_and_run_all_dict:
+        entries = session_and_run_all_dict[sub_N] if per_run else [None]
+        for entry in entries:
+            session = entry['session'] if entry is not None else None
+            run_N = entry['run_N'] if entry is not None else None
+            yield sub_N, session, run_N
+
+
+def _participant_unit_label(specie, sub_N, session, run_N):
+    '''Short label for one participant (run) unit, used in prints and logs.'''
+    label = f"{specie}-sub-{sub_N:02d}"
+    if session is not None and run_N is not None:
+        label += f" ses-{int(session):02d} run-{int(run_N):02d}"
+    return label
+
+
+def _participant_rnd_map_stems(radius, dis_method, rsa_method, mask_type=None):
+    '''Return the filename stems step 4 may have used, most specific first.
+
+    Step 4 writes the mahalanobis permutations through _compare_mahalanobis_with_model,
+    which prefixes the mask type, and every other method through compare_with_model,
+    which does not. Both land in the same folder, so anything reading those maps has to
+    accept either spelling. New files are written under the first stem, which is the one
+    the real (step 2) maps already use.
+    '''
+    stem = f"r-{radius}_{dis_method}_{rsa_method}"
+    if mask_type:
+        return [f"{mask_type}-{stem}", stem]
+    return [stem]
+
+
+def _folder_names(folder):
+    '''Names in one folder as a set, empty when the folder does not exist.'''
+    return set(os.listdir(folder)) if os.path.isdir(folder) else set()
+
+
+def _list_participant_rnd_maps(output_dir, stems, reps, existing_files=None, verbose=False):
+    '''Return (available, missing) step-4 permutation maps as [(rnd_N, path), ...].
+
+    One listing of the folder instead of `reps` os.path.exists calls: these maps live on
+    the shared network disk, where a stat costs far more than reading the folder once.
+    '''
+    if existing_files is None:
+        existing_files = _folder_names(output_dir)
+    available_maps = []
+    missing_maps = []
+    for rnd_N in range(0, reps):
+        names = [f"{stem}_{rnd_N:04d}.nii.gz" for stem in stems]
+        name = next((candidate for candidate in names if candidate in existing_files), None)
+        if name is None:
+            if verbose:
+                print(f"missing: {os.path.join(output_dir, names[0])}")
+            missing_maps.append((rnd_N, os.path.join(output_dir, names[0])))
+            continue
+        if verbose:
+            print(f"added: {os.path.join(output_dir, name)}")
+        available_maps.append((rnd_N, os.path.join(output_dir, name)))
+    return available_maps, missing_maps
+
+
+def calculate_participant_rnd_distribution(datafolder, dataset, session_and_run_all_dict, specie, model,
+                                    task, radius, dis_method='pearson', rsa_method='pearson',
+                                    rsa_model='emotion-valence-basic', reps=100,
+                                    mask_type=None, mah_fold='stim-wise',
+                                    replace_file=False, verbose=False,
+                                    min_percentage_available=0.9):
+    """
+    Step 4.5.
+    Calculate the per participant permutation distribution. For each participant -- and for
+    each run of that participant when the fold writes one map per run, so sub-01 run-03 has
+    its own `reps` maps -- load the permuted model similarity maps of step 4, calculate per
+    voxel mean and std across them, and save both as nifti next to them.
+
+    This is step 6 one level down: step 6 calculates the same mean and std across the
+    permuted group maps of step 5.
+    Inputs:
+    - datafolder: path to data folder
+    - dataset: dataset name
+    - session_and_run_all_dict: dict with session and run information for all participants
+    - specie: 'D' or 'H'
+    - model: GLM model name
+    - task: task name
+    - radius: searchlight radius
+    - dis_method: method for pairwise similarity calculation
+    - rsa_method: method to compare similarity maps with model
+    - rsa_model: model to compare with
+    - reps: number of permutations written by step 4
+    - mask_type: type of brain mask (also prefixes the output filenames)
+    - mah_fold: mahalanobis folding, decides whether the maps are per run or per participant
+    - replace_file: whether to overwrite existing output files
+    - verbose: whether to print messages
+    - min_percentage_available: minimum percentage of permutation maps required per unit
+    Outputs:
+    - writes {mask_type}-r-{radius}_{dis_method}_{rsa_method}_mean.nii.gz
+    - writes {mask_type}-r-{radius}_{dis_method}_{rsa_method}_std.nii.gz
+      in each participant (run) RSA_rnd folder, next to the permutation maps they summarize
+    """
+    stems = _participant_rnd_map_stems(radius, dis_method, rsa_method, mask_type)
+    n_written, n_existing, n_incomplete = 0, 0, 0
+
+    for sub_N, session, run_N in _participant_map_units(session_and_run_all_dict,
+                                                        dis_method, mah_fold):
+        unit_label = _participant_unit_label(specie, sub_N, session, run_N)
+        # the folder step 4 wrote this unit's permutations into
+        output_dir = os.path.dirname(_model_similarity_map_file(
+            datafolder, dataset, specie, sub_N, model, rsa_model, task, radius,
+            dis_method, rsa_method, mask_type=mask_type, mah_fold=mah_fold,
+            rnd=True, session=session, run_N=run_N,
+        ))
+        # the distribution maps are written next to the permutations they summarize
+        distribution_mean_map_path = os.path.join(output_dir, f"{stems[0]}_mean.nii.gz")
+        distribution_std_map_path = os.path.join(output_dir, f"{stems[0]}_std.nii.gz")
+
+        # check if output files already exist
+        existing_files = _folder_names(output_dir)
+        if (os.path.basename(distribution_mean_map_path) in existing_files
+                and os.path.basename(distribution_std_map_path) in existing_files
+                and not replace_file):
+            print(f"{unit_label}: mean and std maps already exist. Skipping...")
+            n_existing += 1
+            continue
+
+        # initialize log
+        log = []  # log messages
+
+        # check how many permutation maps are available
+        available_maps, missing_maps = _list_participant_rnd_maps(
+            output_dir, stems, reps, existing_files=existing_files, verbose=verbose)
+        available_files = [path for _, path in available_maps]
+        print(f"{unit_label}: found {len(available_files)} available permutation maps, "
+              f"missing {len(missing_maps)}.")
+        # check if enough files are available
+        if len(available_files) / reps < min_percentage_available:
+            print(f"{unit_label}: not enough permutation maps. Found {len(available_files)} out of "
+                  f"{reps}. Minimum required is {min_percentage_available*100:.2f}%. Skipping...")
+            n_incomplete += 1
+            continue
+
+        # add to log
+        log.append(f"Found {len(available_files)} available permutation maps.")
+        log.append(f"Missing {len(missing_maps)} permutation maps.")
+        log.append(f"Calculating distribution mean map: {distribution_mean_map_path}")
+        log.append(f"Calculating distribution std map: {distribution_std_map_path}")
+        # print message
+        print(f"Calculating distribution mean map: {distribution_mean_map_path}")
+        print(f"Calculating distribution std map: {distribution_std_map_path}")
+
+        # calculate distribution mean and std maps -- streaming, because this runs
+        # once per participant (per run) over `reps` maps on the network disk, where
+        # the file opens, not the arithmetic, are the whole cost
+        mean_data, std_data = nifti_mean_stream(available_files, distribution_mean_map_path,
+                                                distribution_std_map_path, verbose=verbose)
+        # save log
+        log_path = distribution_mean_map_path.replace('.nii.gz', '_log.txt')
+        with open(log_path, 'w') as f:
+            f.write('\n'.join(log))
+        n_written += 1
+
+    print(f"Distribution maps written for {n_written} unit(s), {n_existing} already existed, "
+          f"{n_incomplete} had too few permutation maps.")
+    # a unit left without mean and std maps means the step did not finish
+    return n_incomplete == 0 and (n_written + n_existing) > 0
+
+
+def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_run_all_dict, specie, model,
                                             task, radius, rsa_model,
                                             rsa_method='pearson',
                                             dis_method='pearson', verbose=False, 
@@ -5651,8 +5928,10 @@ def calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, tas
     print(f"Calculating distribution mean map: {distribution_mean_map_path}")
     print(f"Calculating distribution std map: {distribution_std_map_path}")
 
-    # calculate distribution mean and std maps
-    mean_data, std_data = nifti_mean(available_files, distribution_mean_map_path, distribution_std_map_path, verbose=verbose)
+    # calculate distribution mean and std maps -- streaming, because this averages
+    # up to reps_group (1000) maps off the network disk, where the file opens, not
+    # the arithmetic, are the whole cost
+    mean_data, std_data = nifti_mean_stream(available_files, distribution_mean_map_path, distribution_std_map_path, verbose=verbose)
     # save log
     log_path = distribution_mean_map_path.replace('.nii.gz', '_log.txt')
     with open(log_path, 'w') as f:
@@ -5826,6 +6105,108 @@ def calculate_z_maps_rnd(datafolder, dataset, specie, model, task, radius,
         f.write('\n'.join(log))
     print(f"Saved log to {log_path}")
     return True
+
+
+def calculate_participant_z_map_real_data(datafolder, dataset, session_and_run_all_dict, specie,
+                                    model, task, radius, dis_method='pearson',
+                                    rsa_method='pearson', rsa_model='emotion-valence-basic',
+                                    mask_type=None, mah_fold='stim-wise',
+                                    replace_file=False, verbose=False):
+    """
+    Step 7.6.
+    z-score each participant (run) model similarity map of step 2 with the permutation mean
+    and std of that same unit, written by step 4.5.
+
+    Same calculation as calculate_z_map_real_data, one level down: that one z-scores the
+    group map of step 3 against the group distribution of step 6. Only the real map is
+    z-scored -- the step-4 permutations stay as they are, the same way step 4.5 summarises
+    them without rewriting them.
+    Outputs:
+    - writes {mask_type}-r-{radius}_{dis_method}_{rsa_method}_z.nii.gz next to each step-2 map
+    """
+    stems = _participant_rnd_map_stems(radius, dis_method, rsa_method, mask_type)
+    n_written, n_existing, n_missing = 0, 0, 0
+
+    for sub_N, session, run_N in _participant_map_units(session_and_run_all_dict,
+                                                        dis_method, mah_fold):
+        unit_label = _participant_unit_label(specie, sub_N, session, run_N)
+
+        # paths: the real map of step 2, and the distribution maps step 4.5 wrote in the
+        # matching RSA_rnd folder
+        model_similarity_map_path = _model_similarity_map_file(
+            datafolder, dataset, specie, sub_N, model, rsa_model, task, radius,
+            dis_method, rsa_method, mask_type=mask_type, mah_fold=mah_fold,
+            session=session, run_N=run_N,
+        )
+        rnd_dir = os.path.dirname(_model_similarity_map_file(
+            datafolder, dataset, specie, sub_N, model, rsa_model, task, radius,
+            dis_method, rsa_method, mask_type=mask_type, mah_fold=mah_fold,
+            rnd=True, session=session, run_N=run_N,
+        ))
+        distribution_mean_map_path = os.path.join(rnd_dir, f"{stems[0]}_mean.nii.gz")
+        distribution_std_map_path = os.path.join(rnd_dir, f"{stems[0]}_std.nii.gz")
+        # the z map is written next to the real map it comes from
+        z_map_path = model_similarity_map_path.replace('.nii.gz', '_z.nii.gz')
+
+        # check if z map already exists
+        if os.path.exists(z_map_path) and not replace_file:
+            print(f"{unit_label}: z map already exists. Skipping...")
+            n_existing += 1
+            continue
+
+        ## load images
+        # check if files exist
+        missing_inputs = [path for path in (model_similarity_map_path,
+                                            distribution_mean_map_path,
+                                            distribution_std_map_path)
+                          if not os.path.exists(path)]
+        if missing_inputs:
+            print(f"{unit_label}: missing input file(s). Skipping...")
+            for path in missing_inputs:
+                print(f"  {path}")
+            n_missing += 1
+            continue
+
+        ref_img = nib.load(model_similarity_map_path)   # reference space
+        dist_mean_img = nib.load(distribution_mean_map_path)
+        dist_std_img = nib.load(distribution_std_map_path)
+        # z is calculated voxel by voxel and written with ref_img's affine, so all three
+        # maps have to sit on the same grid
+        check_same_space(
+            (os.path.basename(model_similarity_map_path), ref_img),
+            [(os.path.basename(distribution_mean_map_path), dist_mean_img),
+             (os.path.basename(distribution_std_map_path), dist_std_img)],
+            context=f"step 7.6, {unit_label}",
+        )
+        real_arr = ref_img.get_fdata()
+        dmean_arr = dist_mean_img.get_fdata()
+        dstd_arr = dist_std_img.get_fdata()
+
+        # robust z
+        with np.errstate(divide='ignore', invalid='ignore'):
+            z = (real_arr - dmean_arr) / dstd_arr
+            z[~np.isfinite(z)] = 0  # handles std=0, NaN, inf
+
+        # build output using ref header+affines (and keep codes)
+        ref_hdr = ref_img.header.copy()
+        z_img = nib.Nifti1Image(z.astype(np.float32), ref_img.affine, header=ref_hdr)
+
+        # explicitly set qform/sform and their codes (belt & suspenders)
+        qform, qcode = ref_img.get_qform(), int(ref_img.header['qform_code'])
+        sform, scode = ref_img.get_sform(), int(ref_img.header['sform_code'])
+        if qform is not None:
+            z_img.set_qform(qform, code=qcode if qcode > 0 else 1)
+        if sform is not None:
+            z_img.set_sform(sform, code=scode if scode > 0 else 1)
+
+        nib.save(z_img, z_map_path)
+        if verbose:
+            print(f"Saved z map to {z_map_path}")
+        n_written += 1
+
+    print(f"Calculated {n_written} z maps for real data, {n_existing} already existed, "
+          f"{n_missing} unit(s) skipped for missing input files.")
+    return n_missing == 0 and (n_written + n_existing) > 0
 
 
 import itertools

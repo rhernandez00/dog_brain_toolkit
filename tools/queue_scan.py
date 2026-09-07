@@ -37,7 +37,7 @@ while _root != os.path.dirname(_root):
 sys.path.insert(0, _root)
 
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
-from scheduler.dag import make_job_id, STEP_LABELS  # noqa: E402
+from scheduler.dag import make_job_id, step_token, STEP_LABELS  # noqa: E402
 
 # Precedence: a fresh in-flight instance outranks a stale completed/failed
 # record for the same id (mirrors job_status.find_state).
@@ -87,15 +87,22 @@ def read_registry(models_csv, dis_method=None):
 
 
 def parse_steps(spec):
-    """'3,5-10' -> [3, 5, 6, 7, 8, 9, 10]"""
+    """'3,5-10' -> [3, 5, 6, 7, 8, 9, 10]; '4.5,7.6' -> [4.5, 7.6].
+
+    Ranges stay integer-only -- the fractional steps (0.5, 4.5, 7.6) sit beside
+    the main line rather than in it, so they are always named individually.
+    """
     steps = []
     for part in spec.split(','):
         part = part.strip()
+        if not part:
+            continue
         if '-' in part:
             a, b = part.split('-')
             steps.extend(range(int(a), int(b) + 1))
-        elif part:
-            steps.append(int(part))
+        else:
+            value = float(part)
+            steps.append(int(value) if value == int(value) else value)
     return sorted(set(steps))
 
 
@@ -163,11 +170,11 @@ def main():
     if args.missing_only:
         print('Not in queue at all (%d):' % len(missing))
         for m, sp, st in missing:
-            print('  %-46s %s step%02d' % (m, sp, st))
+            print('  %-46s %s %s' % (m, sp, step_token(st)))
     elif not args.summary:
         head = '%-46s' % 'rsa_model'
         for step in steps:
-            head += ' %-11s' % ('s%d(%s)' % (step, '/'.join(species)))
+            head += ' %-11s' % ('s%g(%s)' % (step, '/'.join(species)))
         print(head)
         print('-' * len(head))
         for name, cells in rows:
@@ -184,7 +191,7 @@ def main():
         if counts.get(state):
             print('  %-10s %d' % (GLYPH[state], counts[state]))
     print('\nStep labels: ' + ', '.join(
-        '%d=%s' % (s, STEP_LABELS.get(s, '?')) for s in steps))
+        '%g=%s' % (s, STEP_LABELS.get(s, '?')) for s in steps))
 
 
 if __name__ == '__main__':

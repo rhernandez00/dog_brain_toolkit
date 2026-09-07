@@ -1,0 +1,28 @@
+dis_method,mah_fold,model,groupings_possible,why
+mahalanobis,stim-wise,valence3,"['all', 'within', 'cross', 'dog', 'hum']",Tests a categorical positive/negative/neutral organization without assuming ordered distances among the three valence classes.
+mahalanobis,stim-wise,valence_bipolar,"['all', 'within', 'cross', 'dog', 'hum']",Tests an ordered hedonic axis rather than three unrelated valence classes.
+mahalanobis,stim-wise,emotionality,"['all', 'within', 'cross', 'dog', 'hum']",Tests whether the dominant representational division is emotional salience rather than emotion identity or valence.
+mahalanobis,stim-wise,negative_vs_other,"['all', 'within', 'cross', 'dog', 'hum']",Targets a threat/negative-affect representation without requiring positive and neutral categories to differ.
+mahalanobis,stim-wise,action_tendency,"['all', 'within', 'cross', 'dog', 'hum']",Tests an action-tendency account that differs from valence because anger is predicted to align with approach rather than fear.
+mahalanobis,stim-wise,arousal_graded,"['all', 'within', 'cross', 'dog', 'hum']",Tests whether neural geometry follows a plausible arousal ordering independently of valence.
+mahalanobis,stim-wise,emotion_identity,"['all', 'cross']",Directly tests species-general emotion coding; the cross scope is the cleanest version.
+mahalanobis,stim-wise,emotion_identity_no_neutral,"['all', 'cross']",Checks that species-general emotion correspondence is not driven by the perceptual distinctiveness of neutral stimuli.
+mahalanobis,stim-wise,positive_subtype,"['all', 'cross']","Tests whether the two positive categories have distinct, species-general representations rather than a single positive cluster."
+mahalanobis,stim-wise,negative_subtype,"['all', 'cross']","Tests whether threat-related categories retain distinct, species-general representations."
+mahalanobis,stim-wise,valence_binary_emotional,"['all', 'within', 'cross', 'dog', 'hum']",Tests whether valence organization survives without the potentially distinctive neutral condition.
+mahalanobis,stim-wise,species_identity,['all'],Tests whether stimulus species is the dominant organizing dimension.
+mahalanobis,stim-wise,joint_emotion_species_balanced,['all'],Tests a mixed representational geometry rather than forcing either species or emotion to dominate.
+mahalanobis,stim-wise,joint_emotion_species_emotion_dominant,['all'],Provides a directional alternative in which emotion correspondence dominates species identity.
+mahalanobis,stim-wise,joint_emotion_species_species_dominant,['all'],Provides a directional alternative in which species identity dominates emotion correspondence.
+mahalanobis,stim-wise,joint_valence_species_balanced,['all'],Tests a mixed geometry in which both species and three-category valence organize responses.
+mahalanobis,stim-wise,joint_valence_species_valence_dominant,['all'],Provides a directional alternative in which valence dominates species identity.
+mahalanobis,stim-wise,joint_valence_species_species_dominant,['all'],Provides a directional alternative in which species identity dominates valence.
+correlation,run-wise,emo-id,"['collapse', 'within', 'cross', 'dog', 'hum']","Emotion identity (5-way): same emotion=0, different=1."
+correlation,run-wise,val3,"['collapse', 'within', 'cross', 'dog', 'hum']","Valence 3-class: same {pos|neg|neu}=0, different=1."
+correlation,run-wise,val-bin,"['collapse', 'within', 'cross', 'dog', 'hum']","Valence binary: positive vs negative=1, within=0; Neutral excluded."
+correlation,run-wise,emo-vs-neu,"['collapse', 'within', 'cross', 'dog', 'hum']",Emotional vs Neutral: any emotion grouped together vs Neutral.
+correlation,run-wise,threat,"['collapse', 'within', 'cross', 'dog', 'hum']","Threat: {Anger,Fear} vs {others}."
+correlation,run-wise,approach-avoid,"['collapse', 'within', 'cross', 'dog', 'hum']","Approach {P,H} vs Avoid {A,F}=1, within=0; Neutral excluded."
+correlation,run-wise,grad-val,"['collapse', 'within', 'cross', 'dog', 'hum']","Graded valence: pos->neu->neg axis, adjacent=0.5, opposite=1."
+correlation,run-wise,grad-arousal,"['collapse', 'within', 'cross', 'dog', 'hum']","Graded arousal: {A,F}=high, {P,H}=mid, {N}=low; adjacent=0.5, far=1."
+correlation,run-wise,agent-species-id,['collapse'],Agent species shown: Dog-shown vs Hum-shown (emotion ignored).

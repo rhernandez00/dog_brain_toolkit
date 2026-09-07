@@ -6,9 +6,11 @@ STEP_LABELS = {
     2: "Model similarity",
     3: "Group similarity map",
     4: "RND permuted model",
+    4.5: "RND participant distribution",
     5: "RND group permutations",
     6: "Voxelwise RND distribution",
     7: "Z-maps",
+    7.6: "Participant z-maps",
     8: "Cluster size distribution",
     9: "Cluster correction",
     10: "Create tables",
@@ -21,19 +23,37 @@ _STEP_DEPS = {
     2:  [1],
     3:  [2],
     4:  [1],     # RND uses pairwise maps, not group map
+    4.5: [4],    # per participant mean/std across that unit's permuted maps
     5:  [4],
     6:  [5],
     7:  [3, 6],  # z-maps need group map AND voxelwise RND distribution
+    7.6: [2, 4.5],  # participant z-maps need the real map AND its own distribution
     8:  [7],
     9:  [7, 8],  # cluster correction needs real z-map AND cluster dist
     10: [9],
 }
 
+# Steps 4.5 and 7.6 hang off the main line rather than feeding it: nothing in
+# 5..10 lists them as a dependency, so a classic 2->10 graph is unchanged and
+# they are only scheduled when asked for by name.
+
+
+def step_token(step):
+    """Render a step for a job id: 'step04' for 4, 'step04.5' for 4.5.
+
+    Integer steps keep the exact spelling every existing job id, marker folder
+    and queue lookup already uses -- a float 4.0 read back from a job JSON also
+    renders as 'step04', so a round trip through the queue cannot change an id.
+    """
+    if float(step) == int(step):
+        return f"step{int(step):02d}"
+    return f"step{float(step):04.1f}"
+
 
 def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None):
     job_id = (
         f"{dataset}__{model}__{rsa_model}__{specie}"
-        f"__step{step:02d}__zt{z_threshold}__r{reps}__rg{reps_group}"
+        f"__{step_token(step)}__zt{z_threshold}__r{reps}__rg{reps_group}"
         f"__rsa{rsa_method}__dis{dis_method}__mah{mah_fold}"
     )
     # Per-participant jobs (scheduled from the dashboard for a single missing map)

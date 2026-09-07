@@ -1,0 +1,1944 @@
+user: raulh87
+dataset: EmoC
+task: EmoC
+participants: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40]
+runs: [1, 2, 3, 4, 5, 6]
+sessions: ["01"]
+specie: H
+radius_fwd: 55.0
+threshold_fwd: 0.5
+smooth: 4
+atlas_type: MNI2mm
+img_type: brain2mmB
+model: basic-block
+redo_if_exists: false
+stim_types: ["DogP1","DogP2","DogP3","DogP4","DogH1", "DogH2", "DogH3", "DogH4","DogA1", "DogA2", "DogA3", "DogA4", "DogF1", "DogF2", "DogF3", "DogF4", "DogN1", "DogN2", "DogN3", "DogN4", "HumP1", "HumP2", "HumP3", "HumP4", "HumH1", "HumH2", "HumH3", "HumH4", "HumA1", "HumA2", "HumA3", "HumA4", "HumF1", "HumF2", "HumF3", "HumF4", "HumN1", "HumN2", "HumN3", "HumN4"]
+
+# all stumuli in runs 1,2,3,4 is partition 1, runs 5,6 is partition 2. Non-repeated 0
+model_dict:
+  run01:
+    DogP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP1
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP2
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP3
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP4
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH1
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH2
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH3
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH4
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogA1:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA1
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogA2:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA2
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogA3:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA3
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogA4:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA4
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogF1:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R1DogF1
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogF2:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R1DogF2
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogF3:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R1DogF3
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogF4:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R1DogF4
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R1DogN1
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    DogN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R1DogN2
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    DogN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R1DogN3
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    DogN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R1DogN4
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    HumP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP1
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP2
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP3
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP4
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH1
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH2
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH3
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH4
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumA1:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA1
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumA2:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA2
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumA3:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA3
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumA4:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA4
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumF1:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R1HumF1
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumF2:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R1HumF2
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumF3:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R1HumF3
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumF4:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R1HumF4
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R1HumN1
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+    HumN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R1HumN2
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+    HumN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R1HumN3
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+    HumN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R1HumN4
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+  run02:
+    DogP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP1
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP2
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP3
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP4
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH1
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH2
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH3
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH4
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 1
+    DogA1:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA1
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogA2:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA2
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogA3:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA3
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogA4:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA4
+      run_label: DogA
+      color: "#e72222"
+      partition: 1
+    DogF1:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R2DogF1
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogF2:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R2DogF2
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogF3:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R2DogF3
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogF4:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R2DogF4
+      run_label: DogF
+      color: "#763596"
+      partition: 0
+    DogN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R2DogN1
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    DogN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R2DogN2
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    DogN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R2DogN3
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    DogN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R2DogN4
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 0
+    HumP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP1
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP2
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP3
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP4
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH1
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH2
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH3
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH4
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 1
+    HumA1:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA1
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumA2:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA2
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumA3:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA3
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumA4:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA4
+      run_label: HumA
+      color: "#e72222"
+      partition: 1
+    HumF1:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R2HumF1
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumF2:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R2HumF2
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumF3:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R2HumF3
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumF4:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R2HumF4
+      run_label: HumF
+      color: "#763596"
+      partition: 0
+    HumN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R2HumN1
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+    HumN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R2HumN2
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+    HumN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R2HumN3
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+    HumN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R2HumN4
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 0
+  run03:
+    DogP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R3DogP1
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R3DogP2
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R3DogP3
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R3DogP4
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 1
+    DogH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R3DogH1
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R3DogH2
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R3DogH3
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R3DogH4
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogA1:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R3DogA1
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogA2:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R3DogA2
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogA3:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R3DogA3
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogA4:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R3DogA4
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogF1:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF1
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogF2:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF2
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogF3:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF3
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogF4:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF4
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R3DogN1
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    DogN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R3DogN2
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    DogN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R3DogN3
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    DogN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R3DogN4
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    HumP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R3HumP1
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R3HumP2
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R3HumP3
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R3HumP4
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 1
+    HumH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R3HumH1
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R3HumH2
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R3HumH3
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R3HumH4
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumA1:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R3HumA1
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumA2:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R3HumA2
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumA3:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R3HumA3
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumA4:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R3HumA4
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumF1:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF1
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumF2:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF2
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumF3:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF3
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumF4:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF4
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN1
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+    HumN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN2
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+    HumN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN3
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+    HumN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN4
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+  run04:
+    DogP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R4DogP1
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 0
+    DogP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R4DogP2
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 0
+    DogP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R4DogP3
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 0
+    DogP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R4DogP4
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 0
+    DogH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R4DogH1
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R4DogH2
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R4DogH3
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R4DogH4
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 0
+    DogA1:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R4DogA1
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogA2:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R4DogA2
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogA3:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R4DogA3
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogA4:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R4DogA4
+      run_label: DogA
+      color: "#e72222"
+      partition: 0
+    DogF1:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF1
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogF2:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF2
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogF3:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF3
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogF4:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF4
+      run_label: DogF
+      color: "#763596"
+      partition: 1
+    DogN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN1
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    DogN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN2
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    DogN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN3
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    DogN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN4
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 1
+    HumP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R4HumP1
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 0
+    HumP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R4HumP2
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 0
+    HumP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R4HumP3
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 0
+    HumP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R4HumP4
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 0
+    HumH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R4HumH1
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R4HumH2
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R4HumH3
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R4HumH4
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 0
+    HumA1:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R4HumA1
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumA2:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R4HumA2
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumA3:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R4HumA3
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumA4:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R4HumA4
+      run_label: HumA
+      color: "#e72222"
+      partition: 0
+    HumF1:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF1
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumF2:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF2
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumF3:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF3
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumF4:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF4
+      run_label: HumF
+      color: "#763596"
+      partition: 1
+    HumN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN1
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+    HumN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN2
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+    HumN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN3
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+    HumN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN4
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 1
+  run05:
+    DogP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP1
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP2
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP3
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R1DogP4
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH1
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH2
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH3
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R1DogH4
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogA1:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA1
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogA2:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA2
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogA3:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA3
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogA4:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R1DogA4
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogF1:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF1
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogF2:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF2
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogF3:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF3
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogF4:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R3DogF4
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN1
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    DogN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN2
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    DogN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN3
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    DogN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN4
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    HumP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP1
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP2
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP3
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R2HumP4
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH1
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH2
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH3
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R2HumH4
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumA1:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA1
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumA2:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA2
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumA3:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA3
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumA4:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R2HumA4
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumF1:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF1
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumF2:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF2
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumF3:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF3
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumF4:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R4HumF4
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN1
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2
+    HumN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN2
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2
+    HumN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN3
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2
+    HumN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R4HumN4
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2
+  run06:
+    DogP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP1
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP2
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP3
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Dog
+      stim_file: R2DogP4
+      run_label: DogP
+      color: "#f18b1f"
+      partition: 2
+    DogH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH1
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH2
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH3
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Dog
+      stim_file: R2DogH4
+      run_label: DogH
+      color: "#ffcf00"
+      partition: 2
+    DogA1:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA1
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogA2:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA2
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogA3:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA3
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogA4:
+      label: A
+      label_name: Anger
+      specie_shown: Dog
+      stim_file: R2DogA4
+      run_label: DogA
+      color: "#e72222"
+      partition: 2
+    DogF1:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF1
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogF2:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF2
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogF3:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF3
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogF4:
+      label: F
+      label_name: Fear
+      specie_shown: Dog
+      stim_file: R4DogF4
+      run_label: DogF
+      color: "#763596"
+      partition: 2
+    DogN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN1
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    DogN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN2
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    DogN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN3
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    DogN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Dog
+      stim_file: R4DogN4
+      run_label: DogN
+      color: "#7a7a7a"
+      partition: 2
+    HumP1:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP1
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumP2:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP2
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumP3:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP3
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumP4:
+      label: P
+      label_name: Positive anticipation
+      specie_shown: Hum
+      stim_file: R1HumP4
+      run_label: HumP
+      color: "#f18b1f"
+      partition: 2
+    HumH1:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH1
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumH2:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH2
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumH3:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH3
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumH4:
+      label: H
+      label_name: Happiness
+      specie_shown: Hum
+      stim_file: R1HumH4
+      run_label: HumH
+      color: "#ffcf00"
+      partition: 2
+    HumA1:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA1
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumA2:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA2
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumA3:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA3
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumA4:
+      label: A
+      label_name: Anger
+      specie_shown: Hum
+      stim_file: R1HumA4
+      run_label: HumA
+      color: "#e72222"
+      partition: 2
+    HumF1:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF1
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumF2:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF2
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumF3:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF3
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumF4:
+      label: F
+      label_name: Fear
+      specie_shown: Hum
+      stim_file: R3HumF4
+      run_label: HumF
+      color: "#763596"
+      partition: 2
+    HumN1:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN1
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2
+    HumN2:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN2
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2
+    HumN3:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN3
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2
+    HumN4:
+      label: N
+      label_name: Neutral
+      specie_shown: Hum
+      stim_file: R3HumN4
+      run_label: HumN
+      color: "#7a7a7a"
+      partition: 2

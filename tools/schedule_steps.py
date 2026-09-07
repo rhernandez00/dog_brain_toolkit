@@ -43,7 +43,7 @@ while _root != os.path.dirname(_root):
 sys.path.insert(0, _root)
 
 from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
-from scheduler.dag import build_single_job  # noqa: E402
+from scheduler.dag import build_single_job, step_token  # noqa: E402
 from scheduler.jobs import create_job, DEFAULT_PRIORITY, PRIORITIES  # noqa: E402
 
 
@@ -63,14 +63,22 @@ def read_registry(models_csv, dis_method=None):
 
 
 def parse_steps(spec):
+    """'3,5-10' -> [3, 5, ..., 10]; '4.5,7.6' -> [4.5, 7.6].
+
+    Ranges stay integer-only -- the fractional steps (0.5, 4.5, 7.6) sit beside
+    the main line rather than in it, so they are always named individually.
+    """
     steps = []
     for part in spec.split(','):
         part = part.strip()
+        if not part:
+            continue
         if '-' in part:
             a, b = part.split('-')
             steps.extend(range(int(a), int(b) + 1))
-        elif part:
-            steps.append(int(part))
+        else:
+            value = float(part)
+            steps.append(int(value) if value == int(value) else value)
     return sorted(set(steps))
 
 
@@ -142,8 +150,9 @@ def main():
                     create_job(queue_dir, j)
                 made += 1
                 if args.dry_run and made <= len(steps) * 2:
-                    print('  [dry] %-46s %s step%02d -> %s'
-                          % (j['rsa_model'], j['specie'], j['step'], j['status']))
+                    print('  [dry] %-46s %s %s -> %s'
+                          % (j['rsa_model'], j['specie'], step_token(j['step']),
+                             j['status']))
 
     verb = 'would create' if args.dry_run else 'created'
     print('\n%s %d job(s), all pending' % (verb, made))

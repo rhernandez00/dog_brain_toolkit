@@ -19,6 +19,14 @@ Accepts any mix of ``result_*.zip`` files and directories containing them. Exist
 files are left untouched unless ``--replace`` is given; ``--dry-run`` reports the
 planned copies without writing anything.
 
+``--no_step4_files`` leaves the step-4 permutation maps in the zip. They are the
+bulkiest thing a run produces (``--reps`` maps per participant per run) and step 5
+is their only reader, so when step 5 already ran on the GPU -- its group means are
+in the same zip -- writing them to the data disk only fills it with something
+``tools/bulk_check.py --delete_step4`` would reclaim afterwards. What counts as a
+step-4 file is the participant level of ``results/RSA_rnd/``; the group ``mean/``
+outputs of steps 5 and 7 live under the same tree and are always merged.
+
 Resuming an interrupted merge is the normal case, so the script is built around
 making "is this zip already unpacked?" cheap on a network data folder:
 
@@ -49,6 +57,7 @@ script cannot create a truncated map in the first place.
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import threading
@@ -114,6 +123,22 @@ def _safe_member(name):
     if not norm.endswith(MERGEABLE_SUFFIXES):
         return None
     return norm
+
+
+# A step-4 map is a *participant* map under RSA_rnd:
+#   {dataset}/results/RSA_rnd/{model}/{rsa_model}[/{mah_fold}]/{specie}-sub-{NN}/
+#       [ses-{ss}_task-{task}_run-{rr}/]{stem}_{index:04d}.nii.gz
+# Steps 5 and 7 write into the same RSA_rnd tree but under a group ``mean/``
+# folder with no participant component, which is what tells the two apart here.
+_SUB_DIR_RE = re.compile(r"^[DH]-sub-\d+$")
+
+
+def _is_step4_member(norm):
+    """True for a per-participant permutation map (step 4's output)."""
+    parts = norm.split("/")
+    if len(parts) < 6 or parts[1] != "results" or parts[2] != "RSA_rnd":
+        return False
+    return any(_SUB_DIR_RE.match(p) for p in parts[5:-1])
 
 
 def _list_dir(dirpath):
@@ -188,15 +213,17 @@ class DirIndex:
 
 
 def plan_zip(zip_path, datafolder, index, dataset=None, replace=False,
-             verify_size=True, verbose=False):
+             verify_size=True, verbose=False, skip_step4=False):
     """Decide what this zip still owes the data folder.
 
-    Returns ``(todo, present, stale)`` where ``todo`` is a list of
+    Returns ``(todo, present, stale, excluded)`` where ``todo`` is a list of
     ``(zip_info, member, dst)`` triples still to write, ``present`` counts members
-    already on disk, and ``stale`` counts members that exist at the wrong size
-    (half-written by an interrupted run) and are therefore in ``todo``.
+    already on disk, ``stale`` counts members that exist at the wrong size
+    (half-written by an interrupted run) and are therefore in ``todo``, and
+    ``excluded`` counts step-4 maps left in the zip by ``skip_step4``.
     """
     members = []
+    excluded = 0
     with zipfile.ZipFile(zip_path) as zf:
         for info in zf.infolist():
             member = _safe_member(info.filename)
@@ -206,11 +233,16 @@ def plan_zip(zip_path, datafolder, index, dataset=None, replace=False,
                 if verbose:
                     print(f"  (skip {member}: not dataset {dataset})")
                 continue
+            if skip_step4 and _is_step4_member(member):
+                excluded += 1
+                if verbose:
+                    print(f"  (skip {member}: step-4 map)")
+                continue
             members.append((info, member,
                             os.path.join(datafolder, member.replace("/", os.sep))))
 
     if replace:
-        return members, 0, 0
+        return members, 0, 0, excluded
 
     index.prime(os.path.dirname(dst) for _, _, dst in members)
 
@@ -227,7 +259,7 @@ def plan_zip(zip_path, datafolder, index, dataset=None, replace=False,
             if verbose:
                 print(f"  size {size} != {info.file_size}, rewrite: {member}")
         todo.append((info, member, dst))
-    return todo, present, stale
+    return todo, present, stale, excluded
 
 
 def _extract(zf, info, dst, index):
@@ -248,15 +280,20 @@ def _extract(zf, info, dst, index):
 
 def unpack_zip(zip_path, datafolder, index=None, dataset=None, replace=False,
                dry_run=False, verbose=False, workers=DEFAULT_WORKERS,
-               verify_size=True):
+               verify_size=True, skip_step4=False):
     """Extract one result zip into ``datafolder``. Returns (written, skipped)."""
     if index is None:
         index = DirIndex(workers=workers)
-    todo, present, stale = plan_zip(zip_path, datafolder, index, dataset=dataset,
-                                    replace=replace, verify_size=verify_size,
-                                    verbose=verbose)
+    todo, present, stale, excluded = plan_zip(
+        zip_path, datafolder, index, dataset=dataset, replace=replace,
+        verify_size=verify_size, verbose=verbose, skip_step4=skip_step4)
+    if excluded:
+        print(f"  left {excluded} step-4 file(s) in the zip (--no_step4_files)")
     if not todo:
-        print(f"  already complete ({present} file(s)) -- skipped")
+        if present or not excluded:
+            print(f"  already complete ({present} file(s)) -- skipped")
+        else:
+            print("  nothing to merge -- every member was a step-4 file")
         return 0, present
     if stale:
         print(f"  {stale} file(s) present but truncated -- rewriting")
@@ -303,6 +340,11 @@ def parse_args():
                     help=f"Parallel listings/copies (default {DEFAULT_WORKERS}; 1 = serial)")
     ap.add_argument("--no-verify-size", dest="verify_size", action="store_false",
                     help="Treat any existing file as done, without comparing its size")
+    ap.add_argument("--no_step4_files", "--no-step4-files", dest="skip_step4",
+                    action="store_true",
+                    help="Do not unpack the step-4 permutation maps (the per-participant "
+                         "maps under results/RSA_rnd/; the group mean/ outputs of steps "
+                         "5 and 7 are merged either way)")
     ap.add_argument("--verbose", "-v", action="store_true",
                     help="Print one line per member instead of one per zip")
     return ap.parse_args()
@@ -324,7 +366,8 @@ def main():
         print(os.path.basename(z))
         w, s = unpack_zip(z, datafolder, index=index, dataset=a.dataset,
                           replace=a.replace, dry_run=a.dry_run, verbose=a.verbose,
-                          workers=a.workers, verify_size=a.verify_size)
+                          workers=a.workers, verify_size=a.verify_size,
+                          skip_step4=a.skip_step4)
         tot_w += w
         tot_s += s
         if w == 0:

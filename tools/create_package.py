@@ -18,6 +18,14 @@ Usage (from the repo root, with the full Anaconda interpreter -- see CLAUDE.md):
 ``--all-stim-wise`` expands to every stim-wise model x grouping in the dataset's
 ``rsa_models/_models.csv`` (via tools/models_manifest.py) -- 50 models for EmoC.
 
+**Run-dependent models** (``visual1``, ``visual2``, ``flow``) have no
+``{model}.csv``; they are one predicted RDM per run, ``{model}-run-{run_N}.csv``,
+because they describe the video actually shown in that run. They are named on
+``--models`` like any other model -- the CSV for *every* run of the participant is
+bundled and the manifest lists them under ``run_dependent_models`` so the Colab
+side reads the matching matrix per run. They need ``--dis_method correlation``,
+the only path whose step-2/4 output is per run.
+
 If the participant's 45 step-1 pairwise maps already exist on disk they are
 bundled and the manifest flags ``step1_done`` so Colab skips step 1 -- but only
 if they pass a freshness gate, because bundling makes Colab skip step 1 and those
@@ -89,9 +97,51 @@ def beta_relpath(dataset, model, specie, sub_N, session, run_N, task, stim):
     ).replace(os.sep, "/")
 
 
-def resolve_models(datafolder, dataset, explicit, all_flag, all_stim_wise, dis_method):
+def resolve_model_csvs(rsa_dir, name, run_numbers):
+    """Locate the CSV(s) backing one RSA model name. ``(paths, run_dependent)``.
+
+    Two layouts, the same fallback ``rsa_utils.compare_with_model`` applies:
+
+    * **one matrix for the participant** -- ``{name}.csv``.
+    * **run-dependent** (``visual1``, ``visual2``, ``flow``) -- no ``{name}.csv``
+      exists; the model is one matrix *per run*, ``{name}-run-{run_N}.csv``, with
+      ``run_N`` unpadded exactly as the CPU pipeline writes it. These are stimulus
+      properties measured off the video shown in that run (optic flow, low-level
+      visual similarity), so the predicted RDM genuinely differs run by run.
+
+    All of the participant's runs must be covered: a partially present set is an
+    error, not a reason to fall back, because silently dropping a run would leave
+    that run without a step-2 map and stall step 3.
+    """
+    plain = os.path.join(rsa_dir, f"{name}.csv")
+    if os.path.exists(plain):
+        return [plain], False
+    per_run, missing = [], []
+    for run_N in sorted(set(run_numbers)):
+        p = os.path.join(rsa_dir, f"{name}-run-{run_N}.csv")
+        (per_run if os.path.exists(p) else missing).append(p)
+    if per_run and not missing:
+        return per_run, True
+    if not per_run:
+        raise FileNotFoundError(
+            f"RSA model CSV not found: {plain}\n"
+            f"  (nor a run-dependent {name}-run-{{run_N}}.csv for runs "
+            f"{sorted(set(run_numbers))})")
+    raise FileNotFoundError(
+        f"Run-dependent RSA model {name!r} is incomplete -- missing "
+        + ", ".join(os.path.basename(p) for p in missing))
+
+
+def resolve_models(datafolder, dataset, explicit, all_flag, all_stim_wise, dis_method,
+                   run_numbers):
     """Ordered, de-duplicated model list from --models, --all (by dis_method) and
-    --all-stim-wise (mahalanobis alias)."""
+    --all-stim-wise (mahalanobis alias).
+
+    Returns ``(names, csv_srcs, run_dependent)``: the model names, the
+    ``(arcname, src)`` pairs of every model CSV to bundle (one per model, or one
+    per run for a run-dependent model), and the sorted subset of names that are
+    run-dependent.
+    """
     dirs = mm.rsa_models_dirs(datafolder, dataset)
     names = []
     if all_stim_wise:
@@ -99,18 +149,30 @@ def resolve_models(datafolder, dataset, explicit, all_flag, all_stim_wise, dis_m
     if all_flag:
         names += mm.concrete_models_for_dis_method(dirs, dis_method)
     names += list(explicit or [])
-    seen, out = set(), []
+    seen, out, csv_srcs, run_dep = set(), [], [], []
     rsa_dir = os.path.join(datafolder, dataset, "rsa_models")
     for n in names:
         if n in seen:
             continue
         seen.add(n)
-        if not os.path.exists(os.path.join(rsa_dir, f"{n}.csv")):
-            raise FileNotFoundError(f"RSA model CSV not found: {os.path.join(rsa_dir, n + '.csv')}")
+        paths, is_run_dep = resolve_model_csvs(rsa_dir, n, run_numbers)
+        if is_run_dep:
+            if dis_method != "correlation":
+                # Mahalanobis pools the runs into one crossnobis RDM per
+                # participant (compare_with_model collapses run_N to 0), so there
+                # is no run for a per-run matrix to belong to -- and these CSVs are
+                # per-stimulus (40) while the mahalanobis path works on the 10
+                # stim-wise categories.
+                raise ValueError(
+                    f"Run-dependent model {n!r} needs --dis_method correlation; "
+                    f"{dis_method} has no per-run step-2 output to attach it to.")
+            run_dep.append(n)
+        csv_srcs += [(f"data/{dataset}/rsa_models/{os.path.basename(p)}", p)
+                     for p in paths]
         out.append(n)
     if not out:
         raise ValueError("No models selected. Pass --models, --all, and/or --all-stim-wise.")
-    return out
+    return out, csv_srcs, sorted(run_dep)
 
 
 def scan_dir(path):
@@ -295,11 +357,15 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
         categories = sorted({stimwise_category(s, dataset) for s in stim_types})
     pairs = [[a, b] for i, a in enumerate(categories) for b in categories[i + 1:]]
 
-    model_list = resolve_models(datafolder, dataset, models, all_flag, all_stim_wise,
-                                dis_method)
     runs = get_runs(datafolder, dataset, specie, sub_N)
     if not runs:
         raise ValueError(f"No runs found for {specie}-sub-{sub_N:02d} in the database.")
+
+    # runs first: a run-dependent model has to be resolved against this
+    # participant's run numbers, and every one of them must have a matrix.
+    model_list, model_csv_srcs, run_dep_models = resolve_models(
+        datafolder, dataset, models, all_flag, all_stim_wise, dis_method,
+        [int(e["run_N"]) for e in runs])
 
     mask_src = os.path.join(datafolder, dataset, "ROI", specie, f"{mask_type}.nii.gz")
     if not os.path.exists(mask_src):
@@ -377,6 +443,9 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
         "dis_method": dis_method, "mah_fold": mah_fold, "rsa_method": rsa_method,
         "reps": reps, "stim_types": stim_types, "categories": categories,
         "pairs": pairs, "runs": runs, "models": model_list, "step1_done": step1_done,
+        # models whose matrix changes run by run: gpu_rsa reads
+        # rsa_models/{model}-run-{run_N}.csv for these instead of {model}.csv
+        "run_dependent_models": run_dep_models,
         # why step 1 is or is not bundled -- provenance for unpack_results and for
         # anyone reading the package months later
         "step1_reason": step1_reason,
@@ -397,10 +466,9 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
             n_betas += 1
         # mask
         zf.write(mask_src, arcname=f"data/{dataset}/ROI/{specie}/{mask_type}.nii.gz")
-        # model CSVs
-        for m in model_list:
-            zf.write(os.path.join(datafolder, dataset, "rsa_models", f"{m}.csv"),
-                     arcname=f"data/{dataset}/rsa_models/{m}.csv")
+        # model CSVs (one per model; one per run for a run-dependent model)
+        for arc, src in model_csv_srcs:
+            zf.write(src, arcname=arc)
         # config
         zf.write(cfg_path, arcname=f"data/{dataset}/config_files/{specie}_{model}.yaml")
         # bundled step-1 maps (if already computed) -- arcnames come from the helper
@@ -422,6 +490,9 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
               f"{rsa_method}  reps={reps}")
         print(f"  runs={len(runs)}  betas={n_betas}  models={len(model_list)}  "
               f"pairs={len(pairs)}  step1_done={step1_done}  size={size_mb:.1f} MB")
+        if run_dep_models:
+            print(f"  run-dependent models ({len(run_dep_models)}): "
+                  f"{', '.join(run_dep_models)} -- one matrix per run")
     return zip_path
 
 
@@ -432,7 +503,10 @@ def _package_readme(m, zip_name):
         f"dis_method={m['dis_method']}  radius={m['radius']}  "
         f"rsa_method={m['rsa_method']}  reps={m['reps']}\n"
         f"models: {len(m['models'])}   step1_done: {m['step1_done']}"
-        + (f"  ({m['step1_reason']})" if m.get("step1_reason") else "") + "\n\n"
+        + (f"  ({m['step1_reason']})" if m.get("step1_reason") else "") + "\n"
+        + (f"run-dependent models (one matrix per run): "
+           f"{', '.join(m['run_dependent_models'])}\n"
+           if m.get("run_dependent_models") else "") + "\n"
         "To run on Colab:\n"
         "  1. Upload this .zip to a Google Drive folder.\n"
         "  2. Open colab_rsa.ipynb in Colab (GPU runtime: L4 or T4, High-RAM).\n"
@@ -448,7 +522,10 @@ def parse_args():
     ap = argparse.ArgumentParser(description="Build a Colab GPU package for RSA steps 1/2/4.")
     ap.add_argument("specie", choices=["D", "H"], help="'D' (dog) or 'H' (human)")
     ap.add_argument("sub_N", type=int, help="Subject number, e.g. 40")
-    ap.add_argument("--models", nargs="*", default=[], help="Explicit RSA model names (CSV stems)")
+    ap.add_argument("--models", nargs="*", default=[],
+                    help=("Explicit RSA model names (CSV stems). A name with no "
+                          "{name}.csv is looked up as a run-dependent model, "
+                          "{name}-run-{run_N}.csv (visual1, visual2, flow)."))
     ap.add_argument("--dis_method", default="mahalanobis",
                     choices=["mahalanobis", "correlation"],
                     help="Distance method / model family (default mahalanobis)")

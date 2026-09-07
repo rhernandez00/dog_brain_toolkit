@@ -719,6 +719,25 @@ def load_meta(data_root, manifest, device):
     return load_meta_similarity(data_root, manifest, device)
 
 
+def model_csv_path(data_root, manifest, rsa_model, run_N=None):
+    """Path of the model CSV to read for ``rsa_model`` (and, if run-dependent, run).
+
+    Run-dependent models (``visual1``, ``visual2``, ``flow``) have no
+    ``{model}.csv``: they carry one predicted RDM per run, ``{model}-run-{run_N}.csv``
+    with ``run_N`` unpadded, matching ``rsa_utils.compare_with_model``.
+    ``create_package.py`` bundles every run's CSV and lists the model in the
+    manifest's ``run_dependent_models``.
+    """
+    rsa_dir = os.path.join(data_root, manifest["dataset"], "rsa_models")
+    if rsa_model in set(manifest.get("run_dependent_models") or []):
+        if run_N is None:
+            raise ValueError(
+                f"{rsa_model!r} is run-dependent (one matrix per run) and has no "
+                "single model CSV; it is only defined on the per-run correlation path.")
+        return os.path.join(rsa_dir, f"{rsa_model}-run-{int(run_N)}.csv")
+    return os.path.join(rsa_dir, f"{rsa_model}.csv")
+
+
 def read_model_matrix(csv_path, categories):
     """Read an RSA model CSV into a (C, C) symmetric matrix over ``categories``.
 
@@ -880,8 +899,9 @@ def run_model_mahalanobis(pkg_root, manifest, rsa_model, meta=None, device=None,
         meta = load_meta_similarity(data_root, manifest, device)
     data_t, mask_flat, shape, affine = meta
 
-    csv_path = os.path.join(data_root, dataset, "rsa_models", f"{rsa_model}.csv")
-    M = read_model_matrix(csv_path, categories)
+    # run_N=None: the crossnobis RDM pools every run, so a run-dependent model has
+    # no run to attach to -- model_csv_path raises rather than guess one.
+    M = read_model_matrix(model_csv_path(data_root, manifest, rsa_model), categories)
     if seed is None:
         # stable across processes (unlike hash()) so a recomputed model reproduces
         seed = zlib.crc32(f"{rsa_model}-{specie}-{sub_N}".encode())
@@ -922,6 +942,10 @@ def run_model_correlation(pkg_root, manifest, rsa_model, meta=None, device=None,
     NOTE: the CPU ``compare_with_model`` omits the ``{mask_type}-`` prefix on the
     permutation files, but step 5's reader and the mahalanobis path both expect it,
     so we include it here (otherwise step 5 would not find the rnd maps).
+
+    This is also the only path that can carry a run-dependent model (one predicted
+    RDM per run -- see ``model_csv_path``), because it is the only one whose step-2
+    output exists per run.
     """
     device = device or pick_device()
     data_root = os.path.join(pkg_root, "data")
@@ -936,12 +960,18 @@ def run_model_correlation(pkg_root, manifest, rsa_model, meta=None, device=None,
         meta = load_meta_correlation(data_root, manifest, device)
     shape, affine = meta["shape"], meta["affine"]
 
-    csv_path = os.path.join(data_root, dataset, "rsa_models", f"{rsa_model}.csv")
-    M = read_model_matrix(csv_path, categories)
     if seed is None:
         seed = zlib.crc32(f"{rsa_model}-{specie}-{sub_N}".encode())
-    model_vecs = build_model_vectors(M, reps, seed)                    # (reps+1, 780)
-    model_t = torch.as_tensor(model_vecs, dtype=DTYPE, device=device)
+    # A run-dependent model (visual1/visual2/flow) is a different matrix in every
+    # run, so it is read inside the loop; an ordinary model is read once and reused.
+    # The seed does not vary by run either way: the permutations are a relabelling
+    # of the categories, applied identically to whichever matrix the run has.
+    run_dependent = rsa_model in set(manifest.get("run_dependent_models") or [])
+    model_t = None
+    if not run_dependent:
+        M = read_model_matrix(model_csv_path(data_root, manifest, rsa_model), categories)
+        model_vecs = build_model_vectors(M, reps, seed)                # (reps+1, 780)
+        model_t = torch.as_tensor(model_vecs, dtype=DTYPE, device=device)
 
     prefix = f"{mask_type}-" if mask_type else ""
     stem = f"{prefix}r-{radius}_correlation_{rsa_method}"
@@ -949,6 +979,11 @@ def run_model_correlation(pkg_root, manifest, rsa_model, meta=None, device=None,
     for run in meta["runs"]:
         session = f"{int(run['session']):02d}"
         run_N = int(run["run_N"])
+        if run_dependent:
+            M = read_model_matrix(
+                model_csv_path(data_root, manifest, rsa_model, run_N), categories)
+            model_t = torch.as_tensor(build_model_vectors(M, reps, seed),
+                                      dtype=DTYPE, device=device)
         data_t = run["data"].to(device)                               # (n_vox, 780)
         sim = compute_similarity(data_t, model_t, rsa_method,
                                  vox_batch=vox_batch).cpu().numpy()    # (n_vox, reps+1)

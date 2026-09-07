@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""create_group_package.py -- build a Colab package for RSA steps 3, 5, 6, 7.
+"""create_group_package.py -- build a Colab package for RSA steps 3, 5, 6, 7, 8.
 
 The per-participant sibling, ``tools/create_package.py``, ships gigabytes of beta
 maps because steps 1/2/4 start from the raw data. The **group** steps do not: they
@@ -14,7 +14,7 @@ What ends up on Colab:
     manifest.json           parameters, participant list, model list
     data/{dataset}/ROI/{specie}/{mask_type}.nii.gz
     code/gpu_rsa.py         (voxel-grid check, device pick, mask loader)
-    code/gpu_group.py       steps 3/5/6/7 kernels
+    code/gpu_group.py       steps 3/5/6/7/8 kernels
     code/run_colab_group.py orchestrator
     colab_rsa_group.ipynb   the notebook
 
@@ -90,8 +90,15 @@ def build_group_package(specie, models, all_flag, all_stim_wise, dataset, model,
     else:
         participant_list = [int(p) for p in cfg["participants"]]
 
-    model_list = resolve_models(datafolder, dataset, models, all_flag, all_stim_wise,
-                                dis_method)
+    sub_runs = runs_by_sub(datafolder, dataset, specie, participant_list)
+    all_run_numbers = sorted({int(e["run_N"]) for rows in sub_runs.values() for e in rows})
+    # The group steps read the per-participant maps, not the model matrices, so no
+    # CSV is bundled here -- but the names still go through the same resolver, so a
+    # run-dependent model (one matrix per run) is recognised and validated the same
+    # way, against every run number in the group.
+    model_list, _csv_srcs, _run_dep = resolve_models(
+        datafolder, dataset, models, all_flag, all_stim_wise, dis_method,
+        all_run_numbers)
 
     mask_src = os.path.join(datafolder, dataset, "ROI", specie, f"{mask_type}.nii.gz")
     if not os.path.exists(mask_src):
@@ -109,7 +116,7 @@ def build_group_package(specie, models, all_flag, all_stim_wise, dataset, model,
         "reps": reps, "reps_group": reps_group,
         "min_percentage_available": min_percentage_available,
         "participants": participant_list,
-        "runs_by_sub": runs_by_sub(datafolder, dataset, specie, participant_list),
+        "runs_by_sub": sub_runs,
         "models": model_list,
         # both checks also run on Colab; recording them here means a package that
         # builds does not then fail on the GPU for a policy reason
@@ -159,13 +166,13 @@ def _package_readme(m, zip_name):
         "  4. Run all cells. One result_group_<model>_<specie>.zip per model appears\n"
         "     in OUT_DIR; re-running skips models already done.\n"
         "  5. Back on the workstation: tools/unpack_results.py <downloads> merges them,\n"
-        "     then run pipeline steps 8-10 as usual.\n"
+        "     then run pipeline steps 9-10 as usual (step 8 ran on Colab).\n"
     )
 
 
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Build a Colab GPU package for RSA group steps 3/5/6/7.")
+        description="Build a Colab GPU package for RSA group steps 3/5/6/7/8.")
     ap.add_argument("specie", choices=["D", "H"], help="'D' (dog) or 'H' (human)")
     ap.add_argument("--models", nargs="*", default=[],
                     help="Explicit RSA model names (CSV stems)")

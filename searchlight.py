@@ -141,11 +141,18 @@ Steps possible:
 2: Compute similarity between pairwise similarity maps and a model by participant
 3: Calculate group model similarity map
 4: Calculate rnd by repeating step 2 with permuted model
+4.5: Calculate the permutation distribution of each participant (and of each run, when the
+    fold writes one map per run): per voxel mean and std across that unit's step-4 permuted
+    maps, saved next to them as ..._mean.nii.gz and ..._std.nii.gz. Same idea as step 6,
+    one level down.
 5: Calculate rnd mean model similarity maps by repeating step 3 with permuted models
 6: Calculate per voxel distribution. Load all group model similarity maps. Calculate per voxel mean and
 std across maps. Save as nifti.
 7: Calculate z map for each mean rnd model similarity map, will also calculate z map for real data using mean and std from rnd distribution
 7.5: Calculate z map for real data using mean and std from rnd distribution (in case you want to do it separately)
+7.6: Calculate a z map per participant (and per run) using the mean and std of step 4.5:
+    z-scores that unit's real step-2 map against its own permutation distribution. The
+    permuted maps of step 4 are not z-scored. Needs step 4.5.
 8: Threshold z maps, calculate cluster size distribution
 9: Threshold z maps, apply cluster correction, save significant maps
 10: Summarize results, create formatted report and save xlsx
@@ -397,6 +404,17 @@ def main():
     # if rsa_model is not None, get rsa_model_path
     if rsa_model is not None:
         rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
+        # check if model is available
+        if not os.path.exists(rsa_model_path):
+            # the model might be run dependent
+            print(f"RSA model {rsa_model} not found in {rsa_model_path}, checking for run-dependent model, run 1...")
+            rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + f"-run-1.csv"
+            if not os.path.exists(rsa_model_path):
+                raise FileNotFoundError(f"RSA model file not found: {rsa_model_path}")
+            else:
+                print(f"Using run-dependent model: {rsa_model_path}")
+
+
         # get categories from rsa_model definition
         rsa_model_dict = rsa_utils.read_model_dict(rsa_model_path)
         categories = rsa_model_dict['categories']
@@ -711,6 +729,24 @@ def main():
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"### Done computing rnd similarity between pairwise maps and model ###")
             _write_marker(job_marker_dir, 4)
+        if step == 4.5: # Calculate mean and std across the permuted maps of each participant/run
+            print("### Step 4.5: Calculating permutation distribution maps by participant ###")
+            # build session_and_run_all_dict
+            session_and_run_all_dict = {}
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                session_and_run_all_dict[sub_N] = session_and_run_dict
+
+            result = rsa_utils.calculate_participant_rnd_distribution(datafolder, dataset, session_and_run_all_dict,
+                                                specie, model, task, radius,
+                                                dis_method=dis_method, rsa_method=rsa_method,
+                                                rsa_model=rsa_model, reps=reps,
+                                                mask_type=mask_type, mah_fold=mah_fold,
+                                                replace_file=replace_file, verbose=verbose,
+                                                min_percentage_available=min_percentage_available)
+            print("### Done computing permutation distribution maps by participant ###")
+            if result:
+                _write_marker(job_marker_dir, 4.5)
         if step == 5: # Calculate rnd mean model similarity maps by repeating step 3 with permuted models
             print("### Step 5: Calculating permutations of group model similarity maps ###")
             # build session_and_run_all_dict    
@@ -753,6 +789,25 @@ def main():
                                         rsa_model=rsa_model, verbose=verbose, mask_type=mask_type)
             if result_rnd and result_real:
                 _write_marker(job_marker_dir, 7)
+        if step == 7.6: # Calculate z maps per participant/run using the distribution of step 4.5
+            print("### Step 7.6: Calculating z maps by participant ###")
+            # build session_and_run_all_dict
+            session_and_run_all_dict = {}
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                session_and_run_all_dict[sub_N] = session_and_run_dict
+
+            ## Z-score the real data map with the mean and std of that unit's own permutations.
+            ## Only the real map is z-scored -- the permutations themselves stay as step 4 wrote them.
+            result = rsa_utils.calculate_participant_z_map_real_data(datafolder, dataset, session_and_run_all_dict,
+                                                specie, model, task, radius,
+                                                dis_method=dis_method, rsa_method=rsa_method,
+                                                rsa_model=rsa_model,
+                                                mask_type=mask_type, mah_fold=mah_fold,
+                                                replace_file=replace_file, verbose=verbose)
+            print("### Done computing z maps by participant ###")
+            if result:
+                _write_marker(job_marker_dir, 7.6)
         if step == 75:
             print("### Step 75 (75 actually): Calculating z map for real data ###")
             rsa_utils.calculate_z_map_real_data(datafolder, dataset, specie, model, radius,
