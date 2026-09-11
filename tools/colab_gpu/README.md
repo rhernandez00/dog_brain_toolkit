@@ -121,6 +121,7 @@ python tools/check_space.py --dataset EmoC --specie H --model basic-block
 | `colab_rsa_group.ipynb` | The Colab notebook for steps 3/5/6/7/8. |
 | `validate_gpu.py` | Correctness harness vs the CPU pipeline (LW, crossnobis, kendall, step-1 vs disk maps, step-2). Run on the workstation. |
 | `validate_group.py` | Correctness harness for the group steps: builds a synthetic dataset, runs both paths, compares steps 3/5/6/7 and step 8's cluster sizes against `rsa_utils` exactly, checks that `get_minimal_cluster_size` can read the `.npy` step 8 writes, that a default run ships neither the group means nor the rnd z maps, and that the result zip merges via `unpack_results.py`. |
+| `memory_estimate.py` | Works out what a group run will allocate and which Colab runtime fits, from the numbers that decide it: units x reps x mask voxels. Reports host RAM and GPU RAM separately, and separates the **loading** peak from the **computing** peak — `load_participant_maps` builds a list of per-map vectors and then `np.stack`s them, so both exist at once and the loading peak is 2x the steady state. `--results` probes a real folder and reports per battery. |
 | `refs/` | The committed reference snapshot that replaces the package: `{dataset}_refs.json` (participant list, task, `runs_by_sub`) and `{dataset}/{specie}_{mask_type}.nii.gz` (the searchlight mask). ~80 kB for EmoC. `refs/build_refs.py` builds it and is the **only** thing here that touches the data share; `refs/check_refs_mask.py` then verifies the mask against the maps actually inside the result zips (grid, affine, and that nothing has support outside it) — worth running after every rebuild, because `ROI/H/` holds several same-named-looking masks on the wrong grid. |
 | `packages/` | Default output folder for `tools/create_package.py` and `tools/create_group_package.py` (git-ignored contents). |
 
@@ -150,6 +151,28 @@ python tools/check_space.py --dataset EmoC --specie H --model basic-block
 ```
 
 ## Group steps — what to know before running them
+
+**Crash recovery.** `run_colab_group.py` writes a `result_group_{model}_{specie}.started`
+marker into `OUT_DIR` the instant a model's processing begins, and removes it on a
+clean finish (or a clean `MissingMapsError` skip). A marker surviving with no
+matching `.zip` means the runtime died mid-model — the next run (`force=False`,
+the default) skips that model too instead of retrying it into the same crash, so
+a battery with one consistently-crashing model can still finish the rest in one
+pass. Delete the marker file, or pass `force=True`, to retry a specific model
+deliberately.
+
+**Known issue (2026-09-08, EmoC H correlation battery):** a model has been
+observed to crash the Colab runtime with an apparent host-RAM OOM at the exact
+same point on repeated attempts — same model, same position in a sorted run
+order, near-identical `avail=` RAM reported by `mem_report` just before it dies
+— across both a fresh session and a session that had already processed 40+
+other models cleanly. Lowering `BATCH` from 20000 to 2000 (a 10x cut to the
+per-chunk GPU-transfer allocation) made **no difference** to when or how it
+crashed, which rules out that term and a simple cross-model RAM leak as the
+sole cause; something appears specific to that particular model's data.
+Not yet root-caused. If you hit this, the `.started`-marker skip above is the
+practical workaround; if you're debugging it, start from `mem_report` logging
+around `run_group_model` for the specific model, not the battery-wide loop.
 
 **Everyone has to be finished.** Step 5 averages one permutation map per
 participant, so the group half needs every participant's `result_<model>_*.zip` in

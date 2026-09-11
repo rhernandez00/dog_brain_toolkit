@@ -61,18 +61,35 @@ from scheduler.paths import get_paths, get_queue_dir  # noqa: E402
 
 # STEP_LABELS / make_job_id come from the scheduler so labels stay in sync.
 try:
-    from scheduler.dag import STEP_LABELS, make_job_id
+    from scheduler.dag import STEP_LABELS, make_job_id, step_token
 except Exception:  # pragma: no cover - scheduler is expected to be importable
     STEP_LABELS = {
         0: "Beta maps", 1: "Pairwise similarity", 2: "Model similarity",
         3: "Group similarity map", 4: "RND permuted model",
+        4.5: "RND participant distribution",
         5: "RND group permutations", 6: "Voxelwise RND distribution",
-        7: "Z-maps", 8: "Cluster size distribution", 9: "Cluster correction",
+        7: "Z-maps", 7.6: "Participant z-maps",
+        8: "Cluster size distribution", 9: "Cluster correction",
         10: "Create tables",
+        15: "Multiple regression RSA",
     }
     make_job_id = None
 
+    def step_token(step):
+        return (f"step{int(step):02d}" if float(step) == int(step)
+                else f"step{float(step):04.1f}")
+
 STEPS = list(range(0, 11))
+
+# Steps that hang off the main line: nothing in 5..10 depends on them, so they
+# are not part of the 0->10 walk the report and "first incomplete step" use.
+# They are probed on request (the dashboard lists them alongside the rest).
+# 15 (multiple regression RSA) additionally needs a --regression_model, which
+# is not part of the core parameter set, so it is never swept in automatically.
+SIDE_STEPS = [4.5, 7.6, 15]
+
+# Every step a probe exists for, in pipeline order.
+ALL_STEPS = sorted(STEPS + SIDE_STEPS)
 
 # ---------------------------------------------------------------------------
 # Terminal colours (degrade gracefully when not a TTY)
@@ -124,7 +141,7 @@ class Ctx:
 
     def __init__(self, datafolder, dataset, model, rsa_model, specie, dis_method,
                  rsa_method, radius, z_threshold, mask_type, reps, reps_group,
-                 mah_fold='stim-wise'):
+                 mah_fold='stim-wise', regression_model=None):
         self.datafolder = datafolder
         self.dataset = dataset
         self.model = model
@@ -143,6 +160,10 @@ class Ctx:
         # so two mahalanobis models run under different folds are probed apart
         # instead of being lumped together in the shared subject folder.
         self.mah_fold = mah_fold
+        # Regression model for step 15 (multiple regression RSA) — the CSV
+        # under rsa_models/regression_models/ listing the control models.
+        # None unless the caller explicitly wants that step probed.
+        self.regression_model = regression_model
 
         # Lazily resolved (need the data disk / rsa_utils).
         self.task = dataset
@@ -215,6 +236,7 @@ def build_ctx(args, datafolder):
         reps=args.reps,
         reps_group=args.reps_group,
         mah_fold=getattr(args, 'mah_fold', 'stim-wise') or 'stim-wise',
+        regression_model=getattr(args, 'regression_model', None),
     )
     _resolve_dynamic(ctx)
     return ctx
@@ -869,10 +891,166 @@ def probe_step10(ctx, verbose=False):
     return _result(MISSING, "results table not found", expected=candidates[:2], detail=detail)
 
 
+# ---------------------------------------------------------------------------
+# Step 15 — multiple regression RSA (hangs off the main line, needs step 1)
+# ---------------------------------------------------------------------------
+# rsa_utils.calculate_multiple_regression_rsa writes one beta/t/p map + a JSON
+# sidecar per participant *per run* — unconditionally, whatever dis_method or
+# mah_fold the pairwise maps (step 1) were built with, because the control
+# models are rebuilt per run regardless. So unlike step 2 (whose layout
+# collapses to one map per participant for mahalanobis + stim-wise), step 15's
+# expected count is always the participant's run count, and a participant
+# with e.g. 4 of 6 runs done is reported as exactly that instead of a bare
+# "some missing" — which matters most for dis_method='correlation' or
+# mah_fold='run-wise', the configs with the most runs per participant and, as
+# of this writing, no models actually run under them yet.
+def _regression_result_root(ctx):
+    return os.path.join(ctx.datafolder, ctx.dataset, 'results', 'RSA_regression',
+                        ctx.model, ctx.regression_model, ctx.rsa_model)
+
+
+def _regression_folders(ctx, sub):
+    """Per-run output folders for one participant's regression maps, or None
+    when the run list can't be resolved (data disk unavailable)."""
+    runs = _sessions_for(ctx, sub)
+    if runs is None:
+        return None
+    sub_dir = os.path.join(_regression_result_root(ctx), ctx.sub_folder(sub))
+    return [os.path.join(sub_dir, _run_folder(ctx, e['session'], e['run_N']))
+            for e in runs]
+
+
+def probe_step15(ctx, verbose=False):
+    """Multiple regression RSA — beta/t/p maps + sidecar, per participant/run."""
+    if not ctx.regression_model:
+        return _result(UNKNOWN, "no regression_model selected")
+    if not ctx.participants:
+        return _result(UNKNOWN, "participant list unavailable")
+    stem = f"r-{ctx.radius}_{ctx.dis_method}"
+    names = [f"{stem}_beta_map.nii.gz", f"{stem}_t_map.nii.gz",
+             f"{stem}_p_map.nii.gz", f"{stem}_regression.json"]
+    per_sub, done, partial = [], 0, 0
+    detail = [] if verbose else None
+    for sub in ctx.participants:
+        folders = _regression_folders(ctx, sub)
+        if folders is None:
+            # Can't resolve the run list — fall back to a wildcard so the row
+            # is still informative (expected count unknown).
+            sub_dir = os.path.join(_regression_result_root(ctx), ctx.sub_folder(sub))
+            glob_pat = os.path.join(sub_dir, 'ses-*run-*', f"{stem}_beta_map.nii.gz")
+            matches = sorted(glob.glob(glob_pat))
+            if verbose:
+                detail.append({'sub': sub, 'path': glob_pat, 'status': PATTERN})
+                for m in matches:
+                    detail.append({'sub': sub, 'path': m, 'status': DONE})
+            per_sub.append(_grade_count(sub, len(matches), None))
+        else:
+            present = 0
+            for folder in folders:
+                on_disk = _listdir_set(folder)
+                ok = all(name in on_disk for name in names)
+                present += ok
+                if verbose:
+                    for name in names:
+                        detail.append({'sub': sub, 'path': os.path.join(folder, name),
+                                       'status': DONE if name in on_disk else MISSING})
+            per_sub.append(_grade_count(sub, present, len(folders)))
+        done += per_sub[-1][1] == DONE
+        partial += per_sub[-1][1] == PARTIAL
+    return _summarize(per_sub, done, partial, "regression maps", detail=detail)
+
+
+# ---------------------------------------------------------------------------
+# Steps 4.5 and 7.6 — the per-participant branch
+# ---------------------------------------------------------------------------
+# These two hang off the main line: nothing in 5..10 reads them. Step 4.5
+# summarises one unit's step-4 permutations into a mean/std pair, and step 7.6
+# z-scores that unit's step-2 map against them. A "unit" is a run when the fold
+# writes per-run maps and the participant otherwise — exactly the folder list
+# ``_model_result_folders`` already builds, so the probes count folders with the
+# expected file present against the folders that should have one.
+def _participant_rnd_stem(ctx):
+    """The filename stem steps 4.5 / 7.6 write under.
+
+    ``rsa_utils._participant_rnd_map_stems`` returns the same list and both
+    writers use its *first* entry (mask-prefixed when a mask type is set), so
+    that is the only spelling checked here: accepting the plain name as well
+    would report DONE for files the pipeline would go on to rewrite.
+    """
+    stem = f"r-{ctx.radius}_{ctx.dis_method}_{ctx.rsa_method}"
+    return f"{ctx.mask_type}-{stem}" if ctx.mask_type else stem
+
+
+def _unit_folders(ctx, sub, rnd=False):
+    """``(folders, expected_count)`` for one participant's unit folders.
+
+    Same fallback the other per-participant probes use: when the run list can't
+    be read (data disk unavailable), whatever run folders are on disk are
+    counted instead and ``expected`` is ``None``, so ``_grade_count`` reports
+    "n files (expected ?)" rather than claiming a total it can't know."""
+    folders = _model_result_folders(ctx, sub, rnd=rnd)
+    if folders is not None:
+        return folders, len(folders)
+    sub_dir = os.path.join(_model_result_root(ctx, rnd), ctx.sub_folder(sub))
+    return sorted(glob.glob(os.path.join(sub_dir, 'ses-*run-*'))), None
+
+
+def probe_step4_5(ctx, verbose=False):
+    """RND participant distribution — a _mean and _std map per unit (RSA_rnd)."""
+    if not ctx.participants:
+        return _result(UNKNOWN, "participant list unavailable")
+    stem = _participant_rnd_stem(ctx)
+    names = [f"{stem}_mean.nii.gz", f"{stem}_std.nii.gz"]
+    per_sub, done, partial = [], 0, 0
+    detail = [] if verbose else None
+    for sub in ctx.participants:
+        folders, expected = _unit_folders(ctx, sub, rnd=True)
+        present = 0
+        for folder in folders:
+            # one listing per folder — the two names are then free to test
+            on_disk = _listdir_set(folder)
+            present += all(name in on_disk for name in names)
+            if verbose:
+                for name in names:
+                    detail.append({'sub': sub, 'path': os.path.join(folder, name),
+                                   'status': DONE if name in on_disk else MISSING})
+        per_sub.append(_grade_count(sub, present, expected))
+        done += per_sub[-1][1] == DONE
+        partial += per_sub[-1][1] == PARTIAL
+    return _summarize(per_sub, done, partial, "distribution maps", detail=detail)
+
+
+def probe_step7_6(ctx, verbose=False):
+    """Participant z-maps — ``..._z.nii.gz`` next to each step-2 map.
+
+    The step-4 permutations behind a z map are deleted once every unit of a
+    participant has one, so the z map — not the permutation folder — is the only
+    evidence this step ran; that is why it is probed by its own output."""
+    if not ctx.participants:
+        return _result(UNKNOWN, "participant list unavailable")
+    name = f"{_participant_rnd_stem(ctx)}_z.nii.gz"
+    per_sub, done, partial = [], 0, 0
+    detail = [] if verbose else None
+    for sub in ctx.participants:
+        folders, expected = _unit_folders(ctx, sub)
+        present = 0
+        for folder in folders:
+            on_disk = _listdir_set(folder)
+            present += name in on_disk
+            if verbose:
+                detail.append({'sub': sub, 'path': os.path.join(folder, name),
+                               'status': DONE if name in on_disk else MISSING})
+        per_sub.append(_grade_count(sub, present, expected))
+        done += per_sub[-1][1] == DONE
+        partial += per_sub[-1][1] == PARTIAL
+    return _summarize(per_sub, done, partial, "participant z-maps", detail=detail)
+
+
 PROBES = {
     0: probe_step0, 1: probe_step1, 2: probe_step2, 3: probe_step3,
-    4: probe_step4, 5: probe_step5, 6: probe_step6, 7: probe_step7,
-    8: probe_step8, 9: probe_step9, 10: probe_step10,
+    4: probe_step4, 4.5: probe_step4_5, 5: probe_step5, 6: probe_step6,
+    7: probe_step7, 7.6: probe_step7_6,
+    8: probe_step8, 9: probe_step9, 10: probe_step10, 15: probe_step15,
 }
 
 
@@ -917,7 +1095,10 @@ def find_failure_info(ctx, step):
     failed_dir = Path(queue_dir) / 'failed'
     if not failed_dir.is_dir():
         return []
-    prefix = f"{ctx.dataset}__{ctx.model}__{ctx.rsa_model}__{ctx.specie}__step{step:02d}"
+    # step_token, not a plain '%02d': the side steps are floats (4.5 -> 'step04.5')
+    # and that is the spelling their job ids carry.
+    prefix = (f"{ctx.dataset}__{ctx.model}__{ctx.rsa_model}__{ctx.specie}"
+              f"__{step_token(step)}")
     out = []
     for jf in failed_dir.glob(f"{prefix}*.json"):
         try:
@@ -1047,6 +1228,16 @@ def list_rsa_models(datafolder, dataset):
     return models, folder
 
 
+def list_regression_models(datafolder, dataset):
+    """Regression models (step 15's control-model lists) — CSVs under
+    ``rsa_models/regression_models/``, named like the RSA models themselves."""
+    folder = os.path.join(datafolder, dataset, 'rsa_models', 'regression_models')
+    if not os.path.isdir(folder):
+        return [], folder
+    models = sorted(Path(p).stem for p in glob.glob(os.path.join(folder, '*.csv')))
+    return models, folder
+
+
 # ---------------------------------------------------------------------------
 # Interactive menu
 # ---------------------------------------------------------------------------
@@ -1128,6 +1319,9 @@ def parse_args():
                         "stim-wise, stim-wise-multiple-folds, stim-wise-all-runs, "
                         "run-wise (default: stim-wise)")
     p.add_argument('--rsa_method', default='kendall')
+    p.add_argument('--regression_model', default=None,
+                   help="Regression model for step 15 (multiple regression RSA), "
+                        "e.g. visual_3 — a CSV under rsa_models/regression_models/")
     p.add_argument('--radius', type=int, default=None)
     p.add_argument('--z_threshold', type=float, default=3.1)
     p.add_argument('--mask_type', default='b_GreyMatter2mmB')

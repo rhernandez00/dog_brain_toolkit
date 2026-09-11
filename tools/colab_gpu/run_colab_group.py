@@ -25,7 +25,12 @@ run here, and on EmoC humans they are 727 MB and 1273 MB per model against about
 4 MB of actual results. ``write_group_means``/``write_z_maps`` bring them back.
 
 Models whose result zip already exists are skipped, so a disconnected Colab
-session resumes by re-running the cell.
+session resumes by re-running the cell. Each model also gets a ``.started``
+marker in ``out_dir`` the moment it begins and loses it on a clean finish --
+a marker surviving with no matching result zip means the runtime died
+mid-model, so the next run skips that model too instead of retrying it into
+the same crash. Delete the marker (or pass ``force=True``) to retry a model
+deliberately.
 
 Usable from the notebook (call ``run_group_package``) or as a CLI for local
 testing:
@@ -35,6 +40,7 @@ testing:
 """
 
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -50,14 +56,13 @@ import gpu_rsa    # noqa: E402
 # Version -- keep in lockstep with gpu_group.VERSION and the notebook's
 # NOTEBOOK_VERSION; gpu_group.check_versions() compares all three and says which
 # file on Drive is stale. Bump on every edit to this file.
-VERSION = "3.1.0"
+VERSION = "4.4.0"
 LAST_CHANGE = (
-    "Accepts manifests= so the notebook's preflight probe is reused instead of "
-    "repeated -- one zip open per model is ~2 s locally but ~175 s on Colab's "
-    "Drive. Runs each model under its own manifest, so a folder mixing "
-    "mahalanobis and correlation batteries works; logs each model's "
-    "dis_method/layout as it starts; honours the caller's model order for a "
-    "reversed second instance.")
+    "Per-model .started marker written to out_dir before a model's heavy work "
+    "begins, removed on a clean finish (or a clean MissingMapsError skip). A "
+    "marker with no matching result zip means the runtime died mid-model; the "
+    "next run now skips that model instead of retrying it into the same crash "
+    "-- delete the marker, or pass force=True, to retry it deliberately.")
 
 
 def _clear_model_outputs(work_root, manifest, rsa_model):
@@ -130,7 +135,8 @@ def run_group_package(pkg_root, results_dir, out_dir, work_root=None, models=Non
     cache_root = cache_root or os.path.join(work_root, "zip_cache")
 
     sources = results_dir if isinstance(results_dir, (list, tuple)) else [results_dir]
-    store = gpu_group.ResultStore(sources, dataset=manifest["dataset"], verbose=verbose)
+    store = gpu_group.ResultStore(sources, dataset=manifest["dataset"],
+                                  verbose=verbose, index_workers=workers)
 
     specie = manifest["specie"]
     steps = tuple(sorted(set(int(s) for s in steps)))
@@ -156,9 +162,19 @@ def run_group_package(pkg_root, results_dir, out_dir, work_root=None, models=Non
 
     for i, rsa_model in enumerate(model_list, 1):
         zip_path = os.path.join(out_dir, f"result_group_{rsa_model}_{specie}.zip")
+        started_path = os.path.join(
+            out_dir, f"result_group_{rsa_model}_{specie}.started")
         if os.path.exists(zip_path) and not force:
             if verbose:
                 print(f"[{i}/{len(model_list)}] {rsa_model}: result exists -- skipping.")
+            continue
+        if os.path.exists(started_path) and not force:
+            if verbose:
+                print(f"[{i}/{len(model_list)}] {rsa_model}: a previous attempt "
+                      f"started this and never finished (crash, or still running "
+                      f"in another session) -- skipping. Delete "
+                      f"{os.path.basename(started_path)} to retry it, or pass "
+                      f"force=True.")
             continue
         # this model's OWN parameters, not the batch's
         m_manifest = per_model[rsa_model] if per_model is not None else manifest
@@ -170,6 +186,15 @@ def run_group_package(pkg_root, results_dir, out_dir, work_root=None, models=Non
                   f"r-{m_manifest['radius']}  reps={m_manifest['reps']}  "
                   f"{len(gpu_group.units(m_manifest))} unit(s)")
         t0 = time.time()
+        # Written before the heavy work and removed on a clean finish. If the
+        # runtime gets OOM-killed mid-model, this is what survives on Drive to
+        # tell the next run which model to skip instead of retrying.
+        with open(started_path, "w") as f:
+            json.dump({"started": t0, "pid": os.getpid()}, f)
+        # the namelist cache only helps within one model; keeping it for the
+        # whole battery just accumulates listings of zips already finished
+        store.forget()
+        gpu_group.mem_report(f"start {rsa_model}", device)
         model_store, cache_dir = store, None
         if prefetch_zips:
             model_store, cache_dir = gpu_group.prefetch_model_zips(
@@ -185,6 +210,7 @@ def run_group_package(pkg_root, results_dir, out_dir, work_root=None, models=Non
         except gpu_group.MissingMapsError as exc:
             print(f"[{i}/{len(model_list)}] {rsa_model}: SKIPPED -- {exc}")
             _clear_model_outputs(work_root, m_manifest, rsa_model)
+            os.remove(started_path)  # not a crash -- let a later run retry it
             continue
         finally:
             # the cached zips are this model's alone; keeping them would grow
@@ -193,9 +219,11 @@ def run_group_package(pkg_root, results_dir, out_dir, work_root=None, models=Non
                 shutil.rmtree(cache_dir, ignore_errors=True)
         zip_path, n_files = gpu_group.zip_group_result(work_root, m_manifest,
                                                        rsa_model, out_dir)
+        os.remove(started_path)
         if not keep_work:
             _clear_model_outputs(work_root, m_manifest, rsa_model)
         written.append(zip_path)
+        gpu_group.mem_report(f"done {rsa_model}", device)
         if verbose:
             size_mb = os.path.getsize(zip_path) / 1e6
             print(f"[{i}/{len(model_list)}] {rsa_model}: {n_files} file(s), "

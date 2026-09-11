@@ -57,7 +57,9 @@ Dependency-light (torch, numpy, nibabel, plus ``gpu_rsa`` from the same folder)
 so it runs on a stock Colab runtime.
 """
 
+import collections
 import contextlib
+import csv
 import datetime
 import glob
 import gzip
@@ -96,16 +98,14 @@ import gpu_rsa  # noqa: E402  -- check_same_space / pick_device / load_reference
 # Patch bump for a fix or tweak, minor for a new parameter or behaviour, major
 # for anything that changes what a run produces or what it needs as input.
 # ===========================================================================
-VERSION = "3.1.0"
+VERSION = "4.4.0"
 LAST_CHANGE = (
-    "Per-model manifests. A results folder can hold more than one analysis -- "
-    "EmoC's mixes 50 mahalanobis (per-participant) models with 41 correlation "
-    "(per-run) ones -- and discovery used to derive ONE dis_method from a sample "
-    "of zips and apply it to every model, so whichever half lost the vote built "
-    "paths that did not exist and failed to load. discover_model_manifests() now "
-    "probes one zip per model and describes each by its own data; "
-    "discover_manifest() raises instead of guessing when a selection mixes "
-    "analyses."
+    "No kernel change here -- bumped to stay in lockstep with "
+    "run_colab_group.py, which now writes a .started marker per model in "
+    "out_dir before processing begins and removes it on a clean finish. A "
+    "marker surviving with no matching result zip means the runtime died "
+    "mid-model; the next run skips that model instead of retrying it into the "
+    "same crash. Delete the marker, or pass force=True, to retry deliberately."
 )
 
 DTYPE = torch.float64
@@ -451,6 +451,103 @@ def scan_result_zips(results_dir, specie=None, models=None, verbose=True):
     return found
 
 
+def mem_now():
+    """``(rss_gb, available_gb)`` on Linux, ``(None, None)`` elsewhere.
+
+    Read from /proc rather than psutil so it works on a bare Colab runtime.
+    ``MemAvailable`` is the number that matters: Colab kills the kernel when it
+    hits zero, and it accounts for reclaimable page cache -- which a Drive-backed
+    run generates a great deal of.
+    """
+    try:
+        rss = avail = None
+        with open("/proc/self/status", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("VmRSS:"):
+                    rss = int(line.split()[1]) / 1e6      # kB -> GB
+                    break
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("MemAvailable:"):
+                    avail = int(line.split()[1]) / 1e6
+                    break
+        return rss, avail
+    except (OSError, ValueError, IndexError):
+        return None, None
+
+
+def mem_report(label, device=None):
+    """One line of memory state. Silent where /proc is unavailable (Windows)."""
+    rss, avail = mem_now()
+    if rss is None:
+        return
+    gpu = ""
+    if device is not None and getattr(device, "type", None) == "cuda":
+        try:
+            gpu = (f"  gpu={torch.cuda.memory_allocated() / 1e9:.2f}/"
+                   f"{torch.cuda.memory_reserved() / 1e9:.2f} GB")
+        except Exception:
+            gpu = ""
+    print(f"[mem] {label:<34s} rss={rss:6.2f} GB  avail={avail:6.2f} GB{gpu}",
+          flush=True)
+
+
+def _safe_size(path):
+    try:
+        return os.path.getsize(path)
+    except OSError:
+        return float("inf")
+
+
+def model_stem(rsa_model):
+    """``valence3__cross`` -> ``valence3``; a model with no grouping is its own stem.
+
+    Groupings are appended with a double underscore by
+    ``tools/build_rsa_models.py``, and ``_models.csv`` lists the stems.
+    """
+    return rsa_model.split("__", 1)[0]
+
+
+def load_models_manifest(refs_dir, dataset=None, verbose=False):
+    """``{stem: (dis_method, mah_fold)}`` from ``refs/{dataset}/_models.csv``.
+
+    This is how a model's battery is known *without opening its zip*, which on
+    Drive costs a full download of a 576 MB file. Returns ``{}`` when the CSV is
+    absent, and the caller falls back to probing.
+    """
+    hits = []
+    if dataset:
+        hits.append(os.path.join(refs_dir, dataset, "_models.csv"))
+    else:
+        try:
+            for name in sorted(os.listdir(refs_dir)):
+                p = os.path.join(refs_dir, name, "_models.csv")
+                if os.path.isfile(p):
+                    hits.append(p)
+        except OSError:
+            pass
+    for path in hits:
+        try:
+            out = {}
+            with open(path, newline="", encoding="utf-8") as f:
+                for row in csv.DictReader(f):
+                    stem = (row.get("model") or "").strip()
+                    if stem:
+                        out[stem] = ((row.get("dis_method") or "").strip(),
+                                     (row.get("mah_fold") or "").strip() or None)
+            if out:
+                if verbose:
+                    print(f"[discover] {len(out)} model stem(s) from "
+                          f"{os.path.basename(os.path.dirname(path))}/_models.csv")
+                return out
+        except (OSError, csv.Error) as exc:
+            print(f"WARNING: could not read {path}: {exc}")
+    if verbose:
+        print("[discover] no _models.csv in refs; probing one zip per model "
+              "(slow on Drive)")
+    return {}
+
+
 def probe_zip_params(zip_path):
     """Read one zip's arcnames for the pipeline parameters and its max rnd index."""
     with _open_zip_resilient(zip_path) as zf:
@@ -538,13 +635,54 @@ def discover_model_manifests(results_dir, refs_dir, specie=None, models=None,
     sp = species.pop()
     refs, out, skipped = None, {}, []
     t0 = time.time()
+
+    # Which battery each model belongs to comes from refs/{dataset}/_models.csv,
+    # NOT from opening its zip. That matters enormously on Drive: reading a zip's
+    # central directory means seeking to the END of the file, and Drive's FUSE
+    # layer serves that by pulling the whole file down. A correlation
+    # participant zip is 576 MB against 45 MB for a mahalanobis one, so probing
+    # one zip per model was ~27 GB of downloads and over an hour before this
+    # function printed anything.
+    #
+    # So: group by dis_method from the CSV, then probe ONE zip per group -- the
+    # smallest, since only the parameters are wanted and every zip in a group
+    # carries the same ones. Two opens instead of 94.
+    by_stem = load_models_manifest(refs_dir, verbose=verbose)
+    groups, ungrouped = {}, []
     for (model, _sp) in sorted(by_model):
-        subs = sorted(by_model[(model, _sp)])
+        key = by_stem.get(model_stem(model))
+        (groups.setdefault(key, []) if key else ungrouped).append(model)
+    if ungrouped and verbose:
+        print(f"[discover] not in _models.csv, probed individually: "
+              f"{', '.join(ungrouped[:6])}"
+              + (" ..." if len(ungrouped) > 6 else ""))
+
+    def smallest_zip(model):
+        paths = by_model[(model, sp)]
+        return min(paths.values(), key=lambda p: _safe_size(p))
+
+    probe_of = {}                      # model -> (params, reps) to use
+    todo = [(g, ms) for g, ms in groups.items()] + [(None, [m]) for m in ungrouped]
+    for i, (_key, ms) in enumerate(todo, 1):
+        pick = min(ms, key=lambda m: _safe_size(smallest_zip(m)))
+        path = smallest_zip(pick)
+        if verbose:
+            print(f"[discover] probing {i}/{len(todo)}: {pick} "
+                  f"({_safe_size(path) / 1e6:.0f} MB) for {len(ms)} model(s)...",
+                  flush=True)
         try:
-            params, reps, _pr = probe_zip_params(by_model[(model, _sp)][subs[0]])
+            params, reps, _pr = probe_zip_params(path)
         except MissingMapsError as exc:
-            skipped.append((model, str(exc)))
+            skipped.extend((m, str(exc)) for m in ms)
             continue
+        for m in ms:
+            probe_of[m] = (params, reps)
+
+    for (model, _sp) in sorted(by_model):
+        if model not in probe_of:
+            continue
+        subs = sorted(by_model[(model, _sp)])
+        params, reps = probe_of[model]
         if refs is None:
             refs = load_refs(refs_dir, params["dataset"])
         m = _build_manifest(params, reps, refs, sp, [model], reps_group,
@@ -557,8 +695,8 @@ def discover_model_manifests(results_dir, refs_dir, specie=None, models=None,
             "No model had readable participant maps:\n  "
             + "\n  ".join(f"{m}: {w}" for m, w in skipped))
     if verbose:
-        print(f"[discover] probed {len(out)} model(s) in {time.time() - t0:.1f}s "
-              f"(one zip each)")
+        print(f"[discover] {len(out)} model(s) described from {len(todo)} zip "
+              f"probe(s) in {time.time() - t0:.1f}s")
         groups = {}
         for model, m in out.items():
             groups.setdefault(manifest_signature(m), []).append(model)
@@ -832,12 +970,14 @@ class ResultStore:
     unpacked file is cheaper to read than a zip member.
     """
 
-    def __init__(self, sources, dataset=None, verbose=True):
+    def __init__(self, sources, dataset=None, verbose=True, index_workers=8):
         if isinstance(sources, (str, os.PathLike)):
             sources = [sources]
         self.trees, self.zip_dirs = [], []
         self._zip_names = {}     # dir -> [basenames]
         self._members = {}       # zip path -> {arcname: member name}
+        self._members_lock = threading.Lock()
+        self.index_workers = index_workers
         self.verbose = verbose
         for src in sources:
             src = os.path.abspath(str(src))
@@ -879,6 +1019,17 @@ class ResultStore:
                   f"{sum(len(v) for v in self._zip_names.values())} zip(s) in "
                   f"{len(self.zip_dirs)} folder(s)")
 
+    def forget(self):
+        """Drop the cached per-zip namelists.
+
+        They are only reused within one model -- each model has its own zips --
+        so holding them for a 91-model battery accumulates every listing of
+        every zip touched so far for no benefit. Correlation zips carry ~600
+        members each, 40 zips per model.
+        """
+        with self._members_lock:
+            self._members.clear()
+
     # -- zip indexing -------------------------------------------------------
     def zips_for(self, manifest, rsa_model):
         """Result zips whose *name* says they hold this model's participant maps.
@@ -898,9 +1049,13 @@ class ResultStore:
     def _index_zip(self, zip_path):
         idx = self._members.get(zip_path)
         if idx is None:
+            # read outside the lock: the read is the slow part and two threads
+            # racing on the same zip is wasteful but harmless
             with _open_zip_resilient(zip_path) as zf:
                 idx = {n.replace("\\", "/").lstrip("./"): n for n in zf.namelist()}
-            self._members[zip_path] = idx
+            with self._members_lock:
+                self._members.setdefault(zip_path, idx)
+                idx = self._members[zip_path]
         return idx
 
     def index_model(self, manifest, rsa_model):
@@ -915,8 +1070,46 @@ class ResultStore:
         disk each round-trip costs ~56 ms. Listing only the folders that can hold
         participant maps turns that into ``2 x n_units`` round-trips.
         """
+        # Read the zips' central directories IN PARALLEL, with progress.
+        #
+        # This is latency-bound, not bandwidth-bound: opening a zip seeks to the
+        # end of the file, and on Drive each seek is a slow round trip. Serially
+        # over 40 correlation zips (322 MB each) that measured 35+ minutes of
+        # total silence, which is indistinguishable from a hang -- and was
+        # repeatedly misdiagnosed as an out-of-memory, when RSS never exceeded
+        # 0.7 GB. The same pool that reads the maps handles this.
+        zip_paths = self.zips_for(manifest, rsa_model)
+        todo = [p for p in zip_paths if p not in self._members]
+        if todo:
+            t0 = time.time()
+            if self.verbose:
+                print(f"[store] listing {len(todo)} zip(s) for {rsa_model} "
+                      f"({sum(_safe_size(p) for p in todo) / 1e9:.1f} GB) ...",
+                      flush=True)
+            done = {"n": 0}
+            lock = threading.Lock()
+
+            def index_one(p):
+                out = self._index_zip(p)
+                if self.verbose:
+                    with lock:
+                        done["n"] += 1
+                        n = done["n"]
+                        if n == 1 or n == len(todo) or n % max(1, len(todo) // 5) == 0:
+                            dt = time.time() - t0
+                            print(f"[store]   {n}/{len(todo)} listed, {dt:.0f}s",
+                                  flush=True)
+                return out
+
+            with ThreadPoolExecutor(
+                    max_workers=max(1, min(self.index_workers, len(todo)))) as ex:
+                list(ex.map(index_one, todo))
+            if self.verbose:
+                print(f"[store] listed {len(todo)} zip(s) in "
+                      f"{time.time() - t0:.1f}s", flush=True)
+
         refs = {}
-        for zip_path in self.zips_for(manifest, rsa_model):
+        for zip_path in zip_paths:
             for rel, member in self._index_zip(zip_path).items():
                 if rel.endswith(".nii.gz"):
                     refs[rel] = ("zip", zip_path, member)
@@ -1000,7 +1193,7 @@ def _read_ref(ref, open_zips):
 
 
 def _load_unit(manifest, rsa_model, unit, refs, mask_img, mask_bool, mask_flat,
-               reps, want_real, strict_space, strict_mask):
+               reps, want_real, strict_space, strict_mask, want_rnd=True):
     """Load one unit's real map and its available permutation maps.
 
     Returns ``(real_vec | None, {rep_index: vec})`` with each ``vec`` restricted
@@ -1013,10 +1206,17 @@ def _load_unit(manifest, rsa_model, unit, refs, mask_img, mask_bool, mask_flat,
         rel = participant_map_rel(manifest, rsa_model, unit)
         if rel in refs:
             wanted[("real", None)] = refs[rel]
-    for i in range(reps):
-        rel = participant_map_rel(manifest, rsa_model, unit, rnd=True, rnd_index=i)
-        if rel in refs:
-            wanted[("rnd", i)] = refs[rel]
+    # Only when the caller actually wants them. Since steps 5-8 stream their own
+    # reads, this loop was fetching all 100 permutation maps per unit and having
+    # them thrown away immediately -- every map in the model read twice, ~560 s
+    # of pure waste per correlation model, and enough allocator churn that RSS
+    # climbed ~2.4 GB per model across a battery.
+    if want_rnd:
+        for i in range(reps):
+            rel = participant_map_rel(manifest, rsa_model, unit, rnd=True,
+                                      rnd_index=i)
+            if rel in refs:
+                wanted[("rnd", i)] = refs[rel]
     if not wanted:
         return None, {}
 
@@ -1071,7 +1271,9 @@ def load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
     ``rnd`` concatenates each qualifying unit's permutation maps; ``offsets[u]``
     and ``counts[u]`` delimit unit ``u``'s block.
     """
+    mem_report(f"before index_model")
     refs = store.index_model(manifest, rsa_model)
+    mem_report(f"after index_model ({len(refs)} refs)")
     mask_flat = np.flatnonzero(mask_bool.reshape(-1))
     all_units = units(manifest)
     # Re-derive reps from what is actually on disk rather than trusting the
@@ -1090,8 +1292,11 @@ def load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
     t0 = time.time()
     n_workers = max(1, min(workers, len(all_units)))
     if verbose:
-        print(f"[load] {rsa_model}: reading up to {len(all_units) * reps} map(s) "
-              f"from {len(all_units)} unit(s), {n_workers} thread(s)...", flush=True)
+        per_unit = (reps if want_rnd else 0) + (1 if want_real else 0)
+        print(f"[load] {rsa_model}: reading up to {len(all_units) * per_unit} "
+              f"map(s) from {len(all_units)} unit(s) "
+              f"({'real+perms' if want_rnd else 'real only'}), "
+              f"{n_workers} thread(s)...", flush=True)
 
     # Progress as units land, not just a summary at the end. This is the longest
     # phase by far -- on Colab's Drive it is minutes per model -- and reporting
@@ -1099,9 +1304,54 @@ def load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
     done = {"n": 0}
     lock = threading.Lock()
 
+    # Plan the layout BEFORE reading anything. The refs index already says which
+    # permutation indices each unit has, so every map's destination row is known
+    # up front and the maps can be written straight into one preallocated array.
+    #
+    # This used to collect per-unit lists and then np.stack them, which held the
+    # same data twice for the duration of the copy: 30.4 GB became a 61 GB peak
+    # for a 239-unit correlation model and would not fit any Colab runtime below
+    # an A100. The arrays produced are identical -- this is only how they are
+    # built.
+    avail, has_real = {}, {}
+    for u in all_units:
+        avail[u] = [i for i in range(reps)
+                    if participant_map_rel(manifest, rsa_model, u, rnd=True,
+                                           rnd_index=i) in refs]
+        has_real[u] = (want_real and
+                       participant_map_rel(manifest, rsa_model, u) in refs)
+
+    rnd_units = [u for u in all_units if avail[u]] if want_rnd else []
+    real_units = [u for u in all_units if has_real[u]]
+    missing_rnd = [unit_label(u) for u in all_units
+                   if want_rnd and not avail[u]]
+    missing_real = [unit_label(u) for u in all_units
+                    if want_real and not has_real[u]]
+
+    counts = np.array([len(avail[u]) for u in rnd_units], dtype=np.int64)
+    offsets = (np.concatenate([[0], np.cumsum(counts)])[:-1]
+               if len(counts) else np.array([], dtype=np.int64))
+    n_rows = int(counts.sum())
+    rnd_flat = np.empty((n_rows, mask_flat.size), dtype=np.float64)
+    real = (np.empty((len(real_units), mask_flat.size), dtype=np.float64)
+            if real_units else None)
+    row_of_rnd = {u: int(offsets[k]) for k, u in enumerate(rnd_units)}
+    row_of_real = {u: k for k, u in enumerate(real_units)}
+
     def one(u):
         out = _load_unit(manifest, rsa_model, u, refs, mask_img, mask_bool,
-                         mask_flat, reps, want_real, strict_space, strict_mask)
+                         mask_flat, reps, want_real, strict_space, strict_mask,
+                         want_rnd=want_rnd)
+        real_vec, rnd = out
+        # threads write disjoint row ranges, so no lock is needed here
+        if real_vec is not None and u in row_of_real:
+            real[row_of_real[u]] = real_vec
+        if u in row_of_rnd:
+            base = row_of_rnd[u]
+            for j, i in enumerate(avail[u]):
+                rnd_flat[base + j] = rnd[i]
+        # drop this unit's copies now rather than at the end of the pool
+        out = real_vec = rnd = None
         if verbose:
             with lock:
                 done["n"] += 1
@@ -1114,34 +1364,11 @@ def load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
                            if n_workers < n < total else "")
                     print(f"[load]   {n}/{total} unit(s), {dt:.0f}s elapsed{eta}",
                           flush=True)
-        return out
+        return None
 
     with ThreadPoolExecutor(max_workers=n_workers) as ex:
-        results = list(ex.map(one, all_units))
-
-    real_units, real_rows = [], []
-    rnd_units, rnd_blocks = [], []
-    missing_real, missing_rnd = [], []
-    for unit, (real_vec, rnd) in zip(all_units, results):
-        if want_real:
-            if real_vec is None:
-                missing_real.append(unit_label(unit))
-            else:
-                real_units.append(unit)
-                real_rows.append(real_vec)
-        if want_rnd:
-            if rnd:
-                rnd_units.append(unit)
-                rnd_blocks.append([rnd[i] for i in sorted(rnd)])
-            else:
-                missing_rnd.append(unit_label(unit))
-
-    counts = np.array([len(b) for b in rnd_blocks], dtype=np.int64)
-    offsets = (np.concatenate([[0], np.cumsum(counts)])[:-1]
-               if len(counts) else np.array([], dtype=np.int64))
-    rnd_flat = (np.stack([v for b in rnd_blocks for v in b], axis=0)
-                if counts.sum() else np.zeros((0, mask_flat.size), dtype=np.float64))
-    real = np.stack(real_rows, axis=0) if real_rows else None
+        list(ex.map(one, all_units))
+    mem_report("after real maps")
 
     if verbose:
         print(f"[load] {rsa_model}: {len(real_units)}/{len(all_units)} real map(s), "
@@ -1156,7 +1383,7 @@ def load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
     return {
         "units": rnd_units, "real_units": real_units, "all_units": all_units,
         "real": real, "rnd": rnd_flat, "offsets": offsets, "counts": counts,
-        "mask_flat": mask_flat, "n_real": len(real_units),
+        "mask_flat": mask_flat, "n_real": len(real_units), "refs": refs,
         "missing_real": missing_real, "missing_rnd": missing_rnd,
     }
 
@@ -1269,6 +1496,142 @@ def group_permutation_stats(rnd_flat, cols, device=None, vox_batch=20000,
         if verbose:
             print(f"[step5]   voxels {v1}/{V}  ({time.time() - t0:.1f}s)")
     return group_means, dist_mean, dist_std
+
+
+def stream_permutation_stats(manifest, rsa_model, store, mask_img, mask_bool,
+                             mask_flat, reps_group, seed, device=None,
+                             workers=8, want_group_means=True, refs=None,
+                             verbose=True):
+    """Steps 5+6 **without ever holding all the permutation maps**.
+
+    ``group_permutation_stats`` needs the whole ``(T, V)`` matrix in RAM: 30 GB
+    for a 239-unit correlation model, which no Colab runtime survives once the
+    reader threads and the group-mean arrays are added. But step 5 is a *sum*:
+
+        group_mean[g] = (1/U) * sum over units u of  X[u, drawn(g, u)]
+
+    so a map only has to be present long enough to be added into the rows that
+    drew it. Streaming unit by unit into a running ``(reps_group, V)``
+    accumulator turns the peak from ``n_units * reps`` maps into **one**, plus
+    the accumulator itself -- 30.4 GB becomes ~1.3 GB, independent of how many
+    units the model has.
+
+    Reads are prefetched on a thread pool but **applied in job order**, so the
+    float64 sums accumulate in a fixed sequence and the result is reproducible.
+    Within one unit the order is irrelevant anyway: each accumulator row takes
+    exactly one map per unit.
+
+    Returns ``(group_means | None, dist_mean, dist_std, n_units, counts)``.
+    """
+    device = device or gpu_rsa.pick_device()
+    # reuse the caller's index; building it again means re-listing 40 zips
+    refs = store.index_model(manifest, rsa_model) if refs is None else refs
+    all_units = units(manifest)
+    strict_space = not manifest.get("allow_space_mismatch", False)
+    strict_mask = not manifest.get("allow_off_mask", False)
+
+    observed = 0
+    for rel in refs:
+        info = parse_arcname(rel)
+        if info and info["rnd"]:
+            observed = max(observed, info["rnd_index"] + 1)
+    reps = max(int(manifest.get("reps") or 0), observed)
+
+    avail = {u: [i for i in range(reps)
+                 if participant_map_rel(manifest, rsa_model, u, rnd=True,
+                                        rnd_index=i) in refs]
+             for u in all_units}
+    rnd_units = [u for u in all_units if avail[u]]
+    counts = np.array([len(avail[u]) for u in rnd_units], dtype=np.int64)
+    if not len(counts):
+        return None, None, None, 0, counts
+
+    # draw_group_indices returns indices into the CONCATENATED (T, V) matrix, so
+    # each column is offset by where that unit's block starts. Streaming has no
+    # such matrix, so subtract the offset to get a position within the unit's own
+    # list. Same function and same seed as the bulk path, hence the same draw.
+    cols = draw_group_indices(counts, reps_group, seed)
+    offsets = np.concatenate([[0], np.cumsum(counts)])[:-1]
+    V = mask_flat.size
+    acc = torch.zeros((reps_group, V), dtype=DTYPE, device=device)
+    mem_report("after accumulator alloc", device)
+
+    # (unit_index, rnd_index, rows) in the order they must be applied
+    jobs = []
+    for u_i, u in enumerate(rnd_units):
+        col = cols[:, u_i] - offsets[u_i]
+        for j in np.unique(col):
+            jobs.append((u_i, int(avail[u][int(j)]), np.flatnonzero(col == j)))
+
+    def read(job):
+        u_i, idx, rows = job
+        rel = participant_map_rel(manifest, rsa_model, rnd_units[u_i], rnd=True,
+                                  rnd_index=idx)
+        ref = refs[rel]
+        if ref[0] == "file":
+            img = nib.load(ref[1])
+        else:
+            with _open_zip_resilient(ref[1]) as zf:
+                img = _img_from_bytes(zf.read(ref[2]))
+        gpu_rsa.check_same_space(("mask", mask_img), [(rel, img)],
+                                 context=f"step 5 stream for {rsa_model}",
+                                 strict=strict_space)
+        flat = np.asarray(img.dataobj, dtype=np.float64).reshape(-1)
+        off = flat[~mask_bool.reshape(-1)]
+        if off.any() and strict_mask:
+            raise OffMaskError(
+                f"{rel} has non-zero voxels outside the mask "
+                f"{manifest.get('mask_type')!r}.")
+        return rows, flat[mask_flat]
+
+    t0, n_done, last_unit = time.time(), 0, -1
+    n_workers = max(1, min(workers, len(jobs)))
+    pending = collections.deque()
+    it = iter(jobs)
+    with ThreadPoolExecutor(max_workers=n_workers) as ex:
+        def submit():
+            try:
+                job = next(it)
+            except StopIteration:
+                return False
+            pending.append((job[0], ex.submit(read, job)))
+            return True
+
+        for _ in range(max(2 * n_workers, 4)):
+            if not submit():
+                break
+        while pending:
+            u_i, fut = pending.popleft()
+            rows, vec = fut.result()
+            acc.index_add_(0, torch.as_tensor(rows, device=device),
+                           torch.as_tensor(vec, dtype=DTYPE,
+                                           device=device).repeat(rows.size, 1))
+            n_done += 1
+            if verbose and u_i != last_unit:
+                last_unit = u_i
+                n_u = len(rnd_units)
+                if u_i == 0 or u_i + 1 == n_u or (u_i + 1) % max(1, n_u // 10) == 0:
+                    dt = time.time() - t0
+                    eta = (f", ~{dt / n_done * (len(jobs) - n_done):.0f}s left"
+                           if n_done > n_workers else "")
+                    print(f"[step5]   unit {u_i + 1}/{n_u}, {n_done}/{len(jobs)} "
+                          f"map(s), {dt:.0f}s{eta}", flush=True)
+                    mem_report(f"  streaming unit {u_i + 1}", device)
+            submit()
+
+    acc /= float(len(rnd_units))
+    mu = acc.mean(dim=0)
+    sd = torch.sqrt(((acc - mu) ** 2).mean(dim=0))
+    dist_mean, dist_std = mu.cpu().numpy(), sd.cpu().numpy()
+    group_means = acc.cpu().numpy() if want_group_means else None
+    del acc
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+    if verbose:
+        print(f"[step5] {rsa_model}: {reps_group} group permutation(s) over "
+              f"{len(rnd_units)} unit(s) from {len(jobs)} map read(s) in "
+              f"{time.time() - t0:.1f}s (streamed, seed={seed})")
+    return group_means, dist_mean, dist_std, len(rnd_units), counts
 
 
 def mean_std(rows, device=None):
@@ -1495,9 +1858,11 @@ def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
 
     need_rnd = any(s in steps for s in (5, 6, 7, 8))
     need_real = 3 in steps
+    # want_rnd=False: the permutation maps are streamed below rather than loaded
+    # in bulk, so nothing here holds more than one of them at a time.
     maps = load_participant_maps(manifest, rsa_model, store, mask_img, mask_bool,
                                  workers=workers, want_real=need_real,
-                                 want_rnd=need_rnd, verbose=verbose)
+                                 want_rnd=False, verbose=verbose)
     mask_flat = maps["mask_flat"]
     total_units = len(maps["all_units"])
     written = []
@@ -1536,7 +1901,15 @@ def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
         return written
 
     # ---- Steps 5 + 6: group permutations and their voxelwise distribution --
-    n_units = len(maps["units"])
+    if seed is None:
+        seed = zlib.crc32(
+            f"group-{rsa_model}-{manifest['specie']}-{reps_group}".encode())
+
+    want_gm = write_group_means and 5 in steps
+    group_means, dist_mean, dist_std, n_units, _counts = stream_permutation_stats(
+        manifest, rsa_model, store, mask_img, mask_bool, mask_flat, reps_group,
+        seed, device=device, workers=workers, refs=maps.get("refs"),
+        want_group_means=want_gm or (7 in steps) or (8 in steps), verbose=verbose)
     if n_units == 0:
         raise MissingMapsError(
             f"{rsa_model}: no permutation (step-4) maps found for any unit.")
@@ -1546,19 +1919,6 @@ def run_group_model(pkg_root, work_root, manifest, rsa_model, store,
             f"{rsa_model}: only {pct*100:.1f}% of the units have permutation maps "
             f"({n_units}/{total_units}); min_percentage_available is "
             f"{min_pct*100:.1f}%.")
-    if seed is None:
-        seed = zlib.crc32(
-            f"group-{rsa_model}-{manifest['specie']}-{reps_group}".encode())
-    cols = draw_group_indices(maps["counts"], reps_group, seed)
-
-    want_gm = write_group_means and 5 in steps
-    t0 = time.time()
-    group_means, dist_mean, dist_std = group_permutation_stats(
-        maps["rnd"], cols, device=device, vox_batch=vox_batch, g_batch=g_batch,
-        want_group_means=want_gm or (7 in steps), verbose=False)
-    if verbose:
-        print(f"[step5] {rsa_model}: {reps_group} group permutation(s) over "
-              f"{n_units} unit(s) in {time.time() - t0:.1f}s (seed={seed})")
 
     if 5 in steps and write_group_means:
         t0 = time.time()

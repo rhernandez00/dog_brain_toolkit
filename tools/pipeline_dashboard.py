@@ -3,8 +3,9 @@
 pipeline_dashboard.py — Dash web dashboard for RSA pipeline progress.
 
 A browser dashboard that shows how far each RSA model has progressed through the
-pipeline (steps 0-10) by checking the actual output files on disk. It reuses the
-file-probing logic in ``pipeline_console.py``.
+pipeline (steps 0-10, plus the off-the-main-line steps 4.5, 7.6 and 15) by
+checking the actual output files on disk. It reuses the file-probing logic in
+``pipeline_console.py``.
 
 Design goals (per request)
 ---------------------------
@@ -66,8 +67,35 @@ from scheduler.jobs import (create_job, normalize_priority,  # noqa: E402
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "2.5.0"
-LAST_CHANGE = ("The rsa_model menu is now filtered by dis_method, not just by fold. "
+VERSION = "2.7.0"
+LAST_CHANGE = ("Added step 15 (multiple regression RSA, searchlight.py's --regression_model "
+               "step): a new 'regression_model' dropdown in the param panel (populated from "
+               "rsa_models/regression_models/*.csv, reloaded by the same '⟳ reload models' "
+               "button), a probe_step15 in pipeline_console that checks the "
+               "beta/t/p map trio + JSON sidecar per participant, and per-run — always "
+               "per-run, whatever dis_method/mah_fold, because the control models are "
+               "rebuilt per run regardless — so a participant's note reads 'n/expected' "
+               "runs done instead of a bare DONE/MISSING. That per-run count is what makes "
+               "dis_method=correlation or mah_fold=run-wise (more runs per participant, and "
+               "currently no models exercise them) show a real number rather than just "
+               "'some missing'. Step 15 is a side step like 4.5/7.6: listed and checked like "
+               "any other row, but 'Sched from here' is disabled on it and it is scheduled "
+               "via 'Sched missing' / per-participant buttons, which now pass regression_model "
+               "through to build_single_job. 'regression_model' also joined PARAM_KEYS, so it "
+               "is part of the cache signature like every other parameter. Previously (2.6.0): "
+               "steps 4.5 (RND participant distribution) and 7.6 (participant z-maps) are "
+               "now verified like every other step: two new probes in pipeline_console "
+               "(probe_step4_5 / probe_step7_6) count, per participant, the units that "
+               "have their _mean/_std pair in RSA_rnd (4.5) and their _z map next to the "
+               "step-2 map (7.6) — a unit being a run or a whole participant, whichever "
+               "the fold writes. The table iterates pc.ALL_STEPS, so both rows appear "
+               "with Check / Clear / Details / Sched missing and per-participant Schedule "
+               "buttons; they count as per-participant steps. 'Sched from here' is "
+               "disabled on them because they hang off the main line — the DAG it builds "
+               "walks 0→10 and starting it at 4.5 would queue 5→10 and skip 4.5 itself. "
+               "'Check all' now scans them too but still focuses the first incomplete "
+               "step on the main line. Also (2.5.0): the rsa_model menu is now filtered "
+               "by dis_method, not just by fold. "
                "It offered every model _models.csv classifies, because it queried the "
                "manifest by mah_fold alone (mahalanobis) or not at all (any other "
                "method) — and a fold name is not unique across methods, so e.g. "
@@ -105,14 +133,39 @@ from dash import Dash, dcc, html, Input, Output, State, ALL, callback_context, n
 # Steps whose output is one map *per participant* (probes report a per_sub
 # breakdown for these). "Schedule missing" queues one job per missing subject
 # for these; every other step produces a single group map -> one job.
-PER_PARTICIPANT_STEPS = {0, 1, 2, 4}
+PER_PARTICIPANT_STEPS = {0, 1, 2, 4, 4.5, 7.6, 15}
+
+# Steps that hang off the main line (scheduler/dag.py: nothing in 5..10 lists
+# them as a dependency). They are listed and checked like any other step, but
+# "Sched from here" is meaningless for them — the dependent DAG it builds walks
+# 0->10, so starting it at 4.5 would queue 5..10 and skip 4.5 itself. Their own
+# jobs are scheduled with "Sched missing" / the per-participant buttons.
+SIDE_STEPS = set(pc.SIDE_STEPS)
+
+# What each side step's probe looks at, shown in the detail panel.
+SIDE_STEP_NOTE = {
+    4.5: ("Off the main line. One ..._mean.nii.gz and one ..._std.nii.gz per unit "
+          "(per run when the fold writes per-run maps, otherwise per participant) "
+          "in that unit's RSA_rnd folder, summarising its step-4 permutations. A "
+          "unit counts as done only when both maps are there."),
+    7.6: ("Off the main line. One ..._z.nii.gz next to each step-2 map — that unit's "
+          "real map z-scored against its own step-4.5 mean/std. The step-4 "
+          "permutations are deleted once every unit of a participant has one, so "
+          "the z map itself is the only evidence this step ran."),
+    15: ("Off the main line, and needs a regression_model selected above. One "
+         "_beta_map/_t_map/_p_map + _regression.json per participant PER RUN — always "
+         "per-run, whatever dis_method/mah_fold, because the control models are rebuilt "
+         "run by run. A participant's note is 'n/expected runs done', which is the point "
+         "for dis_method=correlation or mah_fold=run-wise, where a participant can have "
+         "several runs done and several missing rather than an all-or-nothing result."),
+}
 
 # ---------------------------------------------------------------------------
 # Parameters that define a "run" (and therefore the cache signature)
 # ---------------------------------------------------------------------------
 PARAM_KEYS = [
     'dataset', 'model', 'rsa_model', 'specie', 'dis_method', 'mah_fold', 'rsa_method',
-    'radius', 'z_threshold', 'mask_type', 'reps', 'reps_group',
+    'radius', 'z_threshold', 'mask_type', 'reps', 'reps_group', 'regression_model',
 ]
 
 # 'priority' is deliberately NOT in PARAM_KEYS: it only decides the order
@@ -133,6 +186,7 @@ DEFAULTS = {
     'mask_type': 'b_GreyMatter2mmB',
     'reps': 100,
     'reps_group': 1000,
+    'regression_model': None,   # only used by step 15 (multiple regression RSA)
     'priority': DEFAULT_PRIORITY,
 }
 
@@ -360,11 +414,13 @@ def forget_step(cache, params, step):
 
 def params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
                        radius, z_threshold, mask_type, reps, reps_group,
-                       priority=DEFAULT_PRIORITY):
+                       regression_model=None, priority=DEFAULT_PRIORITY):
     """Collect the panel inputs into the params dict used everywhere below.
 
     ``priority`` is only read by the scheduling helpers, so the read-only
-    callbacks (table/detail rendering) leave it at its default.
+    callbacks (table/detail rendering) leave it at its default. ``regression_model``
+    is only read by step 15 (multiple regression RSA) but is still part of the
+    signature, same as every other parameter here.
     """
     def _int_or_none(v):
         try:
@@ -384,6 +440,7 @@ def params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold, 
         'mask_type': (mask_type or '').strip(),
         'reps': _int_or_none(reps) or 100,
         'reps_group': _int_or_none(reps_group) or 1000,
+        'regression_model': regression_model or None,
         'priority': normalize_priority(priority),
     }
 
@@ -478,7 +535,7 @@ def _schedule_jobs(params, step, participants, overwrite):
             mah_fold=params['mah_fold'],
             participant=sub, radius=params['radius'], mask_type=params['mask_type'],
             replace_file=bool(overwrite), replace_rnd_files=replace_rnd,
-            priority=params['priority'],
+            priority=params['priority'], regression_model=params.get('regression_model'),
         )
         create_job(queue_dir, job)
         created.append(sub)
@@ -639,6 +696,13 @@ def param_panel():
             html.Label('mask_type'), _input('p-mask_type', DEFAULTS['mask_type'], '160px'),
             html.Label('reps'), _input('p-reps', DEFAULTS['reps'], '70px', 'number'),
             html.Label('reps_group'), _input('p-reps_group', DEFAULTS['reps_group'], '80px', 'number'),
+            html.Label('regression_model', title='Step 15 (multiple regression RSA) only'),
+            dcc.Dropdown(id='p-regression_model', options=[], value=None,
+                         placeholder='(step 15 only)', clearable=True,
+                         style={'width': '160px', 'display': 'inline-block',
+                                'verticalAlign': 'middle', 'marginRight': '10px'}),
+        ], style={'marginBottom': '10px'}),
+        html.Div([
             html.Label('priority'),
             dcc.Dropdown(id='p-priority',
                          options=[{'label': PRIORITY_LABELS[p], 'value': p}
@@ -718,8 +782,21 @@ app.layout = html.Div([
             "job failed, the recorded error (the 'why').\n"
             "* **Sched missing** (blue, per step) probes that step now and queues one "
             "*independent* job per missing map — one job per missing participant for "
-            "steps 0/1/2/4, or one job for the single group map otherwise. Jobs land "
-            "in the shared `job_queue/pending/` and are picked up by `run_jobs.py`.\n"
+            "steps 0/1/2/4/4.5/7.6/15, or one job for the single group map otherwise. Jobs "
+            "land in the shared `job_queue/pending/` and are picked up by "
+            "`run_jobs.py`.\n"
+            "* **Steps 4.5, 7.6 and 15 hang off the main line** — nothing in 5→10 depends "
+            "on them. 4.5 writes a `_mean`/`_std` pair per unit (per run, or per "
+            "participant when the fold collapses runs) in that unit's `RSA_rnd` folder; "
+            "7.6 writes a `_z` map next to each step-2 map, z-scored against that pair; "
+            "15 (multiple regression RSA, needs **regression_model** set above) writes a "
+            "`_beta_map`/`_t_map`/`_p_map` + `_regression.json` per participant *per run*, "
+            "always per-run whatever dis_method/mah_fold — so its per-participant note is "
+            "a real 'n/expected runs done' count, most useful for dis_method=correlation "
+            "or mah_fold=run-wise where a participant has many runs. They are checked "
+            "like any other row, but **Sched from here** is disabled on them (the DAG it "
+            "builds walks 0→10 and would skip them); queue them with **Sched missing** or "
+            "the per-participant buttons.\n"
             "* **Sched from here** (purple, per step) queues every step from that row "
             "through step 10 as a *dependent DAG*: each later step `waits` on the "
             "steps it needs and is promoted to `pending` automatically as they "
@@ -889,6 +966,27 @@ def populate_models(dataset, dis_method, mah_fold, _n, current):
 
 
 # ---------------------------------------------------------------------------
+# Callback: populate regression_model from rsa_models/regression_models/*.csv
+# ---------------------------------------------------------------------------
+# Step 15 only. Unlike rsa_model, this list does not depend on dis_method/mah_fold
+# — a regression model is just a named list of control models, reused across
+# whatever target model and method it is asked to control for.
+@app.callback(
+    Output('p-regression_model', 'options'),
+    Output('p-regression_model', 'value'),
+    Input('p-dataset', 'value'),
+    Input('reload-models', 'n_clicks'),
+    State('p-regression_model', 'value'),
+)
+def populate_regression_models(dataset, _n, current):
+    models, folder = pc.list_regression_models(DATAFOLDER, (dataset or '').strip())
+    _log(f"  {len(models)} regression model(s) in {folder}")
+    options = [{'label': m, 'value': m} for m in models]
+    value = current if current in models else None
+    return options, value
+
+
+# ---------------------------------------------------------------------------
 # Callback: mah_fold only applies to mahalanobis — grey it out for other methods
 # ---------------------------------------------------------------------------
 @app.callback(
@@ -939,13 +1037,14 @@ def show_model_why(rsa_model, dataset):
     State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
+    State('p-regression_model', 'value'),
     State('p-priority', 'value'),
     prevent_initial_call=True,
 )
 def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite_val,
               verbose_val,
               dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
-              radius, z_threshold, mask_type, reps, reps_group, priority):
+              radius, z_threshold, mask_type, reps, reps_group, regression_model, priority):
     trig = callback_context.triggered
     if not trig or trig[0]['value'] in (None, 0):
         return no_update, no_update, no_update
@@ -965,7 +1064,7 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
 
     params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
                                 rsa_method, radius, z_threshold, mask_type, reps, reps_group,
-                                priority)
+                                regression_model=regression_model, priority=priority)
     if not params['rsa_model']:
         _log(f"button pressed ({prop}) but no rsa_model selected — ignoring")
         return no_update, no_update, _msg_span('⚠ pick an rsa_model first', ok=False)
@@ -978,12 +1077,14 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
         _log(f"'Check all steps' pressed (verbose={verbose}) — {sig}")
         t0 = datetime.now()
         results = {}
-        for step in pc.STEPS:
+        for step in pc.ALL_STEPS:
             results[step] = store_step(cache, params, step,
                                        run_probe(params, step, verbose=verbose))
         elapsed = (datetime.now() - t0).total_seconds()
         _log(f"'Check all steps' done in {elapsed:.1f}s")
-        # focus the first incomplete step
+        # Focus the first incomplete step *on the main line*: the side steps
+        # (4.5 / 7.6) are optional branches, so a model that never ran them
+        # should still open on whatever is blocking 0->10.
         selected = None
         for step in pc.STEPS:
             if results[step]['verdict'] not in (pc.DONE, pc.NA):
@@ -1032,7 +1133,12 @@ def do_action(_ca, _cl, _sc, _sx, _sd, _sm, _sfh, _dss, _dsg, version, overwrite
             msg = _schedule_missing(params, step, result, overwrite)
     elif ttype == 'step-schedule-from-here':
         step = idd.get('index')
-        if step is not None:
+        if step in SIDE_STEPS:
+            # The button is rendered disabled for these; belt and braces.
+            msg = _msg_span(f"Step {step} is off the 0→{FINAL_STEP} DAG — use "
+                            f"'Sched missing' to queue it.", ok=False)
+            selected = step
+        elif step is not None:
             _log(f"'Sched from here' pressed at step {step} (overwrite={overwrite}, "
                  f"priority={params['priority']}) — {sig}")
             created = _schedule_from_here(params, step, overwrite)
@@ -1121,18 +1227,20 @@ def follow_cache_file(live_value, _n, known):
     Input('p-rsa_method', 'value'),
     Input('p-radius', 'value'), Input('p-z_threshold', 'value'), Input('p-mask_type', 'value'),
     Input('p-reps', 'value'), Input('p-reps_group', 'value'),
+    Input('p-regression_model', 'value'),
 )
 def render_table(_v, _m, dataset, model, rsa_model, specie, dis_method, mah_fold, rsa_method,
-                 radius, z_threshold, mask_type, reps, reps_group):
+                 radius, z_threshold, mask_type, reps, reps_group, regression_model):
     params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
-                                rsa_method, radius, z_threshold, mask_type, reps, reps_group)
+                                rsa_method, radius, z_threshold, mask_type, reps, reps_group,
+                                regression_model=regression_model)
     sig = signature(params)
     cache = load_cache()
 
     header = html.Tr([html.Th(h, style={'textAlign': 'left', 'padding': '6px 10px'})
                       for h in ['#', 'Step', 'Status', 'Last checked', 'Actions']])
     rows = [header]
-    for step in pc.STEPS:
+    for step in pc.ALL_STEPS:
         label = pc.STEP_LABELS.get(step, f'Step {step}')
         note = shared_note(params, step)
         if note:
@@ -1168,11 +1276,18 @@ def render_table(_v, _m, dataset, model, rsa_model, specie, dis_method, mah_fold
                                'padding': '2px 8px', 'marginRight': '6px'}),
             html.Button('Sched from here',
                         id={'type': 'step-schedule-from-here', 'index': step}, n_clicks=0,
-                        title=f'Queue every step from {step} through {FINAL_STEP} as a '
-                              'dependent DAG (later steps wait for earlier ones)',
-                        style={'background': '#8250df', 'color': 'white',
+                        disabled=step in SIDE_STEPS,
+                        title=(f'Step {step} is off the main line — nothing in the '
+                               f'0→{FINAL_STEP} DAG depends on it, so use "Sched '
+                               'missing" for it instead'
+                               if step in SIDE_STEPS else
+                               f'Queue every step from {step} through {FINAL_STEP} as a '
+                               'dependent DAG (later steps wait for earlier ones)'),
+                        style={'background': '#c8b8e8' if step in SIDE_STEPS else '#8250df',
+                               'color': 'white',
                                'border': 'none', 'borderRadius': '4px',
-                               'padding': '2px 8px'}),
+                               'padding': '2px 8px',
+                               'cursor': 'not-allowed' if step in SIDE_STEPS else 'pointer'}),
         ])
         rows.append(html.Tr([
             html.Td(step, style={'padding': '6px 10px'}),
@@ -1203,15 +1318,17 @@ def render_table(_v, _m, dataset, model, rsa_model, specie, dis_method, mah_fold
     State('p-rsa_method', 'value'),
     State('p-radius', 'value'), State('p-z_threshold', 'value'), State('p-mask_type', 'value'),
     State('p-reps', 'value'), State('p-reps_group', 'value'),
+    State('p-regression_model', 'value'),
 )
 def render_detail(step, _v, _m, dataset, model, rsa_model, specie, dis_method, mah_fold,
                   rsa_method,
-                  radius, z_threshold, mask_type, reps, reps_group):
+                  radius, z_threshold, mask_type, reps, reps_group, regression_model):
     if step is None:
         return html.Span('Select a step\'s "Details" (or "Check" a step) to see the '
                          'per-participant breakdown here.', style={'color': '#57606a'})
     params = params_from_inputs(dataset, model, rsa_model, specie, dis_method, mah_fold,
-                                rsa_method, radius, z_threshold, mask_type, reps, reps_group)
+                                rsa_method, radius, z_threshold, mask_type, reps, reps_group,
+                                regression_model=regression_model)
     c = cached_step(load_cache(), params, step)
     label = pc.STEP_LABELS.get(step, f'Step {step}')
     if not c:
@@ -1237,6 +1354,9 @@ def render_detail(step, _v, _m, dataset, model, rsa_model, specie, dis_method, m
         if via and via != params.get('rsa_model'):
             note += f' Checked while rsa_model={via} was selected.'
         blocks.append(html.Div('⇄ ' + note,
+                               style={'color': '#57606a', 'fontSize': '12px'}))
+    if step in SIDE_STEPS:
+        blocks.append(html.Div('↳ ' + SIDE_STEP_NOTE[step],
                                style={'color': '#57606a', 'fontSize': '12px'}))
     if c.get('resolve_note'):
         blocks.append(html.Div('note: ' + c['resolve_note'],

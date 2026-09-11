@@ -53,6 +53,8 @@ def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None
         "--reps_group",     str(job["reps_group"]),
         "--job_marker_dir", str(marker_dir),
     ]
+    if job.get("regression_model"):
+        cmd += ["--regression_model", str(job["regression_model"])]
     # Fields below are only present on dashboard-scheduled jobs; classic
     # scheduler jobs omit them and fall back to searchlight.py's own defaults.
     if job.get("radius") is not None:

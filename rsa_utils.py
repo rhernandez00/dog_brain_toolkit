@@ -672,7 +672,415 @@ def check_existing_similarity_maps(datafolder, dataset, session_and_run_dict, sp
     return all_exist
 
 
+def _read_regression_model_names(regression_model_path):
+    '''Read the control-model names listed in a regression model file.
 
+    The file is a plain one-name-per-line list -- ``visual_3.csv`` holds
+    ``visual1``, ``visual2``, ``flow`` -- so it is read as text: pandas would
+    take the first line as a header and drop that model from the design.
+    '''
+    with open(regression_model_path, 'r', encoding='utf-8-sig') as f:
+        raw_lines = f.read().splitlines()
+    names = []
+    for line in raw_lines:
+        name = line.split(',')[0].strip().strip('"').strip("'")
+        if not name or name.startswith('#'):
+            continue
+        if name not in names:
+            names.append(name)
+    if not names:
+        raise ValueError(
+            f"Regression model file {regression_model_path} lists no control models."
+        )
+    return names
+
+
+def _resolve_rsa_model_path(datafolder, dataset, name, run_N):
+    '''Return the CSV for an RSA model, falling back to its per-run version.
+
+    The visual controls have no ``{name}.csv``: they are one predicted RDM per
+    run, ``{name}-run-{run_N}.csv``. Same fallback order as
+    ``compare_with_model``.
+    '''
+    rsa_dir = os.path.join(datafolder, dataset, 'rsa_models')
+    model_path = os.path.join(rsa_dir, f"{name}.csv")
+    if os.path.exists(model_path):
+        return model_path
+    run_model_path = os.path.join(rsa_dir, f"{name}-run-{int(run_N)}.csv")
+    if os.path.exists(run_model_path):
+        return run_model_path
+    raise FileNotFoundError(
+        f"RSA model {name!r} not found: neither {model_path} nor "
+        f"{run_model_path} exists."
+    )
+
+
+def _build_model_vector_for_pairs(rsa_model_dict, pairs, name):
+    '''Expand an RSA model onto an explicit pair order.
+
+    Every regressor has to line up with the pair order the pairwise maps were
+    stacked in, which is the target model's, so each value is looked up by
+    category name rather than by position.
+    '''
+    values = []
+    for category_a, category_b in pairs:
+        try:
+            values.append(
+                _get_rsa_model_value(rsa_model_dict, category_a, category_b)
+            )
+        except KeyError as error:
+            raise KeyError(
+                f"Model {name!r} has no value for {category_a!r} vs "
+                f"{category_b!r}. Every regressor must be defined over the same "
+                "categories as the target model."
+            ) from error
+    return np.asarray(values, dtype=np.float64)
+
+
+def _standardize_design(design_matrix):
+    '''z-score the varying columns of a design matrix, leaving constants alone.
+
+    The intercept is the constant column, so it survives untouched. The visual
+    controls are continuous RDMs rebuilt per run while the target is usually
+    binary, so without this the target beta would carry each run's arbitrary
+    predictor scale and stop being comparable across runs and participants.
+    '''
+    standardized = np.array(design_matrix, dtype=np.float64, copy=True)
+    scales = standardized.std(axis=0)
+    varying = scales > 0
+    if varying.any():
+        centers = standardized[:, varying].mean(axis=0)
+        standardized[:, varying] = (
+            (standardized[:, varying] - centers) / scales[varying]
+        )
+    return standardized
+
+
+def perform_multiple_regression_rsa(meta_similarity_map, design_matrix,
+                                    voxel_mask, target_index=1,
+                                    standardize=True, chunk_size=4096):
+    '''Voxelwise OLS of a neural pairwise vector on several model vectors.
+
+    At each voxel inside ``voxel_mask`` the vector of pairwise (dis)similarity
+    values across stimulus pairs is regressed on ``design_matrix``, and the
+    coefficient in column ``target_index`` is kept. That coefficient is the part
+    of the neural geometry the target model explains once the other regressors
+    have taken what they can, which is what step 15 is for.
+
+    Parameters
+    ----------
+    meta_similarity_map : np.ndarray
+        4D array (X, Y, Z, n_pairs) of pairwise similarity values.
+    design_matrix : np.ndarray
+        (n_pairs, n_regressors); column 0 is expected to be the intercept.
+    voxel_mask : np.ndarray (bool)
+        3D mask of voxels to fit.
+    target_index : int
+        Column of ``design_matrix`` whose coefficient, t and p are returned.
+    standardize : bool
+        z-score the varying design columns and each voxel's response, so the
+        returned beta is a standardised partial coefficient.
+    chunk_size : int
+        Voxels solved per matrix multiplication; caps peak memory.
+
+    Returns
+    -------
+    beta_map, t_map, p_map : np.ndarray
+        3D arrays. Outside the fitted voxels beta and t are 0 and p is 1, so an
+        unfitted voxel never reads as a significant one.
+    dof : int
+        Residual degrees of freedom of the fit that covered the most voxels.
+    '''
+    from scipy.stats import t as t_distribution
+
+    design_matrix = np.asarray(design_matrix, dtype=np.float64)
+    if design_matrix.ndim != 2:
+        raise ValueError("design_matrix must be 2D (n_pairs, n_regressors).")
+    n_pairs, n_regressors = design_matrix.shape
+    if meta_similarity_map.shape[-1] != n_pairs:
+        raise ValueError(
+            f"meta_similarity_map carries {meta_similarity_map.shape[-1]} pairs "
+            f"but the design matrix has {n_pairs} rows."
+        )
+    if not 0 <= target_index < n_regressors:
+        raise ValueError(
+            f"target_index {target_index} is outside a design with "
+            f"{n_regressors} regressors."
+        )
+
+    shape = meta_similarity_map.shape[:3]
+    beta_map = np.zeros(shape, dtype=np.float64)
+    t_map = np.zeros(shape, dtype=np.float64)
+    p_map = np.ones(shape, dtype=np.float64)
+
+    voxel_mask = np.asarray(voxel_mask, dtype=bool)
+    if voxel_mask.shape != shape:
+        raise ValueError(
+            f"voxel_mask {voxel_mask.shape} does not match the similarity map "
+            f"grid {shape}."
+        )
+    if not voxel_mask.any():
+        return beta_map, t_map, p_map, 0
+
+    responses = meta_similarity_map[voxel_mask]  # (n_voxels, n_pairs)
+    n_voxels = responses.shape[0]
+    beta_flat = np.zeros(n_voxels, dtype=np.float64)
+    t_flat = np.zeros(n_voxels, dtype=np.float64)
+    p_flat = np.ones(n_voxels, dtype=np.float64)
+
+    # Pairs a model excludes are NaN (the ``__cross``/``__within`` variants
+    # blank out half the matrix), and a pairwise map can be NaN where the
+    # searchlight found nothing. Those rows leave the fit rather than poison it.
+    design_finite = np.all(np.isfinite(design_matrix), axis=1)
+    n_design_rows = int(design_finite.sum())
+
+    usable = np.isfinite(responses) & design_finite[None, :]
+    # The NaN pattern is normally identical everywhere, so check for that first
+    # and skip the per-voxel grouping loop when it holds.
+    if int(usable.sum()) == n_voxels * n_design_rows:
+        groups = {design_finite.tobytes(): np.arange(n_voxels)}
+    else:
+        grouped = {}
+        for index, row in enumerate(usable):
+            grouped.setdefault(row.tobytes(), []).append(index)
+        groups = {key: np.asarray(value) for key, value in grouped.items()}
+    del usable
+
+    dof = 0
+    covered = 0
+    for key, voxel_indices in groups.items():
+        rows = np.flatnonzero(np.frombuffer(key, dtype=bool))
+        if rows.size <= n_regressors:
+            continue  # too few pairs left to estimate the model
+        sub_design = design_matrix[rows]
+        if standardize:
+            sub_design = _standardize_design(sub_design)
+        group_dof = rows.size - int(np.linalg.matrix_rank(sub_design))
+        if group_dof <= 0:
+            continue
+        if voxel_indices.size > covered:
+            covered = voxel_indices.size
+            dof = group_dof
+
+        # The design is the same for every voxel in the group, so its
+        # pseudo-inverse is built once and only the responses change.
+        xtx_inverse = np.linalg.pinv(sub_design.T @ sub_design)
+        projector = xtx_inverse @ sub_design.T
+        target_variance = xtx_inverse[target_index, target_index]
+
+        for start in range(0, voxel_indices.size, chunk_size):
+            block = voxel_indices[start:start + chunk_size]
+            block_responses = np.ascontiguousarray(
+                responses[np.ix_(block, rows)].T, dtype=np.float64
+            )
+            if standardize:
+                block_responses -= block_responses.mean(axis=0, keepdims=True)
+                block_scales = block_responses.std(axis=0, keepdims=True)
+                np.divide(
+                    block_responses, block_scales, out=block_responses,
+                    where=block_scales > 0,
+                )
+            coefficients = projector @ block_responses
+            residuals = block_responses - sub_design @ coefficients
+            sigma_squared = np.einsum('ij,ij->j', residuals, residuals) / group_dof
+            standard_error = np.sqrt(np.maximum(sigma_squared * target_variance, 0.0))
+            betas = np.nan_to_num(coefficients[target_index], nan=0.0,
+                                  posinf=0.0, neginf=0.0)
+            with np.errstate(divide='ignore', invalid='ignore'):
+                t_values = np.where(standard_error > 0, betas / standard_error, 0.0)
+            t_values = np.nan_to_num(t_values, nan=0.0, posinf=0.0, neginf=0.0)
+            beta_flat[block] = betas
+            t_flat[block] = t_values
+            p_flat[block] = 2.0 * t_distribution.sf(np.abs(t_values), group_dof)
+
+    beta_map[voxel_mask] = beta_flat
+    t_map[voxel_mask] = t_flat
+    p_map[voxel_mask] = p_flat
+    return beta_map, t_map, p_map, dof
+
+
+def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_dict, regression_model, participants, specie, mask, model, radius, dis_method, rsa_model, task=None, mah_fold='stim-wise', model_dict=None, standardize=True, replace_file=False, verbose=True):
+    '''
+    Calculates multiple regression RSA for a given regression_model.
+
+    For every participant and run, the pairwise similarity maps are stacked in
+    the target model's pair order and regressed, voxel by voxel, on a design of
+    [intercept, target model, control models]. The saved beta map is the target
+    model's coefficient: the unique contribution of ``rsa_model`` to the neural
+    geometry once the controls listed in ``regression_model`` are accounted for.
+    A t map and a p map for the same coefficient are saved beside it.
+
+    The control models are run-dependent (``visual1-run-{run_N}.csv`` and so
+    on), so the design is rebuilt for each run -- which is what the note below
+    is about.
+    #### Note. Assumes run order is relevant #####
+
+    Sign: with ``dis_method='correlation'`` the step-1 maps are distances
+    (``1 - r``), the same direction as the model RDMs, so a positive beta means
+    the target model's structure is present in the neural geometry. Mahalanobis
+    step-1 maps are stored negated (larger = more similar), so the sign flips
+    there -- and that path has no per-run control matrices anyway.
+
+    Parameters:
+    - datafolder: str, path to the data folder
+    - dataset: str, name of the dataset
+    - session_and_run_all_dict: dict, dictionary containing session and run information for all participants
+    - regression_model: str, name of the regression model listing the control models (e.g. 'visual_3')
+    - participants: list of int, participant numbers (session_and_run_all_dict is authoritative)
+    - specie: str, species name
+    - mask: str, path to the mask that defines the reference grid and the voxels to fit
+    - model: str, GLM model used (e.g., "basic-block")
+    - radius: int, radius for the searchlight
+    - dis_method: str, dissimilarity method name
+    - rsa_model: str, RSA model name used as the regression target
+    - task: str or None, task name; read from the config file when None
+    - mah_fold: str, Mahalanobis folding, passed through when locating pairwise maps
+    - model_dict: dict or None, dictionary containing model information for EmoC dataset (accepted for call compatibility)
+    - standardize: bool, z-score the design columns and each voxel's response
+    - replace_file: bool, whether to replace existing files
+    - verbose: bool, whether to print verbose output
+
+    '''
+    if regression_model is None:
+        raise ValueError(
+            "Step 15 needs a regression model, e.g. --regression_model visual_3."
+        )
+    if rsa_model is None:
+        raise ValueError("Step 15 needs a target model, e.g. --rsa_model emo-id__collapse.")
+
+    # load regression model
+    #"P:\userdata\raulh87\data\EmoC\rsa_models\regression_models\visual_3.csv"
+    regression_model_path = os.path.join(
+        datafolder, dataset, 'rsa_models', 'regression_models', f"{regression_model}.csv"
+    )
+    if not os.path.exists(regression_model_path):
+        raise FileNotFoundError(
+            f"Regression model file {regression_model_path} not found."
+        )
+    control_model_names = _read_regression_model_names(regression_model_path)
+    print(f"Regression model {regression_model}: controls {control_model_names}, "
+          f"target {rsa_model}")
+
+    mask_img = nib.load(mask)
+    ref_img = mask_img.get_fdata()
+    ref_affine = mask_img.affine
+    voxel_mask = ref_img > 0
+    ref_label = f"mask {os.path.basename(mask)}"
+
+    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
+    if task is None:
+        with open(config_path, 'r') as f:
+            task = yaml.safe_load(f)['task']
+
+    output_root = os.path.join(
+        datafolder, dataset, 'results', 'RSA_regression', model, regression_model,
+        rsa_model
+    )
+
+    # go over all participants and calculate multiple regression RSA for each participant, get participants from session_and_run_all_dict
+    participants = list(session_and_run_all_dict.keys())
+    for sub_N in participants:
+        print(f"Calculating multiple regression RSA for {specie} participant {sub_N}...")
+        # go over each session and run for the participant
+        for entry in session_and_run_all_dict[sub_N]:
+            session = entry['session']
+            run_N = entry['run_N']
+            # correct session to 2 digits
+            session = f"{session:02d}"
+            print(f"Calculating multiple regression RSA for {specie} participant {sub_N}, session {session}, run {run_N}...")
+
+            output_dir = os.path.join(
+                output_root, f"{specie}-sub-{sub_N:02d}",
+                f"ses-{session}_task-{task}_run-{int(run_N):02d}"
+            )
+            output_stem = f"r-{radius}_{dis_method}"
+            beta_map_path = os.path.join(output_dir, f"{output_stem}_beta_map.nii.gz")
+            t_map_path = os.path.join(output_dir, f"{output_stem}_t_map.nii.gz")
+            p_map_path = os.path.join(output_dir, f"{output_stem}_p_map.nii.gz")
+            sidecar_path = os.path.join(output_dir, f"{output_stem}_regression.json")
+            if os.path.exists(beta_map_path) and not replace_file:
+                print(f"Skipping existing regression map: {beta_map_path}")
+                continue
+
+            # The target model fixes the pair order the maps are stacked in, and
+            # every regressor is expanded onto exactly that order.
+            target_model_path = _resolve_rsa_model_path(
+                datafolder, dataset, rsa_model, run_N
+            )
+            target_model_dict = read_model_dict(target_model_path)
+            pairs = target_model_dict['pairs']
+
+            regressor_names = ['intercept', rsa_model]
+            regressor_paths = {rsa_model: target_model_path}
+            design_columns = [
+                np.ones(len(pairs), dtype=np.float64),
+                _build_model_vector_for_pairs(target_model_dict, pairs, rsa_model),
+            ]
+            for control_name in control_model_names:
+                control_model_path = _resolve_rsa_model_path(
+                    datafolder, dataset, control_name, run_N
+                )
+                control_model_dict = read_model_dict(control_model_path)
+                design_columns.append(_build_model_vector_for_pairs(
+                    control_model_dict, pairs, control_name
+                ))
+                regressor_names.append(control_name)
+                regressor_paths[control_name] = control_model_path
+            design_matrix = np.column_stack(design_columns)
+            if verbose:
+                print(f"Design matrix {design_matrix.shape}: {regressor_names}")
+
+            # load meta similarity map associated to the model
+            meta_similarity_map = load_meta_similarity_map(target_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose, mah_fold=mah_fold, pairs=pairs, ref_affine=ref_affine, ref_label=ref_label)
+
+            # calculate multiple regression RSA
+            beta_map, t_map, p_map, dof = perform_multiple_regression_rsa(
+                meta_similarity_map, design_matrix, voxel_mask,
+                target_index=regressor_names.index(rsa_model),
+                standardize=standardize,
+            )
+            del meta_similarity_map
+
+            # save beta map output to
+            # check if the directory exists, if not, create it
+            os.makedirs(output_dir, exist_ok=True)
+            # save the beta map as a nifti file
+            beta_map_img = nib.Nifti1Image(beta_map.astype(np.float32), affine=ref_affine)
+            nib.save(beta_map_img, beta_map_path)
+            nib.save(nib.Nifti1Image(t_map.astype(np.float32), affine=ref_affine), t_map_path)
+            nib.save(nib.Nifti1Image(p_map.astype(np.float32), affine=ref_affine), p_map_path)
+            # the controls are rebuilt per run, so record which matrices this fit
+            # actually used -- the file names alone do not say
+            with open(sidecar_path, 'w') as f:
+                json.dump({
+                    'regression_model': regression_model,
+                    'target_model': rsa_model,
+                    'regressors': regressor_names,
+                    'regressor_files': {
+                        name: os.path.relpath(path, datafolder)
+                        for name, path in regressor_paths.items()
+                    },
+                    'n_pairs': len(pairs),
+                    'dof': int(dof),
+                    'standardize': bool(standardize),
+                    'dis_method': dis_method,
+                    'mah_fold': mah_fold,
+                    'radius': radius,
+                    'specie': specie,
+                    'sub_N': int(sub_N),
+                    'session': session,
+                    'run_N': int(run_N),
+                    'created': datetime.datetime.now().isoformat(timespec='seconds'),
+                }, f, indent=2)
+            print(f"Saved regression beta map: {beta_map_path} (dof={dof})")
+
+    return True
+            
+    
+
+
+
+    
 
 def calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, task, radius, rsa_model, rsa_class, rsa_method, dis_method, replace_file=True, verbose=True, min_percentage_available=0, mask_type=None):
     '''
@@ -2417,27 +2825,18 @@ def nifti_mean(img_list, result_map_path=None, result_map_path_std=None, verbose
 def nifti_mean_stream(img_list, result_map_path=None, result_map_path_std=None,
                       verbose=False, mask_img=None):
     """Voxel-wise mean and std of a list of NIfTI images, reading each file once.
-
-    Drop-in replacement for ``nifti_mean`` with the same arguments, the same
-    population std (divided by N, not N-1) and the same outputs. What differs is
-    the number of times each file is opened, which is what the run actually costs
-    on the network disk. Measured on one participant's 100 permutation maps
-    (44 MB, step 4.5):
-
-        check_same_space, one open per file for its header   32.6 s
-        pass 1, mean                                         35.3 s
-        pass 2, std                                          35.2 s
-        the arithmetic itself                                 1.7 s
-
-    So ~98 s of which ~2 s is computation. This version opens each file once and
-    does both moments in that pass with Welford's online algorithm, folding the
-    grid check into the image it has already loaded rather than paying for a
-    separate header pass. Same numbers out (agreement with the two-pass result is
-    at the 1e-16 level), roughly a third of the time.
-
-    Welford rather than accumulating sum and sum-of-squares: the difference of two
-    large similar numbers loses precision exactly when the mean is large relative
-    to the spread, which is the case these maps are in.
+    Parameters
+    ----------
+    img_list : list of str  
+        List of file paths to NIfTI images.
+    result_map_path : str, optional
+        Path to save the mean image.
+    result_map_path_std : str, optional
+        Path to save the std image.
+    verbose : bool, optional
+        Whether to print progress messages.
+    mask_img : numpy.ndarray, optional
+        Binary mask to apply to the images.
     """
     if len(img_list) == 0:
         raise ValueError("img_list is empty.")
@@ -2999,7 +3398,7 @@ def compare_with_model2(datafolder, dataset, sub_N, session_and_run_dict,
 
 def compare_with_model(ref_img, mask_affine, datafolder, sub_N, session, run_N, 
                        specie, model, dataset, task, radius, rsa_model, dis_method='pearson', 
-                       rsa_method='pearson', replace_file=False, verbose=False, rnd=False, reps=1000, 
+                       rsa_method='pearson', replace_file=False, verbose=False, rnd=False, reps=100, 
                        replace_rnd_files=False, mask_type=None):
     """
     Compares the meta similarity map with a given RSA model and saves the model similarity map.
@@ -5598,6 +5997,139 @@ def _list_participant_rnd_maps(output_dir, stems, reps, existing_files=None, ver
     return available_maps, missing_maps
 
 
+# ---------------------------------------------------------------------------
+# Retiring the step-4 permutation maps
+# ---------------------------------------------------------------------------
+# Step 4 is the bulkiest thing on the disk: `reps` permutation maps per participant
+# per run. Steps 4.5 and 5 are their only readers, and both summarise them into
+# something small -- 4.5 into that unit's mean/std maps, 5 into the group permutation
+# maps. Once step 7.6 has z-scored a participant's real map against those mean/std
+# maps, nothing further in this branch of the pipeline reads the permutations.
+#
+# The pipeline's rule is that a finished step leaves a file behind, because every
+# reader infers "never ran" from an absent file. So the purge leaves the same
+# receipt tools/bulk_check.py --delete_step4 writes, in the same place, and
+# pipeline_console.probe_step4 reads it: no maps *and* a receipt means
+# done-then-purged, no maps and no receipt still means missing.
+STEP4_PURGE_RECEIPT = 'step4_purged.json'
+
+
+def _step4_permutation_maps(rnd_dir, stems, reps):
+    '''[(path, size_bytes), ...] for the maps of one unit that are up for deletion.
+
+    The candidates are a *list of names*, built from `reps` and the stems exactly as
+    _list_participant_rnd_maps builds it for step 4.5 -- never whatever the folder
+    happens to contain. Only the permutations that fed the mean/std maps may be
+    deleted; anything else in the folder is left alone whatever it is called, including
+    permutations with an index at or beyond `reps`. Both spellings of an index are
+    listed because step 4 may have written either, and they are the same permutation.
+
+    Names not on disk are simply skipped, which is what makes an interrupted purge
+    resumable. One scandir answers both "is it there" and "how big is it": a stat per
+    file costs ~56 ms on the network disk and there are `reps` of them per run.
+    '''
+    try:
+        entries = {entry.name: entry for entry in os.scandir(rnd_dir)}
+    except OSError:
+        return []
+    found = []
+    for rnd_N in range(0, reps):
+        for stem in stems:
+            entry = entries.get(f"{stem}_{rnd_N:04d}.nii.gz")
+            if entry is None:
+                continue        # already deleted, or never written
+            try:
+                size = entry.stat().st_size
+            except OSError:
+                size = 0
+            found.append((entry.path, size))
+    return found
+
+
+def _purge_participant_rnd_maps(sub_dir, sub_label, rnd_dirs, stems, reps, receipt_fields,
+                                verbose=False):
+    '''Delete one participant's step-4 permutation maps and leave a receipt.
+
+    Returns (n_deleted, n_bytes, receipt_written). The _mean/_std maps of step 4.5 and
+    their log stay: they are what makes the z map reproducible after the permutations
+    are gone.
+
+    The purge is *resumable*, which matters because it deletes hundreds of files off a
+    network disk and a dropped connection stops it wherever it happens to be. Each call
+    works through the same list of `reps` permutation names step 4.5 read, deletes the
+    ones still on disk and skips the ones that are not, so calling step 7.6 again after
+    an interrupted run picks up exactly where it stopped. A list with nothing left on
+    disk and no receipt is treated as an interrupted purge rather than as "step 4 never
+    ran": the caller only gets here for a participant whose units all have a z map, and
+    that z map could not exist without step 4 having produced the maps behind it. So the
+    receipt is written even when this call deleted nothing, which is what stops a run
+    that died between the last delete and the receipt from leaving the participant
+    reading MISSING forever.
+
+    If a file resists deletion for any reason other than being gone, the receipt is
+    *not* written -- the folder is then genuinely half-empty, and the probes reading it
+    as PARTIAL is the honest verdict until a later call finishes the job.
+    '''
+    receipt_path = os.path.join(sub_dir, STEP4_PURGE_RECEIPT)
+    maps = [entry for rnd_dir in rnd_dirs
+            for entry in _step4_permutation_maps(rnd_dir, stems, reps)]
+    if not maps and os.path.exists(receipt_path):
+        # already purged, and the receipt is the record of it: leave it alone
+        if verbose:
+            print(f"{sub_label}: step-4 permutation maps already purged.")
+        return 0, 0, False
+
+    deleted, already_gone, failed = 0, 0, []
+    size = 0
+    for path, file_size in maps:
+        try:
+            os.remove(path)
+            deleted += 1
+            size += file_size
+            if verbose:
+                print(f"  deleted {path}")
+        except FileNotFoundError:
+            # vanished between the scan and the delete (another worker, a retry of an
+            # interrupted purge): nothing to do, and not a failure
+            already_gone += 1
+        except OSError as exc:
+            failed.append(f"{os.path.basename(path)}: {exc}")
+    if failed:
+        print(f"{sub_label}: deleted {deleted}/{len(maps)} permutation map(s) -- "
+              f"{len(failed)} failed, no receipt written")
+        print(f"    first error: {failed[0]}")
+        return deleted, size, False
+
+    resumed = not maps or already_gone
+    receipt = dict(receipt_fields)
+    receipt.update({
+        'purged_at': datetime.datetime.now().isoformat(timespec='seconds'),
+        'purged_by': 'searchlight.py --steps_to_run 7.6',
+        'reason': 'step 7.6 z-scored this participant against its own step-4.5 '
+                  'distribution -- nothing in this branch reads the permutations',
+        'n_files': deleted,
+        'n_bytes': size,
+    })
+    if resumed:
+        receipt['note'] = ('finishing an interrupted purge: '
+                           f"{already_gone if maps else 'all'} map(s) were already gone")
+    try:
+        os.makedirs(sub_dir, exist_ok=True)
+        with open(receipt_path, 'w') as f:
+            json.dump(receipt, f, indent=2)
+    except OSError as exc:
+        print(f"{sub_label}: deleted {deleted} permutation map(s) but could not write the "
+              f"receipt ({exc}) -- step 4 will read as MISSING")
+        return deleted, size, False
+
+    if deleted:
+        print(f"{sub_label}: deleted {deleted} permutation map(s), "
+              f"{size / 1024**2:.0f} MB freed.")
+    else:
+        print(f"{sub_label}: permutation maps were already gone, receipt written.")
+    return deleted, size, True
+
+
 def calculate_participant_rnd_distribution(datafolder, dataset, session_and_run_all_dict, specie, model,
                                     task, radius, dis_method='pearson', rsa_method='pearson',
                                     rsa_model='emotion-valence-basic', reps=100,
@@ -6111,7 +6643,8 @@ def calculate_participant_z_map_real_data(datafolder, dataset, session_and_run_a
                                     model, task, radius, dis_method='pearson',
                                     rsa_method='pearson', rsa_model='emotion-valence-basic',
                                     mask_type=None, mah_fold='stim-wise',
-                                    replace_file=False, verbose=False):
+                                    replace_file=False, verbose=False,
+                                    purge_permutations=True, reps=100):
     """
     Step 7.6.
     z-score each participant (run) model similarity map of step 2 with the permutation mean
@@ -6121,11 +6654,29 @@ def calculate_participant_z_map_real_data(datafolder, dataset, session_and_run_a
     group map of step 3 against the group distribution of step 6. Only the real map is
     z-scored -- the step-4 permutations stay as they are, the same way step 4.5 summarises
     them without rewriting them.
+
+    Once every unit of a participant has its z map, that participant's step-4 permutation
+    maps have been fully summarised (into the step-4.5 mean/std maps that produced the z
+    map) and are deleted, leaving the step4_purged.json receipt tools/bulk_check.py writes
+    -- see _purge_participant_rnd_maps. The mean/std maps stay, so the z map remains
+    reproducible. What gets deleted is the list of `reps` permutation names step 4.5 read,
+    not everything in the folder, so `reps` has to be the one step 4 was run with -- with a
+    smaller value the higher-numbered maps are left behind. Both halves are resumable: an
+    existing z map counts as done, and the purge deletes the listed maps still on disk and
+    skips the ones that are not, so a run that died partway through (a dropped connection
+    to the network disk) is finished by simply calling the step again. Pass
+    purge_permutations=False to keep the permutations, which is what step 5 needs if it has
+    not run yet: it is the other reader of those maps.
     Outputs:
     - writes {mask_type}-r-{radius}_{dis_method}_{rsa_method}_z.nii.gz next to each step-2 map
+    - deletes that unit's step-4 permutation maps and writes step4_purged.json
+      (unless purge_permutations is False)
     """
     stems = _participant_rnd_map_stems(radius, dis_method, rsa_method, mask_type)
     n_written, n_existing, n_missing = 0, 0, 0
+    # per participant: the RSA_rnd folders of its units, and whether each unit ended with
+    # a z map -- a participant is only purged once all of its units have one
+    units_by_sub = {}
 
     for sub_N, session, run_N in _participant_map_units(session_and_run_all_dict,
                                                         dis_method, mah_fold):
@@ -6147,11 +6698,17 @@ def calculate_participant_z_map_real_data(datafolder, dataset, session_and_run_a
         distribution_std_map_path = os.path.join(rnd_dir, f"{stems[0]}_std.nii.gz")
         # the z map is written next to the real map it comes from
         z_map_path = model_similarity_map_path.replace('.nii.gz', '_z.nii.gz')
+        # [folder holding this unit's permutations, does it have a z map]
+        unit = [rnd_dir, False]
+        units_by_sub.setdefault(sub_N, []).append(unit)
 
         # check if z map already exists
         if os.path.exists(z_map_path) and not replace_file:
             print(f"{unit_label}: z map already exists. Skipping...")
             n_existing += 1
+            # an existing z map is proof the mean/std maps did their job, so the
+            # permutations behind it can still be reclaimed on a re-run
+            unit[1] = True
             continue
 
         ## load images
@@ -6203,9 +6760,40 @@ def calculate_participant_z_map_real_data(datafolder, dataset, session_and_run_a
         if verbose:
             print(f"Saved z map to {z_map_path}")
         n_written += 1
+        unit[1] = True
 
     print(f"Calculated {n_written} z maps for real data, {n_existing} already existed, "
           f"{n_missing} unit(s) skipped for missing input files.")
+
+    if purge_permutations:
+        n_subs, n_files, n_bytes = 0, 0, 0
+        for sub_N, units in units_by_sub.items():
+            if not all(has_z_map for _, has_z_map in units):
+                # a unit still without a z map needs its permutations to get one
+                continue
+            sub_label = f"{specie}-sub-{sub_N:02d}"
+            sub_dir = os.path.join(
+                _rsa_model_output_dir(datafolder, dataset, model, rsa_model,
+                                      dis_method, mah_fold, True),
+                sub_label,
+            )
+            deleted, size, purged = _purge_participant_rnd_maps(
+                sub_dir, sub_label, [rnd_dir for rnd_dir, _ in units], stems, reps,
+                receipt_fields={
+                    'params': {
+                        'dataset': dataset, 'model': model, 'rsa_model': rsa_model,
+                        'specie': specie, 'radius': radius, 'dis_method': dis_method,
+                        'rsa_method': rsa_method, 'mah_fold': mah_fold,
+                        'mask_type': mask_type, 'reps': reps,
+                    },
+                },
+                verbose=verbose)
+            n_subs += purged
+            n_files += deleted
+            n_bytes += size
+        print(f"Deleted {n_files} step-4 permutation map(s) of {n_subs} participant(s), "
+              f"{n_bytes / 1024**3:.1f} GB freed.")
+
     return n_missing == 0 and (n_written + n_existing) > 0
 
 

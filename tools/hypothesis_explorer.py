@@ -77,8 +77,10 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     itself does not scroll while the pointer is over the brain.
   * **Click a slice to plant a crosshair**, and the strip under the brain reads
     out that voxel the way any MR viewer does: **voxel index**, **world (mm)
-    coordinate** and the map's **intensity** there — so clicking inside a cluster
-    tells you exactly where you clicked and how strong it is. The crosshair is
+    coordinate**, the **anatomical region** that point falls in (from the same
+    label atlas the step-10 tables use — Czeibert for dogs, AAL3 for humans) and
+    the map's **intensity** there — so clicking inside a cluster tells you exactly
+    where you clicked, what it is called and how strong it is. The crosshair is
     kept as a *voxel*, so it survives an axis switch, and its out-of-plane
     coordinate always follows the slice on screen: scroll through the slices and
     the read-out sweeps the same in-plane column, giving the value profile
@@ -103,10 +105,10 @@ This app is a **row of self-contained model cards** — no hypothesis tree. You
     numbers — move either and the other follows. The card's slider keeps the map
     type's fixed scale (0..8+ for z, -1..1 for an average) so a value stays
     meaningful when 🔗 sync mirrors it onto another card; this one is as fine as
-    the data, spending its whole track on values that exist in the map. A cap the
-    histogram's range cannot reach (a max of 1.0 over data peaking at 0.35) shows
-    as a handle parked at the edge; nudging it there sets the cap to the top of
-    the distribution.
+    the data, spending its whole track on values that exist in the map — but its
+    axis stretches to keep both handles inside it, so a cap set past the data
+    (a max of 1.0 over data peaking at 0.35) widens the track out to 1.0 rather
+    than clamping the handle to the edge.
   * Toggle **🔗 sync** to mirror the view (slice, axis, range, colormap **and the
     crosshair**) across every *other synced card of the same species*: move the
     slice on one and the matching-species cards follow, scales included; click a
@@ -382,19 +384,15 @@ STATUS_STYLE = {
     "unlinked": ("#c9ced6", "No model"),
 }
 
-VERSION = "1.3.1"
-LAST_CHANGE = ("Fix: a card's title and model matrix follow the picker even while a "
-               "gated change waits for 🔄. The Auto-update gate exists to hold back the "
-               "*result volume*, but it was also holding back the two things that depend "
-               "only on the model name, so a card switched from correlation to mahalanobis "
-               "kept the previous model's 40x40 matrix under a breadcrumb already reading "
-               "mahalanobis · emotion_identity — which reads as a mis-drawn matrix, not as "
-               "a pending fetch. The model is now resolved before the gate; the pending "
-               "branch redraws the matrix from that model's own CSV and titles the card "
-               "⏸ pending; the map and histogram still wait. Also: a log line can no "
-               "longer take a callback down — the emoji in these messages raised "
-               "UnicodeEncodeError on a cp1252 console, killing the very render that was "
-               "reporting itself skipped.")
+VERSION = "1.4.0"
+LAST_CHANGE = ("The crosshair read-out now names the anatomical region as well as the "
+               "voxel and mm coordinate. It uses the same label atlas + dictionary "
+               "pairing that rsa_utils.extract_clusters_and_peaks uses for the step-10 "
+               "cluster tables — Czeibert_labels2mm + Czeibert_dictionary.csv for dogs, "
+               "AAL3 + AAL_dictionary.csv for humans — and looks the label up through "
+               "the world (mm) coordinate, so the label atlas keeps its own voxel grid "
+               "instead of being assumed to match the displayed map. Missing atlas or "
+               "dictionary simply drops the field.")
 
 
 # ---------------------------------------------------------------------------
@@ -471,6 +469,7 @@ _PATH_CACHE = {}     # (source,…,maptype,zt-if-corrected) -> resolved map path
 _VOL_CACHE = {}      # normalised map path -> (data, aff) | None
 _LISTDIR_CACHE = {}  # raw-layout mean folder -> [file names]  (one network listing)
 _RESULT_SETS_CACHE = {}  # source-keyed {'D':set,'H':set} of models with results
+_LABEL_ATLAS = {}    # specie -> (label volume, label affine, {number: region}) | None
 _MASK_CACHE = {}     # (datafolder,dataset,specie,roi) -> (data,aff,path) | None
 _MASK_ON_GRID = {}   # (datafolder,dataset,specie,roi,shape,aff_hash) -> bool array | None
 _MASK_VALS = {}      # (map path, datafolder, dataset, specie, roi) -> (values, axis note)
@@ -614,6 +613,67 @@ def _atlas_on_grid(specie, shape, aff):
         hi, hi_aff, _lo_aff, _lo_shape = _atlas(specie)
         _ATLAS_ON_GRID[key] = niftiutil.resample_lowres_to_highres(hi, hi_aff, shape, aff)
     return _ATLAS_ON_GRID[key]
+
+
+# --- Anatomical label at a point -------------------------------------------
+# The read-out under the slice names the region a voxel falls in, the same way
+# ``rsa_utils.extract_clusters_and_peaks`` labels a cluster peak for the step-10
+# table: a *label* atlas (an integer volume) plus a CSV dictionary mapping that
+# integer to a region name, using the atlases ``searchlight.py`` picks -- Czeibert
+# for dogs, AAL3 for humans. The label atlas has its own voxel grid, so the lookup
+# goes through the **world (mm)** coordinate (inverse of the label affine, rounded),
+# never through the displayed map's voxel index.
+
+_LABEL_ATLAS_FILES = {
+    "D": (os.path.join(_REPO_ROOT, "Atlas", "Dog", "Nitzsche", "Czeibert_labels2mm.nii.gz"),
+          os.path.join(_REPO_ROOT, "Atlas", "Dog", "Czeibert_dictionary.csv")),
+    "H": (os.path.join(_REPO_ROOT, "Atlas", "Hum", "AAL3.nii.gz"),
+          os.path.join(_REPO_ROOT, "Atlas", "Hum", "AAL_dictionary.csv")),
+}
+
+
+def _label_atlas(specie):
+    """(label volume, label affine, {number: region}) for a species, or None when
+    the atlas or its dictionary is missing/unreadable. The region name is a nicety
+    on top of the read-out, so a missing atlas costs that one field, nothing else."""
+    if specie not in _LABEL_ATLAS:
+        _LABEL_ATLAS[specie] = None
+        paths = _LABEL_ATLAS_FILES.get(specie)
+        if paths:
+            nii_path, csv_path = paths
+            try:
+                data, aff, _hdr = niftiutil.load_nifti(nii_path)
+                df = pd.read_csv(csv_path)
+                names = {}
+                for num, region in zip(df["Number"], df["Region"]):
+                    if pd.isna(num):
+                        continue
+                    names[int(num)] = str(region)
+                _LABEL_ATLAS[specie] = (data, aff, names)
+            except Exception as exc:
+                print(f"[explorer] no label atlas for specie {specie}: {exc}")
+    return _LABEL_ATLAS[specie]
+
+
+def _region_at(specie, world):
+    """Region name at a world (mm) point, or None when there is no label atlas."""
+    loaded = _label_atlas(specie)
+    if loaded is None:
+        return None
+    data, aff, names = loaded
+    try:
+        ijk = niftiutil.world_to_voxel(world, aff)   # rounds to the nearest voxel
+    except Exception:
+        return None
+    if any(v < 0 or v >= s for v, s in zip(ijk, data.shape)):
+        return "outside atlas"
+    val = int(data[tuple(ijk)])
+    # 0 is background, and the dog dictionary spells its own background out as
+    # "No label" under number 1 — both mean "this point has no region".
+    name = (names.get(val) or "").strip()
+    if not name or name.lower().replace(" ", "") == "nolabel":
+        return "unlabelled"
+    return name
 
 
 # --- The search mask (which voxels the searchlight actually covered) --------
@@ -1912,11 +1972,13 @@ def _cross_hint(text):
     return [html.Span(f"✛ {text}", style={"color": MUTED, "fontStyle": "italic"})]
 
 
-def _cross_readout(vox, affine, value, axis, slice_idx, nslices, thr):
-    """The read-out line: voxel index, world (mm) coordinate and the map's value
-    at the crosshair — the "intensity" field of a normal MR viewer — plus which
-    slice of how many is on screen. Sub-threshold voxels are still reported (that
-    is the point of clicking one) but flagged, since they are drawn transparent."""
+def _cross_readout(vox, affine, value, axis, slice_idx, nslices, thr, specie=None):
+    """The read-out line: voxel index, world (mm) coordinate, the anatomical region
+    that point falls in and the map's value at the crosshair — the "intensity" field
+    of a normal MR viewer — plus which slice of how many is on screen. Sub-threshold
+    voxels are still reported (that is the point of clicking one) but flagged, since
+    they are drawn transparent. The region comes from the species' label atlas
+    (``_region_at``) and is simply left out when there is none."""
     if vox is None:
         return _cross_hint("click the slice to place the crosshair")
     mm = niftiutil.voxel_to_world(vox, affine)
@@ -1924,6 +1986,11 @@ def _cross_readout(vox, affine, value, axis, slice_idx, nslices, thr):
     out = [
         _cross_field("voxel", "(%d, %d, %d)" % vox),
         _cross_field("mm", "(%.1f, %.1f, %.1f)" % mm),
+    ]
+    region = _region_at(specie, mm) if specie else None
+    if region:
+        out.append(_cross_field("region", region))
+    out += [
         _cross_field("intensity", "—" if value is None else f"{value:.4g}"),
         _cross_field(f"slice {axis_name}", f"{int(slice_idx)}/{int(nslices) - 1}"),
     ]
@@ -3157,12 +3224,12 @@ for _i in range(MAX_MODELS):
 #     travels with the redraw, so a card gated by Auto-update keeps its slider on
 #     the histogram still on screen instead of on a map it isn't showing yet.
 #   * **histogram slider -> card slider** is this callback.
-# A value pushed the first way can be outside the histogram's range (a max cap of
-# 1.0 over data that peaks at 0.35), so it is clamped and the handle pins at the
-# edge rather than rendering off the track. That clamped push comes straight back
-# here as a change of the histogram slider, and propagating it would quietly
-# rewrite the value the user set — so the pushed pair is remembered in
-# ``pl-{i}-hecho`` and ignored when it returns.
+# A value pushed the first way is always inside the histogram's range — its axis
+# (``_hist_axis_range``) stretches to keep both handles on it, rather than clamping
+# one to the edge when a cap sits past the data (a max of 1.0 over data that peaks
+# at 0.35). The push still comes straight back here as a change of the histogram
+# slider, and propagating it would quietly re-trigger the same update — so the
+# pushed pair is remembered in ``pl-{i}-hecho`` and ignored when it returns.
 
 def _pair(val):
     """[float, float] from a slider value, or None if it isn't one."""
@@ -3213,20 +3280,28 @@ for _i in range(MAX_MODELS):
 # Callbacks — card rendering (one per card)
 # ---------------------------------------------------------------------------
 
-def _hist_axis_range(values, lo):
+def _hist_axis_range(values, lo, hi=None):
     """[left, right] the histogram's value axis spans, or None for no data.
 
     The low handle is always inside it, so its cut line stays visible even when it
-    sits past the data (e.g. z-threshold 3.1 on an all-sub-threshold map). This is
-    a helper rather than a few lines inside ``_hist_fig`` because the slider drawn
-    *under* the histogram takes its min/max from exactly the same numbers — that
-    is what makes a handle sit on the value its cut line marks."""
+    sits past the data (e.g. z-threshold 3.1 on an all-sub-threshold map). The high
+    handle (``hi``, the color-scale cap) is kept inside it too: without that, pushing
+    the cap past the data's max — the whole point of overriding it — left this axis,
+    and the slider drawn under the histogram (which takes its min/max from exactly
+    these numbers), too narrow to reach it, so that slider fell behind the card's own
+    range slider instead of tracking it."""
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]
     if v.size == 0:
         return None
     lo = float(lo)
-    left, right = min(float(np.min(v)), lo), max(float(np.max(v)), lo)
+    edge_vals = [float(np.min(v)), float(np.max(v)), lo]
+    if hi is not None:
+        try:
+            edge_vals.append(float(hi))
+        except (TypeError, ValueError):
+            pass
+    left, right = min(edge_vals), max(edge_vals)
     if right <= left:
         right = left + 1e-6
     return [left, right]
@@ -3243,7 +3318,7 @@ def _hist_fig(values, lo, hi, colorscale, height, xtitle):
     came to look at is a flat line on the baseline."""
     v = np.asarray(values, dtype=float)
     v = v[np.isfinite(v)]
-    bounds = _hist_axis_range(v, lo)
+    bounds = _hist_axis_range(v, lo, hi)
     if bounds is None:
         return niftiutil.empty_fig("no voxels in mask", height=height)
     lo, hi = float(lo), float(hi)
@@ -3342,7 +3417,7 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
         cross_rc = (c, r)
         v = float(data[vox])
         value = v if np.isfinite(v) else None
-    info = _cross_readout(vox, aff, value, ax, idx, data.shape[ax], thr)
+    info = _cross_readout(vox, aff, value, ax, idx, data.shape[ax], thr, specie)
     # ``aff`` is the map's affine; the atlas has been resampled onto that same
     # grid, so it orients both volumes and drives the L/R · A/P · S/I labels.
     fig = niftiutil.make_slice_fig(atlas, data, ax, idx, opacity=0.8, z_threshold=thr,
@@ -3356,7 +3431,7 @@ def _card_species_fig(source, datafolder, dataset, modality, roi, glm_model,
                                 map_key=map_path)
     supra = int(np.sum(vals >= thr))
     hist = _hist_fig(vals, thr, vmax, colorscale, view_height, xtitle) if want_hist else None
-    hbounds = _hist_axis_range(vals, thr) if want_hist else None
+    hbounds = _hist_axis_range(vals, thr, vmax) if want_hist else None
     return fig, hist, hbounds, supra, int(vals.size), info, int(data.shape[ax])
 
 

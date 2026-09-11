@@ -15,9 +15,13 @@ Usage (from the repo root, full Anaconda interpreter -- see CLAUDE.md):
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\unpack_results.py DOWNLOADS_DIR
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\unpack_results.py result_step1_mah_H-sub-40.zip --dry-run
 
-Accepts any mix of ``result_*.zip`` files and directories containing them. Existing
-files are left untouched unless ``--replace`` is given; ``--dry-run`` reports the
-planned copies without writing anything.
+Accepts any mix of ``result_*.zip`` files, directories containing them, and
+already-unzipped ``result_*`` folders (e.g. extracted by hand, or left over from a
+partial unzip) -- all three can sit side by side in the same downloads folder and
+are merged the same way, since an unzipped folder holds exactly the same
+pipeline-relative tree a zip's members would extract to. Existing files are left
+untouched unless ``--replace`` is given; ``--dry-run`` reports the planned copies
+without writing anything.
 
 ``--no_step4_files`` leaves the step-4 permutation maps in the zip. They are the
 bulkiest thing a run produces (``--reps`` maps per participant per run) and step 5
@@ -91,19 +95,94 @@ def _key(name):
     return name.lower() if _FOLD_CASE else name
 
 
-def collect_zips(inputs):
-    """Expand files/dirs into a sorted list of result_*.zip paths."""
-    zips = []
+def _is_result_name(name):
+    """True for the ``result_...`` naming convention shared by zips and their
+    unzipped folders (``result_step1_*``, ``result_group_<model>_<specie>``, ...)."""
+    return name.lower().startswith("result_")
+
+
+class ZipSource:
+    """A ``result_*.zip`` file, read member-by-member with ``zipfile``."""
+
+    kind = "zip"
+
+    def __init__(self, path):
+        self.path = path
+
+    @property
+    def label(self):
+        return os.path.basename(self.path)
+
+    def iter_members(self):
+        """Yield ``(arcname, size, info)`` for every member."""
+        with zipfile.ZipFile(self.path) as zf:
+            for info in zf.infolist():
+                yield info.filename, info.file_size, info
+
+    def open(self, info, local):
+        # One ZipFile handle per worker thread: a single handle is not safe to
+        # read from concurrently, and reopening a local zip is cheap next to an
+        # SMB write.
+        zf = getattr(local, "zf", None)
+        if zf is None:
+            zf = local.zf = zipfile.ZipFile(self.path)
+        return zf.open(info)
+
+
+class DirSource:
+    """An already-unzipped ``result_*`` folder: same tree a zip would extract to."""
+
+    kind = "dir"
+
+    def __init__(self, path):
+        self.path = os.path.normpath(path)
+
+    @property
+    def label(self):
+        return os.path.basename(self.path)
+
+    def iter_members(self):
+        """Yield ``(arcname, size, full_path)`` for every file under the root."""
+        for root, _dirs, files in os.walk(self.path):
+            for fname in files:
+                full = os.path.join(root, fname)
+                arcname = os.path.relpath(full, self.path).replace(os.sep, "/")
+                try:
+                    size = os.path.getsize(full)
+                except OSError:
+                    continue
+                yield arcname, size, full
+
+    def open(self, full_path, local):
+        return open(full_path, "rb")
+
+
+def collect_sources(inputs):
+    """Expand files/dirs into a sorted list of ``ZipSource``/``DirSource`` objects.
+
+    A directory input is either a *container* -- searched one level down for
+    ``*.zip`` files and ``result_*`` subfolders -- or, if its own name already
+    follows the ``result_*`` convention, an unzipped result folder in its own
+    right (so passing that folder directly also works).
+    """
+    sources = []
     for item in inputs:
         if os.path.isdir(item):
+            base = os.path.basename(os.path.normpath(item))
+            if _is_result_name(base):
+                sources.append(DirSource(item))
+                continue
             for name in sorted(os.listdir(item)):
-                if name.lower().endswith(".zip"):
-                    zips.append(os.path.join(item, name))
+                full = os.path.join(item, name)
+                if os.path.isfile(full) and name.lower().endswith(".zip"):
+                    sources.append(ZipSource(full))
+                elif os.path.isdir(full) and _is_result_name(name):
+                    sources.append(DirSource(full))
         elif os.path.isfile(item) and item.lower().endswith(".zip"):
-            zips.append(item)
+            sources.append(ZipSource(item))
         else:
             print(f"WARNING: skipping {item!r} (not a .zip or directory)")
-    return zips
+    return sources
 
 
 def _safe_member(name):
@@ -212,61 +291,61 @@ class DirIndex:
             listing[_key(name)] = size
 
 
-def plan_zip(zip_path, datafolder, index, dataset=None, replace=False,
+def plan_zip(source, datafolder, index, dataset=None, replace=False,
              verify_size=True, verbose=False, skip_step4=False):
-    """Decide what this zip still owes the data folder.
+    """Decide what this source (zip or unzipped folder) still owes the data folder.
 
     Returns ``(todo, present, stale, excluded)`` where ``todo`` is a list of
-    ``(zip_info, member, dst)`` triples still to write, ``present`` counts members
-    already on disk, ``stale`` counts members that exist at the wrong size
-    (half-written by an interrupted run) and are therefore in ``todo``, and
-    ``excluded`` counts step-4 maps left in the zip by ``skip_step4``.
+    ``(raw, member, size, dst)`` quadruples still to write -- ``raw`` is whatever
+    ``source.open()`` needs (a ``ZipInfo`` for a zip, a file path for a folder) --
+    ``present`` counts members already on disk, ``stale`` counts members that exist
+    at the wrong size (half-written by an interrupted run) and are therefore in
+    ``todo``, and ``excluded`` counts step-4 maps left out by ``skip_step4``.
     """
     members = []
     excluded = 0
-    with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
-            member = _safe_member(info.filename)
-            if member is None:
-                continue
-            if dataset and member.split("/")[0] != dataset:
-                if verbose:
-                    print(f"  (skip {member}: not dataset {dataset})")
-                continue
-            if skip_step4 and _is_step4_member(member):
-                excluded += 1
-                if verbose:
-                    print(f"  (skip {member}: step-4 map)")
-                continue
-            members.append((info, member,
-                            os.path.join(datafolder, member.replace("/", os.sep))))
+    for name, size, raw in source.iter_members():
+        member = _safe_member(name)
+        if member is None:
+            continue
+        if dataset and member.split("/")[0] != dataset:
+            if verbose:
+                print(f"  (skip {member}: not dataset {dataset})")
+            continue
+        if skip_step4 and _is_step4_member(member):
+            excluded += 1
+            if verbose:
+                print(f"  (skip {member}: step-4 map)")
+            continue
+        members.append((raw, member, size,
+                        os.path.join(datafolder, member.replace("/", os.sep))))
 
     if replace:
         return members, 0, 0, excluded
 
-    index.prime(os.path.dirname(dst) for _, _, dst in members)
+    index.prime(os.path.dirname(dst) for _, _, _, dst in members)
 
     todo, present, stale = [], 0, 0
-    for info, member, dst in members:
-        size = index.size_of(dst)
-        if size is not None:
-            if not verify_size or size == info.file_size:
+    for raw, member, size, dst in members:
+        existing = index.size_of(dst)
+        if existing is not None:
+            if not verify_size or existing == size:
                 present += 1
                 if verbose:
                     print(f"  exists, skip: {member}")
                 continue
             stale += 1
             if verbose:
-                print(f"  size {size} != {info.file_size}, rewrite: {member}")
-        todo.append((info, member, dst))
+                print(f"  size {existing} != {size}, rewrite: {member}")
+        todo.append((raw, member, size, dst))
     return todo, present, stale, excluded
 
 
-def _extract(zf, info, dst, index):
+def _extract(source, raw, dst, size, index, local):
     """Write one member via a .part temp file + atomic rename."""
     tmp = dst + ".part"
     try:
-        with zf.open(info) as src, open(tmp, "wb") as out:
+        with source.open(raw, local) as src, open(tmp, "wb") as out:
             shutil.copyfileobj(src, out, COPY_CHUNK)
         os.replace(tmp, dst)
     except BaseException:
@@ -275,17 +354,21 @@ def _extract(zf, info, dst, index):
         except OSError:
             pass
         raise
-    index.record(dst, info.file_size)
+    index.record(dst, size)
 
 
-def unpack_zip(zip_path, datafolder, index=None, dataset=None, replace=False,
+def unpack_zip(source, datafolder, index=None, dataset=None, replace=False,
                dry_run=False, verbose=False, workers=DEFAULT_WORKERS,
                verify_size=True, skip_step4=False):
-    """Extract one result zip into ``datafolder``. Returns (written, skipped)."""
+    """Merge one source (a result zip or an already-unzipped result folder) into
+    ``datafolder``. ``source`` may be a ``ZipSource``/``DirSource`` or, for
+    backwards compatibility, a plain zip path string. Returns (written, skipped)."""
+    if isinstance(source, str):
+        source = ZipSource(source)
     if index is None:
         index = DirIndex(workers=workers)
     todo, present, stale, excluded = plan_zip(
-        zip_path, datafolder, index, dataset=dataset, replace=replace,
+        source, datafolder, index, dataset=dataset, replace=replace,
         verify_size=verify_size, verbose=verbose, skip_step4=skip_step4)
     if excluded:
         print(f"  left {excluded} step-4 file(s) in the zip (--no_step4_files)")
@@ -299,24 +382,19 @@ def unpack_zip(zip_path, datafolder, index=None, dataset=None, replace=False,
         print(f"  {stale} file(s) present but truncated -- rewriting")
     if dry_run:
         if verbose:
-            for _, member, _ in todo:
+            for _, member, _, _ in todo:
                 print(f"  would write: {member}")
         print(f"  would write {len(todo)} file(s), {present} already present")
         return len(todo), present
 
-    for dirpath in dict.fromkeys(os.path.dirname(dst) for _, _, dst in todo):
+    for dirpath in dict.fromkeys(os.path.dirname(dst) for _, _, _, dst in todo):
         index.ensure_dir(dirpath)
 
-    # One ZipFile handle per worker: a single handle is not safe to read from
-    # concurrently, and reopening a local zip is cheap next to an SMB write.
     local = threading.local()
 
     def worker(item):
-        zf = getattr(local, "zf", None)
-        if zf is None:
-            zf = local.zf = zipfile.ZipFile(zip_path)
-        info, member, dst = item
-        _extract(zf, info, dst, index)
+        raw, member, size, dst = item
+        _extract(source, raw, dst, size, index, local)
         if verbose:
             print(f"  wrote: {member}")
         return 1
@@ -330,7 +408,9 @@ def unpack_zip(zip_path, datafolder, index=None, dataset=None, replace=False,
 
 def parse_args():
     ap = argparse.ArgumentParser(description="Merge Colab result zips onto the data disk.")
-    ap.add_argument("inputs", nargs="+", help="result_*.zip files and/or directories")
+    ap.add_argument("inputs", nargs="+",
+                    help="result_*.zip files, already-unzipped result_* folders, "
+                         "and/or directories containing either")
     ap.add_argument("--dataset", default=None, help="Only unpack members of this dataset")
     ap.add_argument("--datafolder", default=None,
                     help="Target data folder (default: machine's pipeline data disk)")
@@ -353,18 +433,18 @@ def parse_args():
 def main():
     a = parse_args()
     datafolder = a.datafolder or get_paths()[0]
-    zips = collect_zips(a.inputs)
-    if not zips:
-        print("No result zips found.")
+    sources = collect_sources(a.inputs)
+    if not sources:
+        print("No result zips or unzipped result folders found.")
         return
     print(f"Target datafolder: {datafolder}")
-    print(f"{'DRY RUN -- ' if a.dry_run else ''}unpacking {len(zips)} zip(s)\n")
-    index = DirIndex(workers=a.workers)  # shared across zips: list each folder once
+    print(f"{'DRY RUN -- ' if a.dry_run else ''}unpacking {len(sources)} source(s)\n")
+    index = DirIndex(workers=a.workers)  # shared across sources: list each folder once
     tot_w = tot_s = 0
     complete = 0
-    for z in zips:
-        print(os.path.basename(z))
-        w, s = unpack_zip(z, datafolder, index=index, dataset=a.dataset,
+    for source in sources:
+        print(source.label)
+        w, s = unpack_zip(source, datafolder, index=index, dataset=a.dataset,
                           replace=a.replace, dry_run=a.dry_run, verbose=a.verbose,
                           workers=a.workers, verify_size=a.verify_size,
                           skip_step4=a.skip_step4)
@@ -374,7 +454,7 @@ def main():
             complete += 1
     verb = "would write" if a.dry_run else "wrote"
     print(f"\nDone: {verb} {tot_w} file(s), skipped {tot_s} existing "
-          f"({complete}/{len(zips)} zip(s) already complete).")
+          f"({complete}/{len(sources)} source(s) already complete).")
 
 
 if __name__ == "__main__":

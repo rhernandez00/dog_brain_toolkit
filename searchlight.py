@@ -153,11 +153,27 @@ std across maps. Save as nifti.
 7.6: Calculate a z map per participant (and per run) using the mean and std of step 4.5:
     z-scores that unit's real step-2 map against its own permutation distribution. The
     permuted maps of step 4 are not z-scored. Needs step 4.5.
+    Once every unit of a participant has its z map, that participant's step-4 permutation
+    maps are deleted -- they are already summarised into the step-4.5 mean/std maps, which
+    stay, so the z map remains reproducible. A step4_purged.json receipt is left behind so
+    the probes read "purged" rather than "never ran". Step 5 is the other reader of those
+    maps: pass --keep_permutations when step 5 has not run yet for this model.
+    Both halves resume: an existing z map counts as done, and the purge deletes whatever
+    maps are still on disk and skips the ones that are not, so a run interrupted partway
+    (a dropped connection to the data disk) is finished by running the step again.
 8: Threshold z maps, calculate cluster size distribution
 9: Threshold z maps, apply cluster correction, save significant maps
 10: Summarize results, create formatted report and save xlsx
 11: Calculate cross-participant similarity, use one participant as model and calculate similarity with other participants, repeat for all participants
 12: DSM extraction: For each significant cluster, extract the similarity values 
+15: Calculate multiple regression RSA per participant, using models in regression_model as controls and rsa_model as target. This will calculate the unique contribution of rsa_model to the similarity maps, controlling for the other models in regression_model
+    One fit per participant and run: at each voxel the pairwise similarity values are
+    regressed on [intercept, rsa_model, controls...] and the target's coefficient is kept.
+    The controls listed in rsa_models/regression_models/{regression_model}.csv are
+    run-dependent ({name}-run-{run_N}.csv), so the design is rebuilt for every run.
+    Writes _beta_map / _t_map / _p_map plus a _regression.json sidecar naming the exact
+    model matrices the fit used, under results/RSA_regression/{model}/{regression_model}/
+    {rsa_model}/. Needs --regression_model and step 1 for every pair of the target model.
 
 # Keep adding numbers for steps, reorganize later for better structure
 
@@ -172,6 +188,7 @@ Input arguments:
 --rsa_model: RSA model to use
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
 --rsa_class: RSA class to use, used when comparing based on class pairs (e.g. all dog-dog pairs, all human-human pairs, all dog-human pairs)
+--regression_model: Regression model to use for multiple regression RSA (default: None)
 --specie: 'D' for Dog, 'H' for Human (default: 'H')
 --mask_type: Type of brain mask to use (default: 'b_GreyMatter2mm')
 --radius: Radius for searchlight (default: 3)
@@ -193,6 +210,8 @@ Input arguments:
 --replace_file: Overwrite existing output files (default: False)
 --replace_rnd_files: Overwrite existing rnd output files (default: False)
 --shuffle_participants: shuffle participants order in permutations (default: False)
+--keep_permutations: step 7.6 only, keep the step-4 permutation maps instead of deleting
+    them once the participant has its z map (default: False)
 --skip_if_done: from step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100% of the participants where available)
 
 --participants_forced: List of participants to include (default: [])
@@ -223,6 +242,8 @@ def parse_arguments():
                         help='Method to compare similarity maps with model')
     parser.add_argument('--rsa_class', type=str, default=None,
                         help='RSA class to use')
+    parser.add_argument('--regression_model', type=str, default=None,
+                        help='Regression model to use for multiple regression RSA')
     parser.add_argument('--specie', type=str, default='H',
                         help="'D' for Dog, 'H' for Human")
     parser.add_argument('--mask_type', type=str, default='b_GreyMatter2mmB',
@@ -265,6 +286,11 @@ def parse_arguments():
                               'when they share one grid (same shape AND same affine); by default a '
                               'mismatch is fatal. Use only to reproduce legacy runs -- results '
                               'produced with this flag are not anatomically valid.'))
+    parser.add_argument('--keep_permutations', action='store_true',
+                        help=('Step 7.6 only: keep the step-4 permutation maps instead of '
+                              'deleting them once the participant has its z map. Step 5 is '
+                              'the other reader of those maps, so pass this when step 5 has '
+                              'not run yet for this model.'))
     parser.add_argument('--participants_forced', type=int, nargs='+', default=[],
                         help='List of participants to include')
     parser.add_argument('--verbose', action='store_true',
@@ -298,6 +324,7 @@ def main():
     rsa_method = args.rsa_method
     rsa_class = args.rsa_class
     comparison_model = args.comparison_model
+    regression_model = args.regression_model
     specie = args.specie
     mask_type = args.mask_type
     radius = args.radius
@@ -731,16 +758,17 @@ def main():
             _write_marker(job_marker_dir, 4)
         if step == 4.5: # Calculate mean and std across the permuted maps of each participant/run
             print("### Step 4.5: Calculating permutation distribution maps by participant ###")
+            # if shuffle_participants is true, shuffle participants order
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
+
             # build session_and_run_all_dict
             session_and_run_all_dict = {}
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
-
-            result = rsa_utils.calculate_participant_rnd_distribution(datafolder, dataset, session_and_run_all_dict,
-                                                specie, model, task, radius,
-                                                dis_method=dis_method, rsa_method=rsa_method,
-                                                rsa_model=rsa_model, reps=reps,
+            
+            result = rsa_utils.calculate_participant_rnd_distribution(datafolder, dataset, session_and_run_all_dict, specie, model, task, radius, dis_method=dis_method, rsa_method=rsa_method, rsa_model=rsa_model, reps=reps,
                                                 mask_type=mask_type, mah_fold=mah_fold,
                                                 replace_file=replace_file, verbose=verbose,
                                                 min_percentage_available=min_percentage_available)
@@ -798,13 +826,17 @@ def main():
                 session_and_run_all_dict[sub_N] = session_and_run_dict
 
             ## Z-score the real data map with the mean and std of that unit's own permutations.
-            ## Only the real map is z-scored -- the permutations themselves stay as step 4 wrote them.
+            ## Only the real map is z-scored -- the permutations themselves stay as step 4 wrote them,
+            ## until the whole participant has its z map: then they are deleted (--keep_permutations
+            ## keeps them, which step 5 needs if it has not run yet).
             result = rsa_utils.calculate_participant_z_map_real_data(datafolder, dataset, session_and_run_all_dict,
                                                 specie, model, task, radius,
                                                 dis_method=dis_method, rsa_method=rsa_method,
                                                 rsa_model=rsa_model,
                                                 mask_type=mask_type, mah_fold=mah_fold,
-                                                replace_file=replace_file, verbose=verbose)
+                                                replace_file=replace_file, verbose=verbose,
+                                                purge_permutations=not args.keep_permutations,
+                                                reps=reps)
             print("### Done computing z maps by participant ###")
             if result:
                 _write_marker(job_marker_dir, 7.6)
@@ -960,6 +992,25 @@ def main():
                     #                         dis_method, replace_file=False, min_percentage_available=1.0,
                     #                         verbose=False)
                     print("### Done computing group model similarity map ###")
+        if step == 15: # Calculate multiple regression RSA per participant, using multiple control models (regression_model) and a target model (rsa_model)
+            print("### Step 15: Calculating multiple regression RSA per participant ###")
+            # build session_and_run_all_dict
+            session_and_run_all_dict = {}
+            # if shuffle_participants is true, shuffle participants order
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                session_and_run_all_dict[sub_N] = session_and_run_dict
+            
+            
+            result = rsa_utils.calculate_multiple_regression_rsa(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, regression_model=regression_model,
+                                                participants=participants, specie=specie, mask=mask, model=model, radius=radius,
+                                                dis_method=dis_method, rsa_model=rsa_model, task=task, mah_fold=mah_fold,
+                                                model_dict=model_dict, replace_file=replace_file, verbose=verbose)
+            print("### Done computing multiple regression RSA ###")
+            if result:
+                _write_marker(job_marker_dir, 15)
     print("### All steps completed! ###")
         
 

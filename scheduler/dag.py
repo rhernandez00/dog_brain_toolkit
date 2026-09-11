@@ -14,6 +14,7 @@ STEP_LABELS = {
     8: "Cluster size distribution",
     9: "Cluster correction",
     10: "Create tables",
+    15: "Multiple regression RSA",
 }
 
 # Generic dependency graph; species-specific adjustments applied in build_job_graph
@@ -31,10 +32,11 @@ _STEP_DEPS = {
     8:  [7],
     9:  [7, 8],  # cluster correction needs real z-map AND cluster dist
     10: [9],
+    15: [1],     # regresses the step-1 pairwise maps against the model design
 }
 
-# Steps 4.5 and 7.6 hang off the main line rather than feeding it: nothing in
-# 5..10 lists them as a dependency, so a classic 2->10 graph is unchanged and
+# Steps 4.5, 7.6 and 15 hang off the main line rather than feeding it: nothing
+# in 5..10 lists them as a dependency, so a classic 2->10 graph is unchanged and
 # they are only scheduled when asked for by name.
 
 
@@ -50,12 +52,14 @@ def step_token(step):
     return f"step{float(step):04.1f}"
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None):
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None):
     job_id = (
         f"{dataset}__{model}__{rsa_model}__{specie}"
         f"__{step_token(step)}__zt{z_threshold}__r{reps}__rg{reps_group}"
         f"__rsa{rsa_method}__dis{dis_method}__mah{mah_fold}"
     )
+    if regression_model is not None:
+        job_id += f"__reg{regression_model}"
     # Per-participant jobs (scheduled from the dashboard for a single missing map)
     # get a __subNN suffix so they never collide with the whole-step job or with
     # each other. participant=None keeps the classic whole-step id unchanged.
@@ -72,7 +76,8 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
                     replace_rnd_files=False,
                     verbose=True,
                     priority=DEFAULT_PRIORITY,
-                    min_percentage_available=1.0):
+                    min_percentage_available=1.0,
+                    regression_model=None):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.  Steps below start_step are never
@@ -126,15 +131,16 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
     for step in topo_order:
         dep_steps = adj[step]
         dep_ids = [
-            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold)
+            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model)
             for d in dep_steps
         ]
-        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold)
+        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model)
         jobs.append({
             "job_id": job_id,
             "dataset": dataset,
             "model": model,
             "rsa_model": rsa_model,
+            "regression_model": regression_model,
             "specie": specie,
             "step": step,
             "label": STEP_LABELS.get(step, f"Step {step}"),
@@ -166,7 +172,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                      radius=None, mask_type=None,
                      replace_file=False, replace_rnd_files=False,
                      verbose=True, priority=DEFAULT_PRIORITY,
-                     min_percentage_available=1.0):
+                     min_percentage_available=1.0, regression_model=None):
     """Build a single, *independent* job dict (no dependencies, status=pending).
 
     Used by the dashboard's "schedule missing" / per-map buttons: the user has
@@ -186,7 +192,8 @@ def build_single_job(dataset, model, rsa_model, specie, step,
     """
     job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold,
                          reps, reps_group, rsa_method, dis_method, mah_fold,
-                         participant=participant)
+                         participant=participant,
+                         regression_model=regression_model)
     label = STEP_LABELS.get(step, f"Step {step}")
     if participant is not None:
         label = f"{label} (sub-{int(participant):02d})"
@@ -195,6 +202,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
         "dataset": dataset,
         "model": model,
         "rsa_model": rsa_model,
+        "regression_model": regression_model,
         "specie": specie,
         "step": step,
         "label": label,
