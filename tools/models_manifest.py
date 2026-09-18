@@ -109,16 +109,17 @@ def manifest_path(dirs):
 # ---------------------------------------------------------------------------
 def _parse_groupings(raw):
     """Grouping list from a ``groupings_possible`` cell. Accepts a python-list
-    literal ("['all', 'cross']"), or a plain comma/semicolon separated string."""
+    literal ("['all', 'cross']"), or a plain comma/semicolon separated string.
+    An explicit empty-string entry ("['']") means an unsuffixed model."""
     if isinstance(raw, (list, tuple)):
-        return [str(x).strip() for x in raw if str(x).strip()]
+        return [str(x).strip() for x in raw if x is not None]
     s = str(raw or "").strip()
     if not s:
         return []
     try:
         v = ast.literal_eval(s)
         if isinstance(v, (list, tuple)):
-            return [str(x).strip() for x in v if str(x).strip()]
+            return [str(x).strip() for x in v if x is not None]
         if isinstance(v, str) and v.strip():
             return [v.strip()]
     except (ValueError, SyntaxError):
@@ -146,7 +147,7 @@ def order_groupings(groupings):
     seen, uniq = set(), []
     for g in groupings:
         g = str(g).strip()
-        if g and g not in seen:
+        if g not in seen:
             seen.add(g)
             uniq.append(g)
     known = [g for g in GROUPING_ORDER if g in uniq]
@@ -241,7 +242,10 @@ def concrete_model_name(dirs, model, grouping):
     """The concrete CSV stem for a (family, grouping): ``"{model}__{grouping}"``
     normally, but the suffix-less ``"{model}"`` when only that file exists on disk
     (e.g. ``agent-species-id``). Prefers an on-disk match; defaults to the suffixed
-    form so not-yet-built models still get a stable name."""
+    form so not-yet-built models still get a stable name. An empty grouping
+    explicitly names the unsuffixed model, including run-dependent models."""
+    if grouping == "":
+        return model
     suffixed = f"{model}__{grouping}"
     for d in dirs:
         if os.path.isfile(os.path.join(d, suffixed + ".csv")):

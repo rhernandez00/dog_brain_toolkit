@@ -166,14 +166,17 @@ std across maps. Save as nifti.
 10: Summarize results, create formatted report and save xlsx
 11: Calculate cross-participant similarity, use one participant as model and calculate similarity with other participants, repeat for all participants
 12: DSM extraction: For each significant cluster, extract the similarity values 
-15: Calculate multiple regression RSA per participant, using models in regression_model as controls and rsa_model as target. This will calculate the unique contribution of rsa_model to the similarity maps, controlling for the other models in regression_model
-    One fit per participant and run: at each voxel the pairwise similarity values are
-    regressed on [intercept, rsa_model, controls...] and the target's coefficient is kept.
+15: Calculate multiple regression RSA per participant, using the models in regression_model as controls and each model in rsa_models_list as target. This will calculate the unique contribution of each target model to the similarity maps, controlling for the other models in regression_model
+    One fit per participant, run and target model: at each voxel the pairwise similarity
+    values are regressed on [intercept, target model, controls...] and the target's
+    coefficient is kept. The pairwise maps are the expensive part and every target reads
+    the same ones, so they are loaded once per run -- over the union of the pairs the
+    targets need -- and each fit is given the columns its own model defines.
     The controls listed in rsa_models/regression_models/{regression_model}.csv are
     run-dependent ({name}-run-{run_N}.csv), so the design is rebuilt for every run.
     Writes _beta_map / _t_map / _p_map plus a _regression.json sidecar naming the exact
     model matrices the fit used, under results/RSA_regression/{model}/{regression_model}/
-    {rsa_model}/. Needs --regression_model and step 1 for every pair of the target model.
+    {rsa_model}/. Needs --regression_model and step 1 for every pair of the target models.
 
 # Keep adding numbers for steps, reorganize later for better structure
 
@@ -189,6 +192,7 @@ Input arguments:
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
 --rsa_class: RSA class to use, used when comparing based on class pairs (e.g. all dog-dog pairs, all human-human pairs, all dog-human pairs)
 --regression_model: Regression model to use for multiple regression RSA (default: None)
+--rsa_models_list: Target RSA models for step 15, space separated; defaults to [--rsa_model]
 --specie: 'D' for Dog, 'H' for Human (default: 'H')
 --mask_type: Type of brain mask to use (default: 'b_GreyMatter2mm')
 --radius: Radius for searchlight (default: 3)
@@ -244,6 +248,9 @@ def parse_arguments():
                         help='RSA class to use')
     parser.add_argument('--regression_model', type=str, default=None,
                         help='Regression model to use for multiple regression RSA')
+    parser.add_argument('--rsa_models_list', type=str, nargs='+', default=None,
+                        help='Target RSA models for step 15 (space separated); '
+                             'defaults to the single --rsa_model')
     parser.add_argument('--specie', type=str, default='H',
                         help="'D' for Dog, 'H' for Human")
     parser.add_argument('--mask_type', type=str, default='b_GreyMatter2mmB',
@@ -325,6 +332,12 @@ def main():
     rsa_class = args.rsa_class
     comparison_model = args.comparison_model
     regression_model = args.regression_model
+    # Step 15 fits several target models against one loaded stack of pairwise
+    # maps. A scheduler job still queues one model at a time via --rsa_model,
+    # so that stands in as a one-model list.
+    rsa_models_list = args.rsa_models_list
+    if rsa_models_list is None and rsa_model is not None:
+        rsa_models_list = [rsa_model]
     specie = args.specie
     mask_type = args.mask_type
     radius = args.radius
@@ -992,8 +1005,11 @@ def main():
                     #                         dis_method, replace_file=False, min_percentage_available=1.0,
                     #                         verbose=False)
                     print("### Done computing group model similarity map ###")
-        if step == 15: # Calculate multiple regression RSA per participant, using multiple control models (regression_model) and a target model (rsa_model)
+        if step == 15: # Calculate multiple regression RSA per participant, using multiple control models (regression_model) and one or more target models (rsa_models_list)
             print("### Step 15: Calculating multiple regression RSA per participant ###")
+            if not rsa_models_list:
+                raise ValueError("Step 15 needs --rsa_models_list (or --rsa_model) to name the target model(s).")
+            print(f"Target models: {rsa_models_list}")
             # build session_and_run_all_dict
             session_and_run_all_dict = {}
             # if shuffle_participants is true, shuffle participants order
@@ -1006,7 +1022,7 @@ def main():
             
             result = rsa_utils.calculate_multiple_regression_rsa(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, regression_model=regression_model,
                                                 participants=participants, specie=specie, mask=mask, model=model, radius=radius,
-                                                dis_method=dis_method, rsa_model=rsa_model, task=task, mah_fold=mah_fold,
+                                                dis_method=dis_method, rsa_models_list=rsa_models_list, task=task, mah_fold=mah_fold,
                                                 model_dict=model_dict, replace_file=replace_file, verbose=verbose)
             print("### Done computing multiple regression RSA ###")
             if result:

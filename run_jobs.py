@@ -42,7 +42,6 @@ def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None
         searchlight,
         "--dataset",        job["dataset"],
         "--model",          job["model"],
-        "--rsa_model",      job["rsa_model"],
         "--specie",         job["specie"],
         "--rsa_method",     job.get("rsa_method", "kendall"),
         "--dis_method",     job.get("dis_method", "mahalanobis"),
@@ -53,6 +52,17 @@ def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None
         "--reps_group",     str(job["reps_group"]),
         "--job_marker_dir", str(marker_dir),
     ]
+    # A batch job (step 15) names several target models and no single
+    # rsa_model: searchlight fits them all against one load of each run's
+    # pairwise maps. Every other job still carries exactly one rsa_model.
+    if job.get("rsa_models_list"):
+        cmd += ["--rsa_models_list"] + [str(m) for m in job["rsa_models_list"]]
+    if job.get("rsa_model"):
+        cmd += ["--rsa_model", str(job["rsa_model"])]
+    if not job.get("rsa_models_list") and not job.get("rsa_model"):
+        raise ValueError(
+            f"Job {job.get('job_id')} names neither rsa_model nor rsa_models_list."
+        )
     if job.get("regression_model"):
         cmd += ["--regression_model", str(job["regression_model"])]
     # Fields below are only present on dashboard-scheduled jobs; classic

@@ -26,6 +26,9 @@ Usage
     ... --dis_method mahalanobis --steps 0-10 --specie D
     ... --dis_method mahalanobis --steps 0-10 --specie H
 
+    # step 15 (multiple regression RSA) — needs the regression model
+    ... --dis_method correlation --specie H --steps 15 --regression_model visual_3
+
 Models come from the central ``rsa_models/_models.csv`` manifest (via
 ``models_manifest.py``), filtered by ``--dis_method`` — and by ``--mah_fold`` too
 if you pass it, which only narrows anything for mahalanobis — then expanded over
@@ -46,6 +49,11 @@ Two wrinkles this handles for you:
   out in the panel but still part of the signature, and the probe paths ignore
   it. One probe result is therefore written under *every* fold value, so
   whichever one the disabled dropdown happens to be showing finds it.
+* **regression_model.** Only step 15 reads it (it is a folder in that step's
+  output path), but like the fold it is part of the signature for every step.
+  So step 15 needs ``--regression_model`` (its probe reports UNKNOWN without
+  one) and is written under that model alone, while every other step's result
+  is written under both the regression model and no regression model.
 * **Steps 0 and 1 are model-independent** (beta maps and pairwise maps do not
   live in the rsa_model's folder). ``pipeline_dashboard.store_step`` files those
   under a reduced, shared key, so they are probed **once** per distinct shared
@@ -93,7 +101,13 @@ import models_manifest as mm           # noqa: E402  central _models.csv reader
 
 
 def parse_steps(spec):
-    """'3,5-10' -> [3, 5, 6, 7, 8, 9, 10] (same syntax as schedule_steps.py)."""
+    """'3,5-10' -> [3, 5, 6, 7, 8, 9, 10] (same syntax as schedule_steps.py).
+
+    The side steps (``pc.SIDE_STEPS``: 4.5, 7.6, 15) hang off the main line
+    rather than sitting in it, so a range never sweeps them up -- '0-10' does
+    not include 4.5, and 15 is not in any range -- and each has to be named
+    outright: '15', '4.5,15'.
+    """
     steps = []
     for part in str(spec).split(','):
         part = part.strip()
@@ -101,8 +115,8 @@ def parse_steps(spec):
             a, b = part.split('-')
             steps.extend(range(int(a), int(b) + 1))
         elif part:
-            steps.append(int(part))
-    return [s for s in sorted(set(steps)) if s in pc.STEPS]
+            steps.append(float(part) if '.' in part else int(part))
+    return [s for s in sorted(set(steps)) if s in pc.ALL_STEPS]
 
 
 def parse_models(values):
@@ -282,6 +296,21 @@ def folds_to_write(dis_method, csv_fold):
     return sorted({csv_fold, *dash.MAH_FOLD_OPTIONS})
 
 
+def regressions_to_write(regression_model, step):
+    """Which regression_model signatures a result should be written under.
+
+    Step 15 is the only step whose files depend on it (the regression model is a
+    folder in its output path), so its result belongs to that model alone. For
+    every other step the probe looks at the same files either way, but the field
+    is still in the signature — so write the result both with and without it,
+    and the panel finds it whichever way the dropdown is set."""
+    if step == 15:
+        return [regression_model]
+    if not regression_model:
+        return [None]
+    return [None, regression_model]
+
+
 def main():
     D = dash.DEFAULTS
     p = argparse.ArgumentParser(
@@ -295,6 +324,10 @@ def main():
                         'default: every fold of the method). Also the fold written '
                         'into the cache signature for the models it selects.')
     p.add_argument('--rsa_method', default=D['rsa_method'])
+    p.add_argument('--regression_model', default=D['regression_model'],
+                   help='Regression model for step 15, e.g. visual_3 — a CSV '
+                        'under rsa_models/regression_models/. Required by step 15 '
+                        'and part of the cache signature for every step.')
     p.add_argument('--steps', default='0-10',
                    help="Steps to probe, e.g. '5,7' or '3,5-10' (default: %(default)s)")
     p.add_argument('--rsa_model', action='append',
@@ -324,20 +357,27 @@ def main():
 
     steps = parse_steps(args.steps)
     if not steps:
-        p.error(f'--steps {args.steps!r} selected no step of {sorted(pc.STEPS)}')
+        p.error(f'--steps {args.steps!r} selected no step of {pc.ALL_STEPS}')
     if args.delete_dry_run and not args.delete_step4:
         p.error('--delete_dry_run only means anything with --delete_step4')
     if args.delete_step4 and 5 not in steps:
         # the whole decision rests on step 5's verdict, so it has to be probed
         steps = sorted(steps + [5])
+    if 15 in steps and not args.regression_model:
+        # probe_step15 needs it to build the output path; without one it can only
+        # answer UNKNOWN, and would cache that under a signature the panel (with a
+        # regression model selected) never reads
+        p.error('--steps includes 15, which needs --regression_model '
+                '(e.g. --regression_model visual_3)')
 
-    def make_params(rsa_model, mah_fold):
+    def make_params(rsa_model, mah_fold, regression_model=None):
         return dash.params_from_inputs(
             dataset=args.dataset, model=args.model, rsa_model=rsa_model,
             specie=args.specie, dis_method=args.dis_method, mah_fold=mah_fold,
             rsa_method=args.rsa_method, radius=args.radius,
             z_threshold=args.z_threshold, mask_type=args.mask_type,
             reps=args.reps, reps_group=args.reps_group,
+            regression_model=regression_model,
         )
 
     only = parse_models(args.rsa_model)
@@ -355,6 +395,8 @@ def main():
                 + f' in the _models.csv of {args.dataset} — nothing to check')
 
     scope = args.dis_method + (f' / {args.mah_fold}' if args.mah_fold else '')
+    if args.regression_model:
+        scope += f' / reg {args.regression_model}'
     print(f"{len(models)} model(s) x {len(steps)} step(s) — {args.dataset} / "
           f"{args.specie} / {scope}")
     print(f"cache: {dash.CACHE_PATH}")
@@ -382,7 +424,10 @@ def main():
     verdicts = {}      # rsa_model -> {step: verdict}, for the summary table
 
     for i, (rsa_model, csv_fold) in enumerate(models, 1):
-        probe_params = make_params(rsa_model, csv_fold)
+        # probed with the regression model, since step 15 cannot resolve its
+        # output path without one; the fan-out below decides which signatures
+        # the result is then filed under
+        probe_params = make_params(rsa_model, csv_fold, args.regression_model)
         cache = dash.load_cache()
         print(f"[{i}/{len(models)}] {rsa_model}")
         row = verdicts.setdefault(rsa_model, {})
@@ -419,7 +464,8 @@ def main():
                 seen_shared[ssig] = dash.store_step(cache, probe_params, step, r)
                 continue
             for fold in folds_to_write(args.dis_method, csv_fold):
-                dash.store_step(cache, make_params(rsa_model, fold), step, r)
+                for reg in regressions_to_write(args.regression_model, step):
+                    dash.store_step(cache, make_params(rsa_model, fold, reg), step, r)
 
         if args.delete_step4:
             if row.get(5) != pc.DONE:
@@ -449,7 +495,9 @@ def main():
                     print(f"  step 4 re-checked: {r4['verdict']} — {r4['summary']}")
                     row[4] = r4['verdict']
                     for fold in folds_to_write(args.dis_method, csv_fold):
-                        dash.store_step(cache, make_params(rsa_model, fold), 4, r4)
+                        for reg in regressions_to_write(args.regression_model, 4):
+                            dash.store_step(cache, make_params(rsa_model, fold, reg),
+                                            4, r4)
 
         # save per model, so an interrupt keeps everything done so far
         dash.save_cache(cache)

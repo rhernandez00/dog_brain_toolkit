@@ -899,16 +899,105 @@ def perform_multiple_regression_rsa(meta_similarity_map, design_matrix,
     return beta_map, t_map, p_map, dof
 
 
-def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_dict, regression_model, participants, specie, mask, model, radius, dis_method, rsa_model, task=None, mah_fold='stim-wise', model_dict=None, standardize=True, replace_file=False, verbose=True):
-    '''
-    Calculates multiple regression RSA for a given regression_model.
+def _canonical_pair(category_a, category_b):
+    '''Order a pair of category names so (a, b) and (b, a) index the same map.
 
-    For every participant and run, the pairwise similarity maps are stacked in
-    the target model's pair order and regressed, voxel by voxel, on a design of
-    [intercept, target model, control models]. The saved beta map is the target
-    model's coefficient: the unique contribution of ``rsa_model`` to the neural
-    geometry once the controls listed in ``regression_model`` are accounted for.
-    A t map and a p map for the same coefficient are saved beside it.
+    ``read_model_dict`` emits each pair in the column order of its own CSV, so
+    two models built over the same stimuli can disagree on the order within a
+    pair. On disk there is only one map per pair --
+    ``load_pairwise_similarity_map`` falls back to the inverted file name -- so
+    the shared pair index has to ignore that order, or the same map would be
+    loaded twice under two keys.
+    '''
+    if category_a <= category_b:
+        return (category_a, category_b)
+    return (category_b, category_a)
+
+
+def check_regression_models(datafolder, dataset, regression_model, rsa_models_list,
+                            run_N=1, verbose=True):
+    '''Pre-flight a step-15 battery: which targets the controls can cover.
+
+    Every regressor is expanded onto the *target* model's pairs by category
+    name, so a control that is not defined over the target's categories cannot
+    enter the design at all and the fit raises. The EmoC case this catches: the
+    visual controls are one predicted RDM over the 40 exemplars, which fits a
+    correlation (run-wise) target but not a mahalanobis (stim-wise) one, whose
+    categories are the 10 collapsed classes.
+
+    The controls are rebuilt per run but their category set is not, so checking
+    one run (``run_N``) settles it for all of them.
+
+    Returns ``(usable, problems)``: the target names whose design can be built,
+    and ``{target: reason}`` for the rest.
+    '''
+    if isinstance(rsa_models_list, str):
+        rsa_models_list = [rsa_models_list]
+    regression_model_path = os.path.join(
+        datafolder, dataset, 'rsa_models', 'regression_models', f"{regression_model}.csv"
+    )
+    if not os.path.exists(regression_model_path):
+        raise FileNotFoundError(
+            f"Regression model file {regression_model_path} not found."
+        )
+    control_model_names = _read_regression_model_names(regression_model_path)
+    control_categories = {}
+    for control_name in control_model_names:
+        control_path = _resolve_rsa_model_path(datafolder, dataset, control_name, run_N)
+        control_categories[control_name] = set(
+            read_model_dict(control_path)['categories']
+        )
+
+    usable, problems = [], {}
+    for rsa_model in rsa_models_list:
+        try:
+            target_path = _resolve_rsa_model_path(datafolder, dataset, rsa_model, run_N)
+        except FileNotFoundError as error:
+            problems[rsa_model] = str(error)
+            continue
+        target_categories = set(read_model_dict(target_path)['categories'])
+        missing = {
+            name: sorted(target_categories - categories)
+            for name, categories in control_categories.items()
+            if target_categories - categories
+        }
+        if missing:
+            name, absent = sorted(missing.items())[0]
+            problems[rsa_model] = (
+                f"control {name!r} is not defined over {len(absent)} of this "
+                f"model's {len(target_categories)} categories "
+                f"(e.g. {absent[:3]})"
+            )
+        else:
+            usable.append(rsa_model)
+
+    if verbose:
+        print(f"{regression_model}: controls {control_model_names}; "
+              f"{len(usable)}/{len(rsa_models_list)} target model(s) usable")
+        for rsa_model, reason in problems.items():
+            print(f"  skip {rsa_model}: {reason}")
+    return usable, problems
+
+
+def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_dict, regression_model, participants, specie, mask, model, radius, dis_method, rsa_models_list, task=None, mah_fold='stim-wise', model_dict=None, standardize=True, replace_file=False, verbose=True):
+    '''
+    Calculates multiple regression RSA for a given regression_model and one or
+    more target models.
+
+    For every participant and run, the pairwise similarity maps are stacked and
+    regressed, voxel by voxel, on a design of [intercept, target model, control
+    models]. The saved beta map is the target model's coefficient: the unique
+    contribution of that model to the neural geometry once the controls listed
+    in ``regression_model`` are accounted for. A t map and a p map for the same
+    coefficient are saved beside it, under
+    ``RSA_regression/{model}/{regression_model}/{target}/``.
+
+    Loading the pairwise maps dominates the cost of this step and every target
+    model reads the same ones, so they are loaded **once per run** -- over the
+    union of the pairs the targets need -- and each fit takes the columns of
+    that stack its own model defines. Targets whose beta map already exists are
+    dropped before anything is loaded, so re-running to add one model does not
+    pay for the others.
 
     The control models are run-dependent (``visual1-run-{run_N}.csv`` and so
     on), so the design is rebuilt for each run -- which is what the note below
@@ -932,7 +1021,8 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
     - model: str, GLM model used (e.g., "basic-block")
     - radius: int, radius for the searchlight
     - dis_method: str, dissimilarity method name
-    - rsa_model: str, RSA model name used as the regression target
+    - rsa_models_list: list of str, RSA model names used as regression targets --
+      one fit and one output folder per name, all sharing the loaded maps
     - task: str or None, task name; read from the config file when None
     - mah_fold: str, Mahalanobis folding, passed through when locating pairwise maps
     - model_dict: dict or None, dictionary containing model information for EmoC dataset (accepted for call compatibility)
@@ -945,11 +1035,15 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
         raise ValueError(
             "Step 15 needs a regression model, e.g. --regression_model visual_3."
         )
-    if rsa_model is None:
-        raise ValueError("Step 15 needs a target model, e.g. --rsa_model emo-id__collapse.")
+    if isinstance(rsa_models_list, str):
+        rsa_models_list = [rsa_models_list]
+    if not rsa_models_list:
+        raise ValueError(
+            "Step 15 needs at least one target model, e.g. "
+            "--rsa_models_list emo-id__collapse."
+        )
 
     # load regression model
-    #"P:\userdata\raulh87\data\EmoC\rsa_models\regression_models\visual_3.csv"
     regression_model_path = os.path.join(
         datafolder, dataset, 'rsa_models', 'regression_models', f"{regression_model}.csv"
     )
@@ -958,8 +1052,17 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
             f"Regression model file {regression_model_path} not found."
         )
     control_model_names = _read_regression_model_names(regression_model_path)
+    # A target that is also one of its own controls puts the same column in the
+    # design twice: the fit still runs, but the coefficient is split arbitrarily
+    # between the copies and the beta map means nothing.
+    repeated = [name for name in rsa_models_list if name in control_model_names]
+    if repeated:
+        raise ValueError(
+            f"Target model(s) {repeated} are also controls in {regression_model}; "
+            "a model cannot be regressed on itself."
+        )
     print(f"Regression model {regression_model}: controls {control_model_names}, "
-          f"target {rsa_model}")
+          f"targets {list(rsa_models_list)}")
 
     mask_img = nib.load(mask)
     ref_img = mask_img.get_fdata()
@@ -973,8 +1076,7 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
             task = yaml.safe_load(f)['task']
 
     output_root = os.path.join(
-        datafolder, dataset, 'results', 'RSA_regression', model, regression_model,
-        rsa_model
+        datafolder, dataset, 'results', 'RSA_regression', model, regression_model
     )
 
     # go over all participants and calculate multiple regression RSA for each participant, get participants from session_and_run_all_dict
@@ -989,90 +1091,151 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
             session = f"{session:02d}"
             print(f"Calculating multiple regression RSA for {specie} participant {sub_N}, session {session}, run {run_N}...")
 
-            output_dir = os.path.join(
-                output_root, f"{specie}-sub-{sub_N:02d}",
-                f"ses-{session}_task-{task}_run-{int(run_N):02d}"
-            )
-            output_stem = f"r-{radius}_{dis_method}"
-            beta_map_path = os.path.join(output_dir, f"{output_stem}_beta_map.nii.gz")
-            t_map_path = os.path.join(output_dir, f"{output_stem}_t_map.nii.gz")
-            p_map_path = os.path.join(output_dir, f"{output_stem}_p_map.nii.gz")
-            sidecar_path = os.path.join(output_dir, f"{output_stem}_regression.json")
-            if os.path.exists(beta_map_path) and not replace_file:
-                print(f"Skipping existing regression map: {beta_map_path}")
+            # Build every design first. That decides which targets still have
+            # work to do, and so which pairs have to be loaded at all -- the
+            # maps must not be read for a run whose outputs all exist.
+            planned_fits = []
+            for rsa_model in rsa_models_list:
+                output_dir = os.path.join(
+                    output_root, rsa_model, f"{specie}-sub-{sub_N:02d}",
+                    f"ses-{session}_task-{task}_run-{int(run_N):02d}"
+                )
+                output_stem = f"r-{radius}_{dis_method}"
+                beta_map_path = os.path.join(output_dir, f"{output_stem}_beta_map.nii.gz")
+                if os.path.exists(beta_map_path) and not replace_file:
+                    print(f"Skipping existing regression map: {beta_map_path}")
+                    continue
+
+                # The target model fixes the pair order its maps are stacked in, and
+                # every regressor is expanded onto exactly that order.
+                target_model_path = _resolve_rsa_model_path(
+                    datafolder, dataset, rsa_model, run_N
+                )
+                target_model_dict = read_model_dict(target_model_path)
+                pairs = target_model_dict['pairs']
+
+                regressor_names = ['intercept', rsa_model]
+                regressor_paths = {rsa_model: target_model_path}
+                design_columns = [
+                    np.ones(len(pairs), dtype=np.float64),
+                    _build_model_vector_for_pairs(target_model_dict, pairs, rsa_model),
+                ]
+                for control_name in control_model_names:
+                    control_model_path = _resolve_rsa_model_path(
+                        datafolder, dataset, control_name, run_N
+                    )
+                    control_model_dict = read_model_dict(control_model_path)
+                    design_columns.append(_build_model_vector_for_pairs(
+                        control_model_dict, pairs, control_name
+                    ))
+                    regressor_names.append(control_name)
+                    regressor_paths[control_name] = control_model_path
+                design_matrix = np.column_stack(design_columns)
+                if verbose:
+                    print(f"Design matrix for {rsa_model} {design_matrix.shape}: "
+                          f"{regressor_names}")
+
+                planned_fits.append({
+                    'rsa_model': rsa_model,
+                    'pairs': pairs,
+                    'design_matrix': design_matrix,
+                    'regressor_names': regressor_names,
+                    'regressor_paths': regressor_paths,
+                    'output_dir': output_dir,
+                    'beta_map_path': beta_map_path,
+                    't_map_path': os.path.join(output_dir, f"{output_stem}_t_map.nii.gz"),
+                    'p_map_path': os.path.join(output_dir, f"{output_stem}_p_map.nii.gz"),
+                    'sidecar_path': os.path.join(output_dir, f"{output_stem}_regression.json"),
+                })
+
+            if not planned_fits:
+                print(f"Nothing to do for {specie}-sub-{sub_N:02d} ses-{session} "
+                      f"run-{int(run_N):02d}: every target map exists.")
                 continue
 
-            # The target model fixes the pair order the maps are stacked in, and
-            # every regressor is expanded onto exactly that order.
-            target_model_path = _resolve_rsa_model_path(
-                datafolder, dataset, rsa_model, run_N
-            )
-            target_model_dict = read_model_dict(target_model_path)
-            pairs = target_model_dict['pairs']
-
-            regressor_names = ['intercept', rsa_model]
-            regressor_paths = {rsa_model: target_model_path}
-            design_columns = [
-                np.ones(len(pairs), dtype=np.float64),
-                _build_model_vector_for_pairs(target_model_dict, pairs, rsa_model),
-            ]
-            for control_name in control_model_names:
-                control_model_path = _resolve_rsa_model_path(
-                    datafolder, dataset, control_name, run_N
+            # Union of the pairs the remaining targets need, in first-seen
+            # order, plus the columns each target's own pair order maps to.
+            union_pairs = []
+            union_pair_index = {}
+            for plan in planned_fits:
+                for category_a, category_b in plan['pairs']:
+                    key = _canonical_pair(category_a, category_b)
+                    if key not in union_pair_index:
+                        union_pair_index[key] = len(union_pairs)
+                        union_pairs.append((category_a, category_b))
+            for plan in planned_fits:
+                plan['columns'] = np.array(
+                    [union_pair_index[_canonical_pair(a, b)] for a, b in plan['pairs']],
+                    dtype=int,
                 )
-                control_model_dict = read_model_dict(control_model_path)
-                design_columns.append(_build_model_vector_for_pairs(
-                    control_model_dict, pairs, control_name
-                ))
-                regressor_names.append(control_name)
-                regressor_paths[control_name] = control_model_path
-            design_matrix = np.column_stack(design_columns)
+            identity_columns = np.arange(len(union_pairs))
+
+            # load meta similarity map of this participant, session and run --
+            # once, for every target model
             if verbose:
-                print(f"Design matrix {design_matrix.shape}: {regressor_names}")
+                print(f"Loading {len(union_pairs)} pairwise maps for "
+                      f"{len(planned_fits)} target model(s)")
+            meta_similarity_map = load_meta_similarity_map(None, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose, mah_fold=mah_fold, pairs=union_pairs, ref_affine=ref_affine, ref_label=ref_label)
 
-            # load meta similarity map associated to the model
-            meta_similarity_map = load_meta_similarity_map(target_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose, mah_fold=mah_fold, pairs=pairs, ref_affine=ref_affine, ref_label=ref_label)
+            # go over each model in the rsa_models_list and perform regression
+            for plan in planned_fits:
+                rsa_model = plan['rsa_model']
+                pairs = plan['pairs']
+                regressor_names = plan['regressor_names']
+                columns = plan['columns']
 
-            # calculate multiple regression RSA
-            beta_map, t_map, p_map, dof = perform_multiple_regression_rsa(
-                meta_similarity_map, design_matrix, voxel_mask,
-                target_index=regressor_names.index(rsa_model),
-                standardize=standardize,
-            )
+                # filter the loaded stack down to this model's pairs, in this
+                # model's order; when the target defines the whole union in the
+                # same order -- the usual case -- no copy is made
+                if np.array_equal(columns, identity_columns):
+                    model_similarity_map = meta_similarity_map
+                else:
+                    model_similarity_map = meta_similarity_map[..., columns]
+
+                # calculate multiple regression RSA
+                beta_map, t_map, p_map, dof = perform_multiple_regression_rsa(
+                    model_similarity_map, plan['design_matrix'], voxel_mask,
+                    target_index=regressor_names.index(rsa_model),
+                    standardize=standardize,
+                )
+                if model_similarity_map is not meta_similarity_map:
+                    del model_similarity_map
+
+                # save beta map output to
+                # check if the directory exists, if not, create it
+                output_dir = plan['output_dir']
+                os.makedirs(output_dir, exist_ok=True)
+                # save the beta map as a nifti file
+                beta_map_img = nib.Nifti1Image(beta_map.astype(np.float32), affine=ref_affine)
+                nib.save(beta_map_img, plan['beta_map_path'])
+                nib.save(nib.Nifti1Image(t_map.astype(np.float32), affine=ref_affine), plan['t_map_path'])
+                nib.save(nib.Nifti1Image(p_map.astype(np.float32), affine=ref_affine), plan['p_map_path'])
+                # the controls are rebuilt per run, so record which matrices this fit
+                # actually used -- the file names alone do not say
+                with open(plan['sidecar_path'], 'w') as f:
+                    json.dump({
+                        'regression_model': regression_model,
+                        'target_model': rsa_model,
+                        'regressors': regressor_names,
+                        'regressor_files': {
+                            name: os.path.relpath(path, datafolder)
+                            for name, path in plan['regressor_paths'].items()
+                        },
+                        'n_pairs': len(pairs),
+                        'dof': int(dof),
+                        'standardize': bool(standardize),
+                        'dis_method': dis_method,
+                        'mah_fold': mah_fold,
+                        'radius': radius,
+                        'specie': specie,
+                        'sub_N': int(sub_N),
+                        'session': session,
+                        'run_N': int(run_N),
+                        'created': datetime.datetime.now().isoformat(timespec='seconds'),
+                    }, f, indent=2)
+                print(f"Saved regression beta map: {plan['beta_map_path']} (dof={dof})")
+
             del meta_similarity_map
-
-            # save beta map output to
-            # check if the directory exists, if not, create it
-            os.makedirs(output_dir, exist_ok=True)
-            # save the beta map as a nifti file
-            beta_map_img = nib.Nifti1Image(beta_map.astype(np.float32), affine=ref_affine)
-            nib.save(beta_map_img, beta_map_path)
-            nib.save(nib.Nifti1Image(t_map.astype(np.float32), affine=ref_affine), t_map_path)
-            nib.save(nib.Nifti1Image(p_map.astype(np.float32), affine=ref_affine), p_map_path)
-            # the controls are rebuilt per run, so record which matrices this fit
-            # actually used -- the file names alone do not say
-            with open(sidecar_path, 'w') as f:
-                json.dump({
-                    'regression_model': regression_model,
-                    'target_model': rsa_model,
-                    'regressors': regressor_names,
-                    'regressor_files': {
-                        name: os.path.relpath(path, datafolder)
-                        for name, path in regressor_paths.items()
-                    },
-                    'n_pairs': len(pairs),
-                    'dof': int(dof),
-                    'standardize': bool(standardize),
-                    'dis_method': dis_method,
-                    'mah_fold': mah_fold,
-                    'radius': radius,
-                    'specie': specie,
-                    'sub_N': int(sub_N),
-                    'session': session,
-                    'run_N': int(run_N),
-                    'created': datetime.datetime.now().isoformat(timespec='seconds'),
-                }, f, indent=2)
-            print(f"Saved regression beta map: {beta_map_path} (dof={dof})")
 
     return True
             
@@ -3697,7 +3860,7 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, speci
     '''
     Loads the meta similarity map for given parameters.
     
-    rsa_model_path: path to the RSA model excel file, used to determine the number of pairs and their names
+    rsa_model_path: path to the RSA model excel file, used to determine the number of pairs and their names; may be None when `pairs` is given
     ref_img: reference image to get the shape of the meta similarity map
     datafolder, dataset, specie, sub_N, session, run_N: parameters to locate the pairwise similarity maps
     config_path: path to the configuration file
@@ -3716,13 +3879,18 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, speci
     # get shape from ref_img
     X, Y, Z = ref_img.shape
     
-    rsa_model_dict = read_model_dict(rsa_model_path)
+    # An explicit pair list is authoritative -- step 15 stacks the union of
+    # several models' pairs, which no single model file describes, and passes
+    # rsa_model_path=None.
     if pairs is None:
+        rsa_model_dict = read_model_dict(rsa_model_path)
         pairs = rsa_model_dict['pairs']
-    
+
     n_pairs = len(pairs)
     meta_similarity_map = np.empty((X, Y, Z, n_pairs), dtype=np.float32)
     pair_names = [] # to store pair names
+    # get model name without extension and path
+    model_name = os.path.splitext(os.path.basename(rsa_model_path))[0]
 
     k = 0 # index for meta_similarity_map
     for cat1, cat2 in pairs:
@@ -3739,7 +3907,7 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, speci
 
         if verbose:
             pair_name = f"{cat1}_{cat2}"
-            print(f"Loaded pair {pair_name} into index {k}")
+            print(f"Model {model_name}, loaded pair {pair_name} into index {k} / {n_pairs}")
             pair_names.append(pair_name) # for sanity check
         meta_similarity_map[..., k] = map
         k += 1

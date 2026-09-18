@@ -1,3 +1,5 @@
+import hashlib
+
 from .jobs import DEFAULT_PRIORITY, normalize_priority
 
 STEP_LABELS = {
@@ -52,7 +54,34 @@ def step_token(step):
     return f"step{float(step):04.1f}"
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None):
+def rsa_models_token(rsa_models_list):
+    """Render a whole list of RSA models as one job-id token.
+
+    Step 15 fits many target models inside a single job -- the run's pairwise
+    maps are loaded once and every target reuses them -- so the id cannot name
+    them all. The token is the model count plus a digest of the sorted names:
+    the same set in any order gives the same token (so a re-schedule is still
+    recognised as a duplicate), and any other set gives a different one (so two
+    batteries never collide in the queue). The names themselves live in the job
+    JSON's ``rsa_models_list``.
+    """
+    names = sorted(set(rsa_models_list))
+    digest = hashlib.sha1('|'.join(names).encode('utf-8')).hexdigest()[:8]
+    return f"list{len(names)}-{digest}"
+
+
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None, rsa_models_list=None):
+    # A batch job (several target models, one shared load of the pairwise maps)
+    # takes a digest token in the rsa_model slot instead of a model name.
+    if rsa_models_list:
+        if rsa_model is not None:
+            raise ValueError(
+                "Pass either rsa_model or rsa_models_list, not both: the id can "
+                "only name one target set."
+            )
+        rsa_model = rsa_models_token(rsa_models_list)
+    elif rsa_model is None:
+        raise ValueError("A job id needs an rsa_model or a non-empty rsa_models_list.")
     job_id = (
         f"{dataset}__{model}__{rsa_model}__{specie}"
         f"__{step_token(step)}__zt{z_threshold}__r{reps}__rg{reps_group}"
@@ -172,7 +201,8 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                      radius=None, mask_type=None,
                      replace_file=False, replace_rnd_files=False,
                      verbose=True, priority=DEFAULT_PRIORITY,
-                     min_percentage_available=1.0, regression_model=None):
+                     min_percentage_available=1.0, regression_model=None,
+                     rsa_models_list=None):
     """Build a single, *independent* job dict (no dependencies, status=pending).
 
     Used by the dashboard's "schedule missing" / per-map buttons: the user has
@@ -189,12 +219,22 @@ def build_single_job(dataset, model, rsa_model, specie, step,
 
     ``priority`` (1 = first, 3 = last, the default) decides the order
     ``run_jobs.py`` claims this job relative to the rest of the pending queue.
+
+    ``rsa_models_list`` builds a *batch* job instead: pass ``rsa_model=None``
+    and a list of target models, and the one job runs all of them (step 15 loads
+    each run's pairwise maps once and fits every target against that stack, so
+    splitting them into one job per model would re-read the same maps N times).
+    ``run_jobs.build_command`` forwards the list as ``--rsa_models_list``.
     """
+    rsa_models_list = list(rsa_models_list) if rsa_models_list else None
     job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold,
                          reps, reps_group, rsa_method, dis_method, mah_fold,
                          participant=participant,
-                         regression_model=regression_model)
+                         regression_model=regression_model,
+                         rsa_models_list=rsa_models_list)
     label = STEP_LABELS.get(step, f"Step {step}")
+    if rsa_models_list is not None:
+        label = f"{label} ({len(rsa_models_list)} models)"
     if participant is not None:
         label = f"{label} (sub-{int(participant):02d})"
     return {
@@ -202,6 +242,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
         "dataset": dataset,
         "model": model,
         "rsa_model": rsa_model,
+        "rsa_models_list": rsa_models_list,
         "regression_model": regression_model,
         "specie": specie,
         "step": step,

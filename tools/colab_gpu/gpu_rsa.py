@@ -785,6 +785,29 @@ def build_model_vectors(M, reps, seed):
     return np.stack(vecs, axis=0)                        # (reps+1, 45)
 
 
+def correlation_model_vectors(csv_path, categories, reps, seed):
+    """Model vectors and matching columns of the cached full-stimulus RDM.
+
+    EmoB models can cover a subset of the package's stimuli. Select those
+    pairs before comparison and permute only that subset's labels, matching
+    the CPU pipeline. Padding with NaNs before permutation would incorrectly
+    move the model onto stimuli it never included.
+    """
+    import pandas as pd
+    labels = list(pd.read_csv(csv_path, nrows=0).columns[1:])
+    unknown = sorted(set(labels) - set(categories))
+    if unknown:
+        raise ValueError(f"Model {csv_path} contains stimuli absent from the package: {unknown}")
+    selected = [c for c in categories if c in labels]
+    if len(selected) < 2:
+        raise ValueError(f"Model {csv_path} needs at least two package stimuli.")
+    M = read_model_matrix(csv_path, selected)
+    iu, ju = np.triu_indices(len(categories), 1)
+    included = np.isin(categories, selected)
+    columns = np.flatnonzero(included[iu] & included[ju])
+    return build_model_vectors(M, reps, seed), columns
+
+
 def _kendall_taua(data, model, vox_batch=0):
     """Kendall tau-a between every data row and every model row, NaN-aware.
 
@@ -969,8 +992,8 @@ def run_model_correlation(pkg_root, manifest, rsa_model, meta=None, device=None,
     run_dependent = rsa_model in set(manifest.get("run_dependent_models") or [])
     model_t = None
     if not run_dependent:
-        M = read_model_matrix(model_csv_path(data_root, manifest, rsa_model), categories)
-        model_vecs = build_model_vectors(M, reps, seed)                # (reps+1, 780)
+        model_vecs, pair_columns = correlation_model_vectors(
+            model_csv_path(data_root, manifest, rsa_model), categories, reps, seed)
         model_t = torch.as_tensor(model_vecs, dtype=DTYPE, device=device)
 
     prefix = f"{mask_type}-" if mask_type else ""
@@ -980,11 +1003,15 @@ def run_model_correlation(pkg_root, manifest, rsa_model, meta=None, device=None,
         session = f"{int(run['session']):02d}"
         run_N = int(run["run_N"])
         if run_dependent:
-            M = read_model_matrix(
-                model_csv_path(data_root, manifest, rsa_model, run_N), categories)
-            model_t = torch.as_tensor(build_model_vectors(M, reps, seed),
-                                      dtype=DTYPE, device=device)
-        data_t = run["data"].to(device)                               # (n_vox, 780)
+            model_vecs, pair_columns = correlation_model_vectors(
+                model_csv_path(data_root, manifest, rsa_model, run_N),
+                categories, reps, seed)
+            model_t = torch.as_tensor(model_vecs, dtype=DTYPE, device=device)
+        data_t = run["data"]
+        if len(pair_columns) != data_t.shape[1]:
+            columns_t = torch.as_tensor(pair_columns, device=data_t.device)
+            data_t = data_t.index_select(1, columns_t)
+        data_t = data_t.to(device)
         sim = compute_similarity(data_t, model_t, rsa_method,
                                  vox_batch=vox_batch).cpu().numpy()    # (n_vox, reps+1)
         run_folder = f"ses-{session}_task-{task}_run-{run_N:02d}"
