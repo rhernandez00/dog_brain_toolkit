@@ -1,4 +1,115 @@
-# colab_gpu/ — GPU acceleration for RSA steps 1, 2, 4 and 3, 5, 6, 7, 8
+# colab_gpu/ — GPU acceleration for RSA and regression
+
+## Multiple regression: steps 15, 15.3, 15.4, 15.5
+
+Open **`colab_rsa_regression.ipynb`** with a GPU runtime. The default is EmoB
+humans (`SPECIE = 'H'`); change it to `'D'` for dogs. `MODELS = None` selects
+every target included in the support ZIP, excluding the controls. The EmoB
+support package uses `visual_3`: `visual1`, `visual2`, and `flow`, all resolved
+against the current run. The default inputs are the existing Drive folders
+`rsa_colab/pkg_EmoB` and `rsa_colab/results_EmoB`.
+
+These steps regress neural pairwise maps on a target RDM plus real control RDMs.
+They do **not** read RSA z-maps. Step 15.4 jointly permutes the target's category
+labels; neural maps and controls stay fixed. Steps 15.3/15.5 average standardized
+beta maps, with equal weight per participant/session/run, matching the CPU steps.
+Group std maps describe spread across input runs, not the spread of the null.
+
+### Reuse the existing Drive packages
+
+The old packages already contain the imaging data and model CSVs. Build a small
+support ZIP with the control list, masks, selected model matrices and GPU code:
+
+```powershell
+& 'C:\ProgramData\anaconda3\python.exe' tools\create_regression_package.py `
+  --dataset EmoB --specie H D --regression_model visual_3 `
+  --from_packages 'G:\My Drive\rsa_colab\pkg_EmoB' `
+  --out tools\colab_gpu\packages\regression_EmoB
+```
+
+Copy `regression_support_EmoB_visual_3.zip` and `colab_rsa_regression.ipynb`
+from the output directory to `G:\My Drive\rsa_colab`. No imaging ZIPs need to
+be copied again. Open the notebook in Colab and run its cells. Its preflight
+requires every configured participant package; `PARTICIPANTS` can explicitly
+select a smaller analysis. A different regression control set needs its own
+support ZIP. `--controls NAME ...` explicitly supplies the control list when
+the workstation data share is unavailable; normally it is read from
+`rsa_models/regression_models/{regression_model}.csv`.
+
+### Package another dataset
+
+```powershell
+& 'C:\ProgramData\anaconda3\python.exe' tools\create_regression_package.py `
+  --dataset EmoC --specie H D --model basic-block `
+  --regression_model visual_3 --models YOUR_TARGET_MODEL `
+  --out tools\colab_gpu\packages\regression_EmoC
+```
+
+Replace `YOUR_TARGET_MODEL` with one or more dataset model names. Without
+`--models`, new packages use the existing model catalogue for the selected
+distance method and exclude controls. The script delegates aligned-beta
+packaging and step-1 freshness checks to `create_package.py`, adds every target
+and control CSV needed by the selected runs, and emits the support ZIP and
+notebook. Upload the whole output directory. Set `PACKAGES_DIR` to its
+`packages/` subfolder, `SUPPORT_ZIP` to the uploaded support ZIP, and change
+`DATASET`, `MODEL`, and output paths in the notebook. `STEP1_RESULTS_DIR = None`
+uses bundled step-1 maps or recomputes them from the aligned betas on the GPU.
+Supported inputs are the existing correlation packages and Mahalanobis
+`stim-wise` packages; controls must cover the target categories in either case.
+
+### Acceleration, memory and restarting
+
+`gpu_regression.py` batches voxel/permutation OLS matrix products on CUDA in
+float64. Small design inverses and t-distribution CDFs run on the CPU. One run's
+neural data is reused across all selected targets and permutations. NaN row
+patterns, standardization, degrees of freedom, and unfitted-voxel defaults
+follow `rsa_utils.perform_multiple_regression_rsa`. The permutation seed is
+stable per participant/session/run/target/index, independent of batch size.
+
+Group steps decode each beta NIfTI once into a local disk-backed masked array,
+then use bounded GPU chunks for means/stds. `VOXEL_BATCH`, `PERMUTATION_BATCH`,
+and `GROUP_BATCH` bound GPU allocations; no full group null ensemble is held
+on the GPU. Local disk must still accommodate one target's participant beta
+maps, its masked array and group outputs. Float64 throughput and Drive/NIfTI
+I/O determine the actual speedup; CPU numerical validation is not a GPU
+performance benchmark.
+
+Version **1.1.0** removes repeated CPU sorts of every voxel's finite-row pattern.
+Ordinary finite data takes a direct path; exceptional patterns are packed and
+grouped once per target, then reused across permutation batches. Float64 and
+the statistical model are unchanged. Timestamped messages report copying,
+extraction, NIfTI loading, target fitting, map writing and group processing.
+
+The output directory receives a checkpoint after each completed **target/run**
+under `run_checkpoints/`, followed by the usual complete participant/target ZIP
+and group ZIP. Finished target/runs survive a disconnect even in the middle of
+a participant; only unfinished target/runs are recomputed. Use the top-level
+completed result ZIPs when merging back to the workstation. Each archive is copied through a `.part`
+file and renamed on completion. Configuration/input signatures prevent reuse
+after changed seeds, repetition counts, packages or code. Keep the original
+input and support packages in place for later group-only runs. `FORCE = True`
+recomputes the requested steps. All expected run maps are required for group
+means. The workflow is intended for one notebook writer per output directory.
+
+Outputs use the same `RSA_regression` / `RSA_regression_rnd` trees and filenames
+as `searchlight.py`, and merge with the existing tool:
+
+```powershell
+& 'C:\ProgramData\anaconda3\python.exe' tools\unpack_results.py `
+  'G:\My Drive\rsa_colab\results_regression_EmoB'
+```
+
+Numerical and end-to-end ZIP tests:
+
+```powershell
+& 'C:\ProgramData\anaconda3\python.exe' -B -m unittest discover -s tests -p test_colab_regression.py -v
+```
+
+The CUDA comparison runs when a CUDA-enabled PyTorch environment is available;
+otherwise it is explicitly skipped. The other checks run the same Torch kernels
+on CPU and compare every beta/t/p and group mean/std against NumPy/CPU results.
+
+## Existing participant and group workflows
 
 Two halves that chain:
 

@@ -93,6 +93,10 @@ upstream outputs already exist.
 | **11** | Cross-participant similarity | `calculate_cross_participant_similarity` | Out of scheduler scope. |
 | **12** | DSM extraction | `calculate_similarity_across_all_pairs` | Per significant cluster; uses `roi_database.csv`. |
 | **13** | Movement (`.par`) parameters | `calculate_movement_parameters` + `preprocess_functions.fwd` | Runs mcflirt to derive framewise displacement. |
+| **15** | Multiple regression RSA | `calculate_multiple_regression_rsa` | Target model coefficient controlling for `--regression_model`; needs step 1. |
+| **15.3** | Mean regression beta maps | `calculate_group_regression_maps` | Mean/std of step-15 beta maps. |
+| **15.4** | Permuted regression RSA | `calculate_multiple_regression_rsa(rnd=True)` | `--reps` target-model permutations; neural data and controls stay fixed. |
+| **15.5** | Group regression permutations | `calculate_group_regression_maps(rnd=True)` | `--reps_group` mean/std maps sampled from step 15.4. |
 
 ### Dependency graph (steps 0–10)
 
@@ -111,6 +115,67 @@ upstream outputs already exist.
 > **Note on step 7.5:** Passing `--steps_to_run 75` triggers the "step 7.5" block
 > (real-data z-map only). This is a naming quirk — `75` is the literal integer the
 > code checks for.
+
+### Multiple regression RSA (steps 15–15.5)
+
+```bash
+python searchlight.py --dataset EmoC --model basic-block --specie H \
+    --dis_method correlation --regression_model visual_3 \
+    --rsa_models_list YOUR_TARGET_MODEL \
+    --steps_to_run 15 15.3 15.4 15.5 --reps 100 --reps_group 1000
+```
+
+Replace `YOUR_TARGET_MODEL` with an RSA model name, or pass several names.
+`--rsa_model` also works for a single target. The control names come from
+`rsa_models/regression_models/{regression_model}.csv`; their real model matrices
+are resolved separately for each run. All four steps require `--regression_model`.
+Steps can be run individually after their inputs exist: `1 → 15 → 15.3` and
+`1 → 15.4 → 15.5`.
+
+Step **15.3 averages standardized beta maps**, because these describe the target
+model's effect after controlling for the other models. A t-map also depends on
+the uncertainty of the individual fit, so an average t-map is not the group
+effect estimate. Passing coefficient estimates into higher-level analysis is
+also the convention described in the [FSL group-analysis guide](https://fsl.fmrib.ox.ac.uk/fsl/docs/task_fmri/feat/user_guide.html).
+As in step 3, each available participant/session/run map has equal weight;
+participants with more runs contribute more to the mean. The std map describes
+the spread across these input maps, not a standard error or a group significance
+test. Runs are not first averaged within participants.
+
+Step **15.4** jointly permutes the target RDM's category labels (the same
+row/column relabeling used by step 4), then refits the same voxelwise regression
+as step 15. The neural pairwise maps and every control-model vector stay fixed.
+It does not consume the RSA z-maps from steps 7/7.6. Each run produces `--reps`
+beta/t/p maps plus JSON receipts recording the permuted target vectors.
+Pairwise maps are loaded once per run and shared by all targets and permutations.
+
+Step **15.5** generates `--reps_group` group draws. For each draw it independently
+selects one available permutation (index below `--reps`) per participant/session/
+run, then averages the selected beta maps with the same weighting as 15.3.
+It preserves separate group draws for a subsequent null distribution, rather
+than collapsing every permutation into a single mean. Each std map again
+describes variation across the selected run maps.
+
+Outputs, relative to `{datafolder}/{dataset}/results/`:
+
+```text
+RSA_regression/{model}/{regression_model}/{target}/
+  {specie}-sub-NN/ses-NN_task-{task}_run-NN/r-{radius}_{dis_method}_beta_map.nii.gz
+  mean/{mask_type}-{specie}-r-{radius}_{dis_method}_beta_mean.nii.gz
+  mean/{mask_type}-{specie}-r-{radius}_{dis_method}_beta_std.nii.gz
+RSA_regression_rnd/{model}/{regression_model}/{target}/
+  {specie}-sub-NN/ses-NN_task-{task}_run-NN/r-{radius}_{dis_method}_beta_map_0000.nii.gz
+  mean/{mask_type}-{specie}-r-{radius}_{dis_method}_beta_mean_00000.nii.gz
+  mean/{mask_type}-{specie}-r-{radius}_{dis_method}_beta_std_00000.nii.gz
+```
+
+Per-run fits also have `_t_map`, `_p_map`, and `_regression.json` files with the
+same permutation suffix, if applicable. Group mean JSON receipts list the exact
+input maps and available fraction. Group steps honor `--min_percentage_available`
+and validate image grids against the mask. They write completion markers only
+when all requested targets have sufficient inputs. `--replace_file` recomputes
+observed outputs; `--replace_rnd_files` recomputes permutation outputs. Use the
+respective replacement flag when source maps have been changed in place.
 
 ---
 

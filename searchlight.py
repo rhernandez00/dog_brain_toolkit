@@ -177,6 +177,16 @@ std across maps. Save as nifti.
     Writes _beta_map / _t_map / _p_map plus a _regression.json sidecar naming the exact
     model matrices the fit used, under results/RSA_regression/{model}/{regression_model}/
     {rsa_model}/. Needs --regression_model and step 1 for every pair of the target models.
+15.3: Average step-15 standardized beta maps (not t/p maps), with the same equal
+    participant/session/run-map weighting as step 3. Writes beta mean/std maps
+    under RSA_regression/{model}/{regression_model}/{rsa_model}/mean/.
+15.4: Repeat step 15 with permuted target model category labels, keeping the
+    neural pairwise maps and real control models fixed. Step 15 uses model RDMs,
+    not RSA z-maps. --reps fits per run, saved under RSA_regression_rnd/;
+    --replace_rnd_files overwrites existing permutation fits.
+15.5: Make --reps_group group beta mean/std maps under RSA_regression_rnd/,
+    sampling one of the --reps step-15.4 fits per run for each group draw.
+    Uses the same weighting as 15.3 and the sampling scheme of step 5.
 
 # Keep adding numbers for steps, reorganize later for better structure
 
@@ -192,7 +202,7 @@ Input arguments:
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
 --rsa_class: RSA class to use, used when comparing based on class pairs (e.g. all dog-dog pairs, all human-human pairs, all dog-human pairs)
 --regression_model: Regression model to use for multiple regression RSA (default: None)
---rsa_models_list: Target RSA models for step 15, space separated; defaults to [--rsa_model]
+--rsa_models_list: Target RSA models for steps 15/15.3/15.4/15.5, space separated; defaults to [--rsa_model]
 --specie: 'D' for Dog, 'H' for Human (default: 'H')
 --mask_type: Type of brain mask to use (default: 'b_GreyMatter2mm')
 --radius: Radius for searchlight (default: 3)
@@ -249,7 +259,7 @@ def parse_arguments():
     parser.add_argument('--regression_model', type=str, default=None,
                         help='Regression model to use for multiple regression RSA')
     parser.add_argument('--rsa_models_list', type=str, nargs='+', default=None,
-                        help='Target RSA models for step 15 (space separated); '
+                        help='Target RSA models for steps 15/15.3/15.4/15.5 (space separated); '
                              'defaults to the single --rsa_model')
     parser.add_argument('--specie', type=str, default='H',
                         help="'D' for Dog, 'H' for Human")
@@ -1005,10 +1015,10 @@ def main():
                     #                         dis_method, replace_file=False, min_percentage_available=1.0,
                     #                         verbose=False)
                     print("### Done computing group model similarity map ###")
-        if step == 15: # Calculate multiple regression RSA per participant, using multiple control models (regression_model) and one or more target models (rsa_models_list)
-            print("### Step 15: Calculating multiple regression RSA per participant ###")
+        if step in (15, 15.4):
+            print(f"### Step {step:g}: Calculating {'permuted ' if step == 15.4 else ''}multiple regression RSA per participant ###")
             if not rsa_models_list:
-                raise ValueError("Step 15 needs --rsa_models_list (or --rsa_model) to name the target model(s).")
+                raise ValueError(f"Step {step:g} needs --rsa_models_list (or --rsa_model) to name the target model(s).")
             print(f"Target models: {rsa_models_list}")
             # build session_and_run_all_dict
             session_and_run_all_dict = {}
@@ -1023,10 +1033,31 @@ def main():
             result = rsa_utils.calculate_multiple_regression_rsa(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, regression_model=regression_model,
                                                 participants=participants, specie=specie, mask=mask, model=model, radius=radius,
                                                 dis_method=dis_method, rsa_models_list=rsa_models_list, task=task, mah_fold=mah_fold,
-                                                model_dict=model_dict, replace_file=replace_file, verbose=verbose)
+                                                model_dict=model_dict, replace_file=replace_file, verbose=verbose,
+                                                rnd=step == 15.4, reps=reps, replace_rnd_files=replace_rnd_files)
             print("### Done computing multiple regression RSA ###")
             if result:
-                _write_marker(job_marker_dir, 15)
+                _write_marker(job_marker_dir, 15 if step == 15 else 15.4)
+        if step in (15.3, 15.5):
+            print(f"### Step {step:g}: Computing {'permuted ' if step == 15.5 else ''}group regression beta maps ###")
+            if not regression_model or not rsa_models_list:
+                raise ValueError(f"Step {step:g} needs --regression_model and --rsa_models_list (or --rsa_model).")
+            session_and_run_all_dict = {
+                sub_N: rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                for sub_N in participants
+            }
+            result = rsa_utils.calculate_group_regression_maps(
+                datafolder=datafolder, dataset=dataset,
+                session_and_run_all_dict=session_and_run_all_dict,
+                regression_model=regression_model, specie=specie, model=model,
+                task=task, radius=radius, dis_method=dis_method,
+                rsa_models_list=rsa_models_list, mask=mask, mask_type=mask_type,
+                min_percentage_available=min_percentage_available,
+                replace_file=replace_rnd_files if step == 15.5 else replace_file,
+                rnd=step == 15.5, reps=reps, reps_group=reps_group, verbose=verbose,
+            )
+            if result:
+                _write_marker(job_marker_dir, step)
     print("### All steps completed! ###")
         
 

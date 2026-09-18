@@ -1,6 +1,7 @@
 import utils
 import datetime
 import glob
+import hashlib
 import json
 import os
 import subprocess
@@ -979,7 +980,118 @@ def check_regression_models(datafolder, dataset, regression_model, rsa_models_li
     return usable, problems
 
 
-def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_dict, regression_model, participants, specie, mask, model, radius, dis_method, rsa_models_list, task=None, mah_fold='stim-wise', model_dict=None, standardize=True, replace_file=False, verbose=True):
+def _regression_map_paths(output_dir, radius, dis_method, rnd_index=None):
+    """Shared filenames for observed and permuted per-run regression outputs."""
+    stem = f"r-{radius}_{dis_method}"
+    suffix = '' if rnd_index is None else f"_{rnd_index:04d}"
+    paths = {
+        f'{stat}_map_path': os.path.join(output_dir, f"{stem}_{stat}_map{suffix}.nii.gz")
+        for stat in ('beta', 't', 'p')
+    }
+    paths['sidecar_path'] = os.path.join(output_dir, f"{stem}_regression{suffix}.json")
+    return paths
+
+
+def calculate_group_regression_maps(
+        datafolder, dataset, session_and_run_all_dict, regression_model,
+        specie, model, task, radius, dis_method, rsa_models_list, mask,
+        mask_type=None, min_percentage_available=1.0, replace_file=False,
+        rnd=False, reps=100, reps_group=1000, verbose=False):
+    """Steps 15.3/15.5: mean standardized target betas, never mean t/p maps.
+
+    Like step 3, each available participant/session/run map has equal weight.
+    Thus participants with more runs contribute more maps. Step 15.5 follows
+    step 5: draw one of the first ``reps`` permutations independently per run,
+    then average those beta maps, repeated ``reps_group`` times. Its std maps
+    describe spread across input runs, not spread across the null ensemble.
+    Both steps record their exact inputs and check coverage and voxel grids.
+    """
+    if not regression_model or not rsa_models_list:
+        raise ValueError('Regression means need regression_model and target model(s).')
+    if not 0 < min_percentage_available <= 1:
+        raise ValueError('min_percentage_available must be in (0, 1].')
+    if rnd and (reps < 1 or reps_group < 1):
+        raise ValueError('reps and reps_group must be positive.')
+    if isinstance(rsa_models_list, str):
+        rsa_models_list = [rsa_models_list]
+    units = [(sub, entry) for sub, entries in session_and_run_all_dict.items()
+             for entry in entries]
+    if not units:
+        raise ValueError('No participant/session/run maps expected for regression means.')
+    root = os.path.join(datafolder, dataset, 'results',
+                        'RSA_regression_rnd' if rnd else 'RSA_regression',
+                        model, regression_model)
+    mask_image = nib.load(mask)
+    mask_data = mask_image.get_fdata() > 0
+    completed = True
+    for rsa_model in rsa_models_list:
+        # Scan once, outside the potentially long group-permutation loop.
+        available = []
+        for sub, entry in units:
+            folder = os.path.join(
+                root, rsa_model, f'{specie}-sub-{sub:02d}',
+                f"ses-{int(entry['session']):02d}_task-{task}_run-{int(entry['run_N']):02d}",
+            )
+            if rnd:
+                filenames = set(os.listdir(folder)) if os.path.isdir(folder) else set()
+                candidates = [
+                    _regression_map_paths(folder, radius, dis_method, i)['beta_map_path']
+                    for i in range(reps)
+                ]
+                candidates = [p for p in candidates if os.path.basename(p) in filenames]
+            else:
+                path = _regression_map_paths(folder, radius, dis_method)['beta_map_path']
+                candidates = [path] if os.path.isfile(path) else []
+            if candidates:
+                available.append(candidates)
+        fraction = len(available) / len(units)
+        if not available or fraction < min_percentage_available:
+            print(f'{rsa_model}: regression maps available for {len(available)}/{len(units)} '
+                  f'runs; need {min_percentage_available:.0%}. Skipping.')
+            completed = False
+            continue
+
+        prefix = f'{mask_type}-' if mask_type else ''
+        stem = f'{prefix}{specie}-r-{radius}_{dis_method}_beta'
+        output_dir = os.path.join(root, rsa_model, 'mean')
+        pool_digest = hashlib.sha256(json.dumps(available).encode('utf-8')).hexdigest()
+        for group_index in (range(reps_group) if rnd else [None]):
+            suffix = '' if group_index is None else f'_{group_index:05d}'
+            mean_path = os.path.join(output_dir, f'{stem}_mean{suffix}.nii.gz')
+            std_path = os.path.join(output_dir, f'{stem}_std{suffix}.nii.gz')
+            log_path = mean_path.replace('.nii.gz', '.json')
+            # The pool is part of the cache signature: adding missing runs or
+            # permutations must invalidate a previously partial group mean.
+            signature = dict(input_pools_sha256=pool_digest, expected_runs=len(units),
+                             mask=os.path.abspath(mask))
+            if not replace_file and all(os.path.isfile(p) for p in
+                                        (mean_path, std_path, log_path)):
+                try:
+                    with open(log_path, encoding='utf-8') as handle:
+                        previous = json.load(handle)
+                    if previous.get('signature') == signature:
+                        continue
+                except (OSError, ValueError):
+                    pass
+            files = [random.choice(pool) if rnd else pool[0] for pool in available]
+            check_same_space(('regression mask', mask_image),
+                             [(os.path.basename(p), p) for p in files],
+                             context='group regression beta maps')
+            nifti_mean_stream(files, mean_path, std_path, mask_img=mask_data,
+                              verbose=verbose)
+            with open(log_path, 'w', encoding='utf-8') as handle:
+                json.dump(dict(
+                    signature=signature, file_list=files, perc_available=fraction,
+                    statistic='beta', weighting='equal participant/session/run maps',
+                    regression_model=regression_model, target_model=rsa_model,
+                    rnd=rnd, group_index=group_index,
+                    output_mean_file=mean_path, output_std_file=std_path,
+                ), handle, indent=2)
+            print(f'Saved regression beta mean: {mean_path}')
+    return completed
+
+
+def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_dict, regression_model, participants, specie, mask, model, radius, dis_method, rsa_models_list, task=None, mah_fold='stim-wise', model_dict=None, standardize=True, replace_file=False, verbose=True, rnd=False, reps=100, replace_rnd_files=False):
     '''
     Calculates multiple regression RSA for a given regression_model and one or
     more target models.
@@ -1029,8 +1141,15 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
     - standardize: bool, z-score the design columns and each voxel's response
     - replace_file: bool, whether to replace existing files
     - verbose: bool, whether to print verbose output
+    - rnd: bool, step 15.4: permute only the target RDM's category labels,
+      using the same shuffle as step 4; controls and neural maps stay fixed.
+      These are regressions of pairwise maps, not of the later RSA z-maps.
+    - reps: int, number of target permutations per participant/session/run
+    - replace_rnd_files: bool, overwrite permutation fits (independent of replace_file)
 
     '''
+    if rnd and reps < 1:
+        raise ValueError('reps must be positive for regression permutations.')
     if regression_model is None:
         raise ValueError(
             "Step 15 needs a regression model, e.g. --regression_model visual_3."
@@ -1076,7 +1195,8 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
             task = yaml.safe_load(f)['task']
 
     output_root = os.path.join(
-        datafolder, dataset, 'results', 'RSA_regression', model, regression_model
+        datafolder, dataset, 'results',
+        'RSA_regression_rnd' if rnd else 'RSA_regression', model, regression_model
     )
 
     # go over all participants and calculate multiple regression RSA for each participant, get participants from session_and_run_all_dict
@@ -1100,10 +1220,14 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
                     output_root, rsa_model, f"{specie}-sub-{sub_N:02d}",
                     f"ses-{session}_task-{task}_run-{int(run_N):02d}"
                 )
-                output_stem = f"r-{radius}_{dis_method}"
-                beta_map_path = os.path.join(output_dir, f"{output_stem}_beta_map.nii.gz")
-                if os.path.exists(beta_map_path) and not replace_file:
-                    print(f"Skipping existing regression map: {beta_map_path}")
+                overwrite = replace_rnd_files if rnd else replace_file
+                pending = []
+                for rnd_index in (range(reps) if rnd else [None]):
+                    paths = _regression_map_paths(output_dir, radius, dis_method, rnd_index)
+                    if overwrite or not all(os.path.isfile(p) for p in paths.values()):
+                        pending.append((rnd_index, paths))
+                if not pending:
+                    print(f"Skipping existing regression maps: {output_dir}")
                     continue
 
                 # The target model fixes the pair order its maps are stacked in, and
@@ -1142,10 +1266,7 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
                     'regressor_names': regressor_names,
                     'regressor_paths': regressor_paths,
                     'output_dir': output_dir,
-                    'beta_map_path': beta_map_path,
-                    't_map_path': os.path.join(output_dir, f"{output_stem}_t_map.nii.gz"),
-                    'p_map_path': os.path.join(output_dir, f"{output_stem}_p_map.nii.gz"),
-                    'sidecar_path': os.path.join(output_dir, f"{output_stem}_regression.json"),
+                    'pending': pending,
                 })
 
             if not planned_fits:
@@ -1192,48 +1313,50 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
                 else:
                     model_similarity_map = meta_similarity_map[..., columns]
 
-                # calculate multiple regression RSA
-                beta_map, t_map, p_map, dof = perform_multiple_regression_rsa(
-                    model_similarity_map, plan['design_matrix'], voxel_mask,
-                    target_index=regressor_names.index(rsa_model),
-                    standardize=standardize,
-                )
+                os.makedirs(plan['output_dir'], exist_ok=True)
+                for rnd_index, paths in plan['pending']:
+                    design = plan['design_matrix'].copy()
+                    target_index = regressor_names.index(rsa_model)
+                    if rnd:
+                        # shuffle_vector jointly relabels the RDM rows/columns;
+                        # it does not shuffle voxels or independent pair values.
+                        design[:, target_index] = shuffle_vector(design[:, target_index])
+                    beta_map, t_map, p_map, dof = perform_multiple_regression_rsa(
+                        model_similarity_map, design, voxel_mask,
+                        target_index=target_index, standardize=standardize,
+                    )
+                    for stat, data in [('beta', beta_map), ('t', t_map), ('p', p_map)]:
+                        nib.save(nib.Nifti1Image(data.astype(np.float32), ref_affine),
+                                 paths[f'{stat}_map_path'])
+                    # Write the receipt last so interrupted fits are retried.
+                    with open(paths['sidecar_path'], 'w') as f:
+                        json.dump({
+                            'regression_model': regression_model,
+                            'target_model': rsa_model,
+                            'regressors': regressor_names,
+                            'regressor_files': {
+                                name: os.path.relpath(path, datafolder)
+                                for name, path in plan['regressor_paths'].items()
+                            },
+                            'n_pairs': len(pairs),
+                            'dof': int(dof),
+                            'standardize': bool(standardize),
+                            'dis_method': dis_method,
+                            'mah_fold': mah_fold,
+                            'radius': radius,
+                            'specie': specie,
+                            'sub_N': int(sub_N),
+                            'session': session,
+                            'run_N': int(run_N),
+                            'rnd': rnd,
+                            'rnd_index': rnd_index,
+                            'permutation': 'target category labels only' if rnd else None,
+                            'target_vector': design[:, target_index].tolist() if rnd else None,
+                            'created': datetime.datetime.now().isoformat(timespec='seconds'),
+                        }, f, indent=2)
+                    print(f"Saved regression beta map: {paths['beta_map_path']} (dof={dof})")
                 if model_similarity_map is not meta_similarity_map:
                     del model_similarity_map
-
-                # save beta map output to
-                # check if the directory exists, if not, create it
-                output_dir = plan['output_dir']
-                os.makedirs(output_dir, exist_ok=True)
-                # save the beta map as a nifti file
-                beta_map_img = nib.Nifti1Image(beta_map.astype(np.float32), affine=ref_affine)
-                nib.save(beta_map_img, plan['beta_map_path'])
-                nib.save(nib.Nifti1Image(t_map.astype(np.float32), affine=ref_affine), plan['t_map_path'])
-                nib.save(nib.Nifti1Image(p_map.astype(np.float32), affine=ref_affine), plan['p_map_path'])
-                # the controls are rebuilt per run, so record which matrices this fit
-                # actually used -- the file names alone do not say
-                with open(plan['sidecar_path'], 'w') as f:
-                    json.dump({
-                        'regression_model': regression_model,
-                        'target_model': rsa_model,
-                        'regressors': regressor_names,
-                        'regressor_files': {
-                            name: os.path.relpath(path, datafolder)
-                            for name, path in plan['regressor_paths'].items()
-                        },
-                        'n_pairs': len(pairs),
-                        'dof': int(dof),
-                        'standardize': bool(standardize),
-                        'dis_method': dis_method,
-                        'mah_fold': mah_fold,
-                        'radius': radius,
-                        'specie': specie,
-                        'sub_N': int(sub_N),
-                        'session': session,
-                        'run_N': int(run_N),
-                        'created': datetime.datetime.now().isoformat(timespec='seconds'),
-                    }, f, indent=2)
-                print(f"Saved regression beta map: {plan['beta_map_path']} (dof={dof})")
 
             del meta_similarity_map
 
