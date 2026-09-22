@@ -81,7 +81,7 @@ COPY_CHUNK = 1 << 20  # 1 MiB -- keep the SMB pipe full on large niftis
 
 # What a result zip is allowed to put on the data disk. Everything the pipeline
 # itself writes for these steps, and nothing else.
-MERGEABLE_SUFFIXES = (".nii.gz", ".json", ".txt", ".npy")
+MERGEABLE_SUFFIXES = (".nii.gz", ".json", ".txt", ".npy", ".csv")
 
 # The listing is a dict lookup where the old code called os.path.exists, so it
 # has to reproduce that call's case rules: Windows resolves case-variant

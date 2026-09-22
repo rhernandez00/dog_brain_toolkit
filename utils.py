@@ -465,7 +465,7 @@ def generate_fsf(
             text,
         )
 
-    # Sections in the uploaded H_basic.fsf
+    # Both species templates use the same EV/contrast section layout.
     ev1_start = find_line(r"^# EV 1 title$")
     ortho_start = find_line(r"^# Orthogonalise EV 1 wrt EV 0")
     conmask_tail_start = find_line(r"^# Do contrast masking at all\?$")
@@ -494,23 +494,14 @@ def generate_fsf(
         # Update comments: EV 1 -> EV i
         block = re.sub(r"\bEV 1\b", f"EV {i}", block)
 
-        # Update fmri keys: evtitle1, shape1, custom1, etc.
-        keys = [
-            "evtitle",
-            "shape",
-            "convolve",
-            "convolve_phase",
-            "tempfilt_yn",
-            "deriv_yn",
-            "custom",
-        ]
-
-        for key in keys:
-            block = re.sub(
-                rf"(set fmri\({key})1(\))",
-                rf"\g<1>{i}\2",
-                block,
-            )
+        # Every setting in this block belongs to EV 1, including the dog
+        # Gamma HRF parameters (gammasigma1 and gammadelay1). Renumber all
+        # EV-local keys so species-specific settings are copied to every EV.
+        block = re.sub(
+            r"(set fmri\([A-Za-z_]+)1(\))",
+            lambda match: f"{match[1]}{i}{match[2]}",
+            block,
+        )
 
         # Update EV title
         block = re.sub(

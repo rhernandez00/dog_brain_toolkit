@@ -61,6 +61,77 @@ class RegressionPipelineTests(unittest.TestCase):
             # A huge t-map must never enter the beta average.
             self.save_map(folder / 'r-4_correlation_t_map.nii.gz', [1000, 1000])
 
+    def inference(self, step, **kwargs):
+        common = {k: v for k, v in self.common.items()
+                  if k not in ('session_and_run_all_dict', 'task')}
+        common.update(reps_group=3, z_threshold=1.5)
+        common.update(kwargs)
+        return rsa.calculate_regression_inference(step, **common)
+
+    def test_inference_end_to_end_and_empty_report(self):
+        for i, value in enumerate([-1., 0., 1.]):
+            self.save_map(self.group_path(rnd_index=i), [value, 999])
+        self.save_map(self.group_path(), [4., 999])
+        for step in ('15.6', '15.7', '15.8', '15.9', '15.10'):
+            self.assertTrue(self.inference(
+                step, label_dict=pd.DataFrame({'Number': [1], 'Region': ['Test region']}),
+                label_nii_data=np.ones((2, 1, 1)), label_affine=np.eye(4)))
+        folder = self.group_path().parent
+        z_path = folder / 'H-r-4_correlation_beta_z.nii.gz'
+        np.testing.assert_allclose(nib.load(z_path).get_fdata().ravel(),
+                                   [4 / np.std([-1, 0, 1]), 0], rtol=1e-6)
+        table = folder / 'H-r-4_correlation_beta_zt1.5_p0.05.csv'
+        report = pd.read_csv(table)
+        self.assertEqual(len(report), 1)
+        self.assertEqual(report.cluster_size_vox.iloc[0], 1)
+        self.assertEqual(report.region.iloc[0], 'Test region')
+        self.assertIn('subpeak_x_mm', report.columns)
+        # Recompute after changing the observed map: a valid empty report.
+        self.save_map(self.group_path(), [0, 999])
+        for step in ('15.7', '15.9', '15.10'):
+            self.assertTrue(self.inference(step))
+        self.assertTrue(pd.read_csv(table).empty)
+
+    def test_maximum_null_cluster_removes_real_cluster(self):
+        self.save_map(self.mask, [1, 1])
+        for i, value in enumerate([-1., 0., 1.]):
+            self.save_map(self.group_path(rnd_index=i), [value, value])
+        self.save_map(self.group_path(), [10, 10])
+        for step in ('15.6', '15.7', '15.8', '15.9'):
+            self.assertTrue(self.inference(step, z_threshold=0.5))
+        folder = self.group_path().parent
+        receipt = json.loads((folder / 'H-r-4_correlation_beta_zt0.5_p0.05_corrected.json').read_text())
+        self.assertEqual(receipt['minimal_cluster_size'], 3)
+        self.assertTrue(receipt['empty'])
+        # A stale permutation outside the manifest must not affect the null.
+        self.save_map(folder.parent.parent.parent.parent.parent /
+                      'RSA_regression_rnd/basic/controls/target/mean/'
+                      'H-r-4_correlation_beta_z_99999.nii.gz', [100, 100])
+        self.assertTrue(self.inference('15.8', z_threshold=0.5))
+        entry = np.load(folder.parent / 'dist/H-r-4_correlation_beta_zt0.5_dist.npy',
+                        allow_pickle=True).item()['z0.5']
+        self.assertEqual(entry['number_of_images'], 3)
+
+    def test_inference_zero_variance_missing_inputs_and_grid(self):
+        self.assertFalse(self.inference('15.6'))
+        for i in range(3):
+            self.save_map(self.group_path(rnd_index=i), [2, 0])
+        self.save_map(self.group_path(), [4, 0])
+        self.assertTrue(self.inference('15.6'))
+        self.assertTrue(self.inference('15.7'))
+        z_path = self.group_path().parent / 'H-r-4_correlation_beta_z.nii.gz'
+        self.assertFalse(np.any(nib.load(z_path).get_fdata()))
+        affine = np.eye(4)
+        affine[0, 3] = 5
+        self.save_map(self.group_path(), [4, 0], affine)
+        with self.assertRaises(rsa.SpaceMismatchError):
+            self.inference('15.7')
+
+    def test_report_step_keeps_its_label(self):
+        import searchlight
+        with patch('sys.argv', ['searchlight.py', '--steps_to_run', '15.6', '15.10']):
+            self.assertEqual(searchlight.parse_arguments().steps_to_run, [15.6, '15.10'])
+
     def test_observed_mean_std_mask_and_resume(self):
         self.write_betas()
         self.assertTrue(rsa.calculate_group_regression_maps(**self.common))

@@ -187,6 +187,11 @@ std across maps. Save as nifti.
 15.5: Make --reps_group group beta mean/std maps under RSA_regression_rnd/,
     sampling one of the --reps step-15.4 fits per run for each group draw.
     Uses the same weighting as 15.3 and the sampling scheme of step 5.
+15.6: Estimate voxelwise null mean/std across step-15.5 group beta means.
+15.7: Convert permuted and real (15.3) beta means to z-maps using 15.6.
+15.8: Estimate positive-tail cluster-size null distributions from 15.7.
+15.9: Apply maximum-cluster correction to the real regression z-map.
+15.10: Write a CSV report of surviving clusters, coordinates and atlas regions.
 
 # Keep adding numbers for steps, reorganize later for better structure
 
@@ -202,7 +207,7 @@ Input arguments:
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
 --rsa_class: RSA class to use, used when comparing based on class pairs (e.g. all dog-dog pairs, all human-human pairs, all dog-human pairs)
 --regression_model: Regression model to use for multiple regression RSA (default: None)
---rsa_models_list: Target RSA models for steps 15/15.3/15.4/15.5, space separated; defaults to [--rsa_model]
+--rsa_models_list: Target RSA models for steps 15 through 15.10, space separated; defaults to [--rsa_model]
 --specie: 'D' for Dog, 'H' for Human (default: 'H')
 --mask_type: Type of brain mask to use (default: 'b_GreyMatter2mm')
 --radius: Radius for searchlight (default: 3)
@@ -236,6 +241,11 @@ Input arguments:
 '''
 
 # parser function
+def _parse_step(value):
+    # A float would silently turn the report step 15.10 into 15.1.
+    return value if value == '15.10' else float(value)
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description='RSA Pipeline Execution')
     # parse dataset
@@ -244,7 +254,7 @@ def parse_arguments():
     # parse task
     parser.add_argument('--task', type=str, default=None,
                         help='Task to use, if not provided, will use the same as dataset')
-    parser.add_argument('--steps_to_run', type=float, nargs='+', default=[1,2,3,4,5,6,7,8,9,10,11.5],
+    parser.add_argument('--steps_to_run', type=_parse_step, nargs='+', default=[1,2,3,4,5,6,7,8,9,10,11.5],
                         help='List of steps to run')
     parser.add_argument('--model', type=str, default='basic',
                         help='GLM model to use')
@@ -259,7 +269,7 @@ def parse_arguments():
     parser.add_argument('--regression_model', type=str, default=None,
                         help='Regression model to use for multiple regression RSA')
     parser.add_argument('--rsa_models_list', type=str, nargs='+', default=None,
-                        help='Target RSA models for steps 15/15.3/15.4/15.5 (space separated); '
+                        help='Target RSA models for steps 15 through 15.10 (space separated); '
                              'defaults to the single --rsa_model')
     parser.add_argument('--specie', type=str, default='H',
                         help="'D' for Dog, 'H' for Human")
@@ -1055,6 +1065,22 @@ def main():
                 min_percentage_available=min_percentage_available,
                 replace_file=replace_rnd_files if step == 15.5 else replace_file,
                 rnd=step == 15.5, reps=reps, reps_group=reps_group, verbose=verbose,
+            )
+            if result:
+                _write_marker(job_marker_dir, step)
+        if step in (15.6, 15.7, 15.8, 15.9, '15.10'):
+            print(f"### Step {step}: Regression inference ###")
+            result = rsa_utils.calculate_regression_inference(
+                step=str(step), datafolder=datafolder, dataset=dataset,
+                specie=specie, model=model, regression_model=regression_model,
+                rsa_models_list=rsa_models_list, radius=radius,
+                dis_method=dis_method, mask=mask, mask_type=mask_type,
+                reps_group=reps_group, min_percentage_available=min_percentage_available,
+                z_threshold=z_threshold, cluster_threshold=cluster_threshold,
+                verbose=verbose, min_dist_mm=min_dist_mm,
+                label_dict=label_dict, label_nii_data=label_nii_data,
+                label_affine=label_affine, apply_coords_transform=apply_coords_transform,
+                atlas_file=atlas_file,
             )
             if result:
                 _write_marker(job_marker_dir, step)

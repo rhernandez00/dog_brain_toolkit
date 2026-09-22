@@ -1,5 +1,8 @@
 # colab_gpu/ — GPU acceleration for RSA and regression
 
+For a concise handoff of the active EmoB regression-Colab work, including its
+Drive paths and notebooks, see [`docs/colab_searchlight_handoff.md`](../../docs/colab_searchlight_handoff.md).
+
 ## Multiple regression: steps 15, 15.3, 15.4, 15.5
 
 Open **`colab_rsa_regression.ipynb`** with a GPU runtime. The default is EmoB
@@ -108,6 +111,53 @@ Numerical and end-to-end ZIP tests:
 The CUDA comparison runs when a CUDA-enabled PyTorch environment is available;
 otherwise it is explicitly skipped. The other checks run the same Torch kernels
 on CPU and compare every beta/t/p and group mean/std against NumPy/CPU results.
+
+## Regression continuation: steps 15.6--15.10
+
+Open `colab_rsa_regression_inference.ipynb` after the first regression notebook
+has written **`result_regression_group_<target>_<species>.zip`** files. These
+contain the real group beta mean (15.3) and the permuted group beta means (15.5).
+Participant ZIPs and `run_checkpoints/` alone are not sufficient. The default
+input is `rsa_colab/results_regression_EmoB`, with species `H`; `D` also works.
+The new output folder is `rsa_colab/results_regression_inference_EmoB`.
+
+Build the independent support ZIP, including the actual inference implementation
+and atlas assets, from the existing regression support package:
+
+```powershell
+& 'C:\ProgramData\anaconda3\python.exe' tools\create_regression_inference_package.py `
+  --regression_support 'G:\My Drive\rsa_colab\regression_support_EmoB_visual_3.zip' `
+  --out tools\colab_gpu\packages\regression_inference_EmoB
+```
+
+Copy `regression_inference_support_EmoB.zip` and
+`colab_rsa_regression_inference.ipynb` into the Drive `rsa_colab` folder. The
+first notebook's support package is unchanged. For another dataset, build from
+that dataset's regression support ZIP and edit the continuation notebook paths.
+
+The continuation runs all five steps in order. It calls the packaged
+`rsa_utils.calculate_regression_inference`, replacing only the streaming
+null mean/std reducer with an equivalent float64 Torch reducer (GPU by default,
+`DEVICE = 'cpu'` supported). Image I/O, z-map writing, connected components,
+correction and atlas reports use the CPU implementation. Defaults are
+`REPS_GROUP = 1000`, `Z_THRESHOLD = 3.1`, `CLUSTER_THRESHOLD = 0.05`; set these
+explicitly for the desired analysis. All requested permutation means are
+required. The report step is represented by the string `'15.10'`, not a float.
+
+One model is staged on local disk at a time. Progress reports identify the step
+and map reads. Completed models are saved in separate `result_regression_inference_*.zip`
+files and skipped on rerun when inputs/settings match. An interrupted model is
+recomputed. `MODELS = None` processes currently completed group ZIPs; set a list
+to require particular models, then rerun when new upstream group ZIPs arrive.
+
+Exports contain the new null distribution maps, z-maps, cluster distributions,
+corrected maps and CSV reports, including header-only reports for empty results.
+`WRITE_PERMUTATION_Z = True` preserves the full 15.7 output; setting it to `False`
+omits only permutation z-maps from the ZIP after 15.8 has consumed them locally.
+Original group mean maps are not duplicated. The updated `tools/unpack_results.py`
+accepts `.csv` as well as maps and statistical receipts. Receipts retain Colab
+paths; rerunning standalone downstream inference on the workstation should
+start at 15.6 to regenerate local receipts.
 
 ## Existing participant and group workflows
 

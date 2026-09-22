@@ -1091,6 +1091,163 @@ def calculate_group_regression_maps(
     return completed
 
 
+def calculate_regression_inference(
+        step, datafolder, dataset, specie, model, regression_model,
+        rsa_models_list, radius, dis_method, mask, mask_type=None,
+        reps_group=1000, min_percentage_available=1.0,
+        z_threshold=3.1, cluster_threshold=0.05, verbose=False,
+        min_dist_mm=8.0, label_dict=None, label_nii_data=None,
+        label_affine=None, apply_coords_transform=False, atlas_file=None):
+    """Steps 15.6--15.10: inference on group target beta means.
+
+    Uses the population std across step-15.5 means (not their within-group
+    std maps). Positive-tail clusters use 26 neighbours and the existing
+    empirical maximum-cluster correction. Outputs are isolated by control
+    model, target, species, mask, radius and distance method. Derived outputs
+    are rebuilt on each invocation to avoid reusing an outdated null ensemble.
+    Step 15.10 must be passed as a string, since float(15.10) is 15.1.
+    """
+    step = str(step)
+    if step not in ('15.6', '15.7', '15.8', '15.9', '15.10'):
+        raise ValueError(f'Unknown regression inference step: {step}')
+    if not regression_model or not rsa_models_list:
+        raise ValueError('Regression inference needs a control model and target model(s).')
+    if reps_group < 1 or not 0 < min_percentage_available <= 1:
+        raise ValueError('Need positive reps_group and coverage in (0, 1].')
+    if not np.isfinite(z_threshold) or z_threshold <= 0 or not 0 < cluster_threshold < 1:
+        raise ValueError('Need a positive finite z threshold and cluster probability in (0, 1).')
+    if isinstance(rsa_models_list, str):
+        rsa_models_list = [rsa_models_list]
+    mask_image = nib.load(mask)
+    in_mask = mask_image.get_fdata() > 0
+    prefix = f'{mask_type}-' if mask_type else ''
+    stem = f'{prefix}{specie}-r-{radius}_{dis_method}_beta'
+    completed = True
+
+    def read_map(path):
+        img = nib.load(path)
+        check_same_space(('regression mask', mask_image), [(path, img)],
+                         context=f'regression inference step {step}')
+        data = img.get_fdata()
+        if not np.all(np.isfinite(data[in_mask])):
+            raise ValueError(f'Non-finite values inside regression mask: {path}')
+        return data
+
+    def save_map(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        header = mask_image.header.copy()
+        header.set_data_dtype(np.float32)
+        nib.save(nib.Nifti1Image(np.where(in_mask, data, 0).astype(np.float32),
+                                mask_image.affine, header), path)
+
+    def write_json(path, details):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(details, handle, indent=2)
+
+    for target in rsa_models_list:
+        real_root = os.path.join(datafolder, dataset, 'results', 'RSA_regression',
+                                 model, regression_model, target)
+        rnd_root = os.path.join(datafolder, dataset, 'results', 'RSA_regression_rnd',
+                                model, regression_model, target)
+        real_mean = os.path.join(real_root, 'mean', f'{stem}_mean.nii.gz')
+        real_z = os.path.join(real_root, 'mean', f'{stem}_z.nii.gz')
+        null_mean = os.path.join(rnd_root, 'dist', f'{stem}_mean.nii.gz')
+        null_std = os.path.join(rnd_root, 'dist', f'{stem}_std.nii.gz')
+        null_log = os.path.join(rnd_root, 'dist', f'{stem}_distribution.json')
+        cluster_path = os.path.join(real_root, 'dist', f'{stem}_zt{z_threshold}_dist.npy')
+        corrected_stem = os.path.join(real_root, 'mean',
+                                     f'{stem}_zt{z_threshold}_p{cluster_threshold}')
+        corrected = corrected_stem + '_corrected.nii.gz'
+        metadata = dict(regression_model=regression_model, target_model=target,
+                        statistic='beta', mask=os.path.abspath(mask),
+                        reps_group=reps_group)
+
+        if step == '15.6':
+            files = [os.path.join(rnd_root, 'mean', f'{stem}_mean_{i:05d}.nii.gz')
+                     for i in range(reps_group)]
+            available = [p for p in files if os.path.isfile(p)]
+            if len(available) < 2 or len(available) / reps_group < min_percentage_available:
+                print(f'{target}: insufficient group permutations ({len(available)}/{reps_group}).')
+                completed = False
+                continue
+            # Validate mask alignment and finite inputs before writing the null.
+            for path in available:
+                read_map(path)
+            nifti_mean_stream(available, null_mean, null_std,
+                              mask_img=in_mask, verbose=verbose)
+            write_json(null_log, dict(metadata, file_list=available, ddof=0))
+
+        elif step in ('15.7', '15.8'):
+            # Use exactly the ensemble used to estimate the voxelwise null;
+            # unrelated or stale z files must not enter the cluster distribution.
+            with open(null_log, encoding='utf-8') as handle:
+                receipt = json.load(handle)
+            if any(receipt.get(k) != v for k, v in metadata.items()):
+                raise ValueError('Null parameters changed; rerun step 15.6.')
+            files = receipt['file_list']
+            if len(files) < 2 or len(files) / reps_group < min_percentage_available:
+                raise ValueError('Null coverage is insufficient; rerun step 15.6.')
+            z_files = [p.replace('_mean_', '_z_') for p in files]
+            if step == '15.7':
+                mean, std = read_map(null_mean), read_map(null_std)
+                valid = in_mask & (std > 1e-8)
+                for source, destination in [(real_mean, real_z)] + list(zip(files, z_files)):
+                    data = read_map(source)
+                    z = np.zeros_like(data)
+                    np.divide(data - mean, std, out=z, where=valid)
+                    save_map(destination, z)
+            else:
+                sizes = []
+                for path in z_files:
+                    data = read_map(path)
+                    _, cluster_sizes = _count_on_3d(
+                        np.where(in_mask, data, 0), z_threshold, False, connectivity=3)
+                    sizes.append([int(size) for size in cluster_sizes])
+                entry = dict(number_of_images=len(sizes), cluster_sizes=sizes,
+                             file_list=z_files, connectivity=26, tail='positive',
+                             threshold_comparison='>', **metadata)
+                os.makedirs(os.path.dirname(cluster_path), exist_ok=True)
+                np.save(cluster_path, {f'z{z_threshold}': entry})
+                minimum = get_minimal_cluster_size(cluster_path, z_threshold, cluster_threshold)
+                write_json(cluster_path.replace('.npy', '.json'), dict(
+                    entry, z_threshold=z_threshold, cluster_threshold=cluster_threshold,
+                    minimal_cluster_size=minimum))
+
+        elif step == '15.9':
+            entry = np.load(cluster_path, allow_pickle=True).item()[f'z{z_threshold}']
+            if any(entry.get(k) != v for k, v in metadata.items()):
+                raise ValueError('Cluster null parameters changed; rerun steps 15.6--15.8.')
+            minimum = get_minimal_cluster_size(cluster_path, z_threshold, cluster_threshold)
+            z = read_map(real_z)
+            # Match the strict positive-tail threshold used for permutations.
+            thresholded = np.where(in_mask & (z > z_threshold), z, 0)
+            corrected_data = apply_cluster_size_threshold(thresholded, minimum, connectivity=26)
+            save_map(corrected, corrected_data)
+            _, n_clusters = label(corrected_data > 0, structure=generate_binary_structure(3, 3))
+            write_json(corrected_stem + '_corrected.json', dict(
+                metadata, z_threshold=z_threshold, cluster_threshold=cluster_threshold,
+                minimal_cluster_size=int(minimum), connectivity=26, tail='positive',
+                n_clusters=int(n_clusters), n_voxels=int(np.count_nonzero(corrected_data)),
+                empty=bool(n_clusters == 0), cluster_distribution=cluster_path))
+
+        else:
+            read_map(corrected)
+            results = extract_clusters_and_peaks(
+                corrected, stat_thresh=None, min_dist_mm=min_dist_mm,
+                max_peaks_per_cluster=3, label_dict=label_dict,
+                label_nii_data=label_nii_data, label_affine=label_affine)
+            out_path = corrected_stem + '.csv'
+            if results:
+                clusters_to_table(results, out_path,
+                                  apply_coords_transform=apply_coords_transform,
+                                  atlas_file=atlas_file, mask=mask)
+            else:
+                write_empty_cluster_table(out_path)
+            print(f'Regression cluster report: {out_path}')
+    return completed
+
+
 def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_dict, regression_model, participants, specie, mask, model, radius, dis_method, rsa_models_list, task=None, mah_fold='stim-wise', model_dict=None, standardize=True, replace_file=False, verbose=True, rnd=False, reps=100, replace_rnd_files=False):
     '''
     Calculates multiple regression RSA for a given regression_model and one or
@@ -4811,11 +4968,12 @@ def calculate_beta_maps(datafolder, dataset, model, specie, sub_N, session, run_
     '-sub-' + str(sub_N).zfill(2) + os.sep +
     f"ses-{session}_task-{task}_run-{run_N:02d}_{len(stim_types)}.fsf"
     )
-
+    # indicate which design template is being used for this run
+    print(f"Using design template: {design_template}")
     
     utils.generate_fsf(len(stim_types), design_template, design_template_modified)
     # initialize labels to replace
-
+    print(f"Modified design template will be saved as: {design_template_modified}")
     
     # check if beta maps have been already calculated
     beta_map_file = (datafolder + os.sep + dataset + os.sep + 'results' + 
@@ -7741,7 +7899,8 @@ def extract_clusters_and_peaks(
                     region_name = label_row['Region'].values[0] if not label_row.empty else "Unknown"
                 # add region name to peaks
                 peaks[idx] = (peaks[idx][0], peaks[idx][1], peaks[idx][2], region_name)
-
+        else:
+            peaks = [(z, ijk, xyz, 'Unknown') for z, ijk, xyz in peaks]
 
         # gather cluster-level descriptors
         cluster_size = int(cluster_mask.sum())

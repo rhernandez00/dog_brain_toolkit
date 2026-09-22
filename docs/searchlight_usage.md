@@ -97,6 +97,35 @@ upstream outputs already exist.
 | **15.3** | Mean regression beta maps | `calculate_group_regression_maps` | Mean/std of step-15 beta maps. |
 | **15.4** | Permuted regression RSA | `calculate_multiple_regression_rsa(rnd=True)` | `--reps` target-model permutations; neural data and controls stay fixed. |
 | **15.5** | Group regression permutations | `calculate_group_regression_maps(rnd=True)` | `--reps_group` mean/std maps sampled from step 15.4. |
+| **15.6** | Regression voxelwise null | `calculate_regression_inference` | Mean and population std across step-15.5 **beta mean** maps. |
+| **15.7** | Regression z-maps | `calculate_regression_inference` | Standardizes every null mean and the step-15.3 observed beta mean using step 15.6. |
+| **15.8** | Regression cluster null | `calculate_regression_inference` | Positive-tail, 26-neighbour cluster sizes, with a maximum per permutation for correction. |
+| **15.9** | Corrected regression z-map | `calculate_regression_inference` | Uses `--z_threshold` and `--cluster_threshold`; writes a correction JSON sidecar. |
+| **15.10** | Regression cluster report | `calculate_regression_inference` | CSV of surviving clusters, peaks, coordinates and atlas regions; header-only if empty. |
+
+Run regression inference after steps 15.3 and 15.5, for example:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" searchlight.py `
+    --dataset EmoC --model basic-block --specie D `
+    --regression_model visual_3 --rsa_models_list emo-id__collapse `
+    --steps_to_run 15.6 15.7 15.8 15.9 15.10 --reps_group 1000
+```
+
+Use the same mask, radius, distance method and group permutation count as in
+15.3/15.5. Each target has its own outputs beneath
+`results/RSA_regression[_rnd]/{model}/{regression_model}/{target}/`.
+The null mean/std and its input manifest live in the random tree's `dist/`;
+z-maps live in the corresponding `mean/` folders. Cluster distributions live in
+the real tree's `dist/`, and corrected maps and CSV reports in its `mean/`.
+Corrected filenames include both z and cluster probability thresholds.
+These inference steps rebuild their outputs when invoked; after changing the
+group maps, rerun 15.6 through 15.10 in order. At least two null maps and the
+requested `--min_percentage_available` coverage are required. Zero-variance
+voxels receive z=0. Inference tests positive effects with strict `z > threshold`,
+consistently for real and null maps, using the same empirical maximum-cluster
+cutoff helper as steps 8/9. `15.10` is retained as a textual step ID because
+floating-point conversion would turn it into `15.1`.
 
 ### Dependency graph (steps 0–10)
 
