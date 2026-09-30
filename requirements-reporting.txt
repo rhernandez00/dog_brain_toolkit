@@ -1,0 +1,2 @@
+# Additional dependency for step 10; use the same environment as searchlight.py.
+python-docx>=1.1,<2

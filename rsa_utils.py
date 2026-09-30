@@ -22,6 +22,8 @@ import numpy as np
 from scipy import ndimage                                                                                                                                      
 import preprocess_functions
 import itertools
+import socket
+from contextlib import ExitStack, contextmanager
 
 
 # ---------------------------------------------------------------------------
@@ -757,9 +759,49 @@ def _standardize_design(design_matrix):
     return standardized
 
 
+@contextmanager
+def _regression_run_lock(output_root, rsa_model, specie, sub_N, session, task, run_N):
+    """Claim one target/run atomically across settings that share its outputs.
+
+    Never steal an old lock: long fits and remote workers may still be alive.
+    After a killed worker, remove its lock only after confirming it has stopped.
+    """
+    folder = os.path.join(output_root, rsa_model, '.locks',
+                          f'{specie}-sub-{sub_N:02d}')
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, f'ses-{session}_task-{task}_run-{int(run_N):02d}.lock')
+    try:
+        handle = open(path, 'x', encoding='utf-8')
+    except FileExistsError:
+        print(f'Skipping claimed regression run: {path}')
+        yield False
+        return
+    try:
+        with handle:
+            json.dump(dict(host=socket.gethostname(), pid=os.getpid(),
+                           created=datetime.datetime.now().isoformat()), handle)
+        yield True
+    finally:
+        os.remove(path)
+
+
+def _prepare_regression_responses(data, voxel_mask, design, standardize):
+    """Cache complete responses only; changing NaN patterns use the original solver."""
+    if not np.all(np.isfinite(design)):
+        return None
+    responses = np.asarray(data[voxel_mask], dtype=np.float64)
+    if not np.all(np.isfinite(responses)):
+        return None
+    if standardize:
+        responses -= responses.mean(axis=1, keepdims=True)
+        scales = responses.std(axis=1, keepdims=True)
+        np.divide(responses, scales, out=responses, where=scales > 0)
+    return responses
+
+
 def perform_multiple_regression_rsa(meta_similarity_map, design_matrix,
                                     voxel_mask, target_index=1,
-                                    standardize=True, chunk_size=4096):
+                                    standardize=True, chunk_size=4096, prepared_responses=None):
     '''Voxelwise OLS of a neural pairwise vector on several model vectors.
 
     At each voxel inside ``voxel_mask`` the vector of pairwise (dis)similarity
@@ -823,7 +865,9 @@ def perform_multiple_regression_rsa(meta_similarity_map, design_matrix,
     if not voxel_mask.any():
         return beta_map, t_map, p_map, 0
 
-    responses = meta_similarity_map[voxel_mask]  # (n_voxels, n_pairs)
+    # Private caller supplies responses prepared for this data/mask/standardization.
+    cached = prepared_responses is not None and np.all(np.isfinite(design_matrix))
+    responses = prepared_responses if cached else meta_similarity_map[voxel_mask]
     n_voxels = responses.shape[0]
     beta_flat = np.zeros(n_voxels, dtype=np.float64)
     t_flat = np.zeros(n_voxels, dtype=np.float64)
@@ -835,17 +879,20 @@ def perform_multiple_regression_rsa(meta_similarity_map, design_matrix,
     design_finite = np.all(np.isfinite(design_matrix), axis=1)
     n_design_rows = int(design_finite.sum())
 
-    usable = np.isfinite(responses) & design_finite[None, :]
-    # The NaN pattern is normally identical everywhere, so check for that first
-    # and skip the per-voxel grouping loop when it holds.
-    if int(usable.sum()) == n_voxels * n_design_rows:
+    if cached:
         groups = {design_finite.tobytes(): np.arange(n_voxels)}
     else:
-        grouped = {}
-        for index, row in enumerate(usable):
-            grouped.setdefault(row.tobytes(), []).append(index)
-        groups = {key: np.asarray(value) for key, value in grouped.items()}
-    del usable
+        usable = np.isfinite(responses) & design_finite[None, :]
+        # The NaN pattern is normally identical everywhere, so check for that first
+        # and skip the per-voxel grouping loop when it holds.
+        if int(usable.sum()) == n_voxels * n_design_rows:
+            groups = {design_finite.tobytes(): np.arange(n_voxels)}
+        else:
+            grouped = {}
+            for index, row in enumerate(usable):
+                grouped.setdefault(row.tobytes(), []).append(index)
+            groups = {key: np.asarray(value) for key, value in grouped.items()}
+        del usable
 
     dof = 0
     covered = 0
@@ -872,9 +919,10 @@ def perform_multiple_regression_rsa(meta_similarity_map, design_matrix,
         for start in range(0, voxel_indices.size, chunk_size):
             block = voxel_indices[start:start + chunk_size]
             block_responses = np.ascontiguousarray(
-                responses[np.ix_(block, rows)].T, dtype=np.float64
+                (responses[start:start + chunk_size].T if cached else
+                 responses[np.ix_(block, rows)].T), dtype=np.float64
             )
-            if standardize:
+            if standardize and not cached:
                 block_responses -= block_responses.mean(axis=0, keepdims=True)
                 block_scales = block_responses.std(axis=0, keepdims=True)
                 np.divide(
@@ -996,7 +1044,7 @@ def calculate_group_regression_maps(
         datafolder, dataset, session_and_run_all_dict, regression_model,
         specie, model, task, radius, dis_method, rsa_models_list, mask,
         mask_type=None, min_percentage_available=1.0, replace_file=False,
-        rnd=False, reps=100, reps_group=1000, verbose=False):
+        rnd=False, reps=100, reps_group=1000, verbose=False, shuffle_participants=True):
     """Steps 15.3/15.5: mean standardized target betas, never mean t/p maps.
 
     Like step 3, each available participant/session/run map has equal weight.
@@ -1004,6 +1052,8 @@ def calculate_group_regression_maps(
     step 5: draw one of the first ``reps`` permutations independently per run,
     then average those beta maps, repeated ``reps_group`` times. Its std maps
     describe spread across input runs, not spread across the null ensemble.
+    With ``shuffle_participants=True``, visit group permutation output indices
+    in random order to reduce collisions between concurrent instances.
     Both steps record their exact inputs and check coverage and voxel grids.
     """
     if not regression_model or not rsa_models_list:
@@ -1027,6 +1077,7 @@ def calculate_group_regression_maps(
     for rsa_model in rsa_models_list:
         # Scan once, outside the potentially long group-permutation loop.
         available = []
+        missing = []
         for sub, entry in units:
             folder = os.path.join(
                 root, rsa_model, f'{specie}-sub-{sub:02d}',
@@ -1044,10 +1095,15 @@ def calculate_group_regression_maps(
                 candidates = [path] if os.path.isfile(path) else []
             if candidates:
                 available.append(candidates)
+            else:
+                missing.append((sub, int(entry['session']), int(entry['run_N'])))
         fraction = len(available) / len(units)
         if not available or fraction < min_percentage_available:
             print(f'{rsa_model}: regression maps available for {len(available)}/{len(units)} '
                   f'runs; need {min_percentage_available:.0%}. Skipping.')
+            print('Missing manifest runs: ' + ', '.join(
+                f'{specie}-sub-{sub:02d} ses-{session:02d} run-{run:02d}'
+                for sub, session, run in missing))
             completed = False
             continue
 
@@ -1055,7 +1111,10 @@ def calculate_group_regression_maps(
         stem = f'{prefix}{specie}-r-{radius}_{dis_method}_beta'
         output_dir = os.path.join(root, rsa_model, 'mean')
         pool_digest = hashlib.sha256(json.dumps(available).encode('utf-8')).hexdigest()
-        for group_index in (range(reps_group) if rnd else [None]):
+        group_indices = list(range(reps_group)) if rnd else [None]
+        if rnd and shuffle_participants:
+            random.shuffle(group_indices)
+        for permutation_number, group_index in enumerate(group_indices, start=1):
             suffix = '' if group_index is None else f'_{group_index:05d}'
             mean_path = os.path.join(output_dir, f'{stem}_mean{suffix}.nii.gz')
             std_path = os.path.join(output_dir, f'{stem}_std{suffix}.nii.gz')
@@ -1070,9 +1129,15 @@ def calculate_group_regression_maps(
                     with open(log_path, encoding='utf-8') as handle:
                         previous = json.load(handle)
                     if previous.get('signature') == signature:
+                        if rnd:
+                            print(f'{rsa_model}: Permutation {permutation_number}/{reps_group}, '
+                                  f'map {group_index:05d} already present, skipping.')
                         continue
                 except (OSError, ValueError):
                     pass
+            if rnd:
+                print(f'{rsa_model}: Permutation {permutation_number}/{reps_group}, '
+                      f'map {group_index:05d} running.')
             files = [random.choice(pool) if rnd else pool[0] for pool in available]
             check_same_space(('regression mask', mask_image),
                              [(os.path.basename(p), p) for p in files],
@@ -1097,7 +1162,8 @@ def calculate_regression_inference(
         reps_group=1000, min_percentage_available=1.0,
         z_threshold=3.1, cluster_threshold=0.05, verbose=False,
         min_dist_mm=8.0, label_dict=None, label_nii_data=None,
-        label_affine=None, apply_coords_transform=False, atlas_file=None):
+        label_affine=None, apply_coords_transform=False, atlas_file=None,
+        report_title=None, atlas_name=None):
     """Steps 15.6--15.10: inference on group target beta means.
 
     Uses the population std across step-15.5 means (not their within-group
@@ -1228,6 +1294,7 @@ def calculate_regression_inference(
             write_json(corrected_stem + '_corrected.json', dict(
                 metadata, z_threshold=z_threshold, cluster_threshold=cluster_threshold,
                 minimal_cluster_size=int(minimum), connectivity=26, tail='positive',
+                threshold_comparison='>',
                 n_clusters=int(n_clusters), n_voxels=int(np.count_nonzero(corrected_data)),
                 empty=bool(n_clusters == 0), cluster_distribution=cluster_path))
 
@@ -1244,6 +1311,21 @@ def calculate_regression_inference(
                                   atlas_file=atlas_file, mask=mask)
             else:
                 write_empty_cluster_table(out_path)
+            from publication_report import export_publication_report, mirror_results, DRIVE_RESULTS_ROOT
+            publications = export_publication_report(
+                out_path, corrected, dataset=dataset, specie=specie, rsa_model=target,
+                regression_model=regression_model,
+                group_metadata_path=real_mean.replace('.nii.gz', '.json'),
+                report_title=report_title, atlas_name=atlas_name,
+                min_dist_mm=min_dist_mm, max_peaks_per_cluster=3)
+            # Keep regression reports separate from ordinary RSA and from other
+            # control/target combinations; preserve the parameter-rich filenames.
+            mirror_folder = os.path.join(DRIVE_RESULTS_ROOT, dataset, 'current-results',
+                                         'RSA_regression', model, regression_model, target, 'mean')
+            products = [corrected, out_path, *publications]
+            products.extend(p for p in [corrected_stem + '_corrected.json', real_z]
+                            if os.path.isfile(p))
+            mirror_results([(p, os.path.join(mirror_folder, os.path.basename(p))) for p in products])
             print(f'Regression cluster report: {out_path}')
     return completed
 
@@ -1358,6 +1440,7 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
 
     # go over all participants and calculate multiple regression RSA for each participant, get participants from session_and_run_all_dict
     participants = list(session_and_run_all_dict.keys())
+    completed = True
     for sub_N in participants:
         print(f"Calculating multiple regression RSA for {specie} participant {sub_N}...")
         # go over each session and run for the participant
@@ -1368,162 +1451,195 @@ def calculate_multiple_regression_rsa(datafolder, dataset, session_and_run_all_d
             session = f"{session:02d}"
             print(f"Calculating multiple regression RSA for {specie} participant {sub_N}, session {session}, run {run_N}...")
 
-            # Build every design first. That decides which targets still have
-            # work to do, and so which pairs have to be loaded at all -- the
-            # maps must not be read for a run whose outputs all exist.
-            planned_fits = []
-            for rsa_model in rsa_models_list:
-                output_dir = os.path.join(
-                    output_root, rsa_model, f"{specie}-sub-{sub_N:02d}",
-                    f"ses-{session}_task-{task}_run-{int(run_N):02d}"
-                )
-                overwrite = replace_rnd_files if rnd else replace_file
-                pending = []
-                for rnd_index in (range(reps) if rnd else [None]):
-                    paths = _regression_map_paths(output_dir, radius, dis_method, rnd_index)
-                    if overwrite or not all(os.path.isfile(p) for p in paths.values()):
-                        pending.append((rnd_index, paths))
-                if not pending:
-                    print(f"Skipping existing regression maps: {output_dir}")
+            with ExitStack() as run_locks:
+                # Build every design first. That decides which targets still have
+                # work to do, and so which pairs have to be loaded at all -- the
+                # maps must not be read for a run whose outputs all exist.
+                planned_fits = []
+                for rsa_model in rsa_models_list:
+                    claimed = run_locks.enter_context(_regression_run_lock(
+                        output_root, rsa_model, specie, sub_N, session, task, run_N))
+                    if not claimed:
+                        completed = False
+                        continue
+                    output_dir = os.path.join(
+                        output_root, rsa_model, f"{specie}-sub-{sub_N:02d}",
+                        f"ses-{session}_task-{task}_run-{int(run_N):02d}"
+                    )
+                    overwrite = replace_rnd_files if rnd else replace_file
+                    pending = []
+                    for rnd_index in (range(reps) if rnd else [None]):
+                        paths = _regression_map_paths(output_dir, radius, dis_method, rnd_index)
+                        if overwrite or not all(os.path.isfile(p) for p in paths.values()):
+                            pending.append((rnd_index, paths))
+                    if not pending:
+                        print(f"Skipping existing regression maps: {output_dir}")
+                        continue
+
+                    # The target model fixes the pair order its maps are stacked in, and
+                    # every regressor is expanded onto exactly that order.
+                    target_model_path = _resolve_rsa_model_path(
+                        datafolder, dataset, rsa_model, run_N
+                    )
+                    target_model_dict = read_model_dict(target_model_path)
+                    pairs = target_model_dict['pairs']
+
+                    regressor_names = ['intercept', rsa_model]
+                    regressor_paths = {rsa_model: target_model_path}
+                    design_columns = [
+                        np.ones(len(pairs), dtype=np.float64),
+                        _build_model_vector_for_pairs(target_model_dict, pairs, rsa_model),
+                    ]
+                    for control_name in control_model_names:
+                        control_model_path = _resolve_rsa_model_path(
+                            datafolder, dataset, control_name, run_N
+                        )
+                        control_model_dict = read_model_dict(control_model_path)
+                        design_columns.append(_build_model_vector_for_pairs(
+                            control_model_dict, pairs, control_name
+                        ))
+                        regressor_names.append(control_name)
+                        regressor_paths[control_name] = control_model_path
+                    design_matrix = np.column_stack(design_columns)
+                    if verbose:
+                        print(f"Design matrix for {rsa_model} {design_matrix.shape}: "
+                              f"{regressor_names}")
+
+                    planned_fits.append({
+                        'rsa_model': rsa_model,
+                        'pairs': pairs,
+                        'design_matrix': design_matrix,
+                        'regressor_names': regressor_names,
+                        'regressor_paths': regressor_paths,
+                        'output_dir': output_dir,
+                        'pending': pending,
+                    })
+
+                if not planned_fits:
+                    print(f"Nothing to do for {specie}-sub-{sub_N:02d} ses-{session} "
+                          f"run-{int(run_N):02d}: no unclaimed target maps need work.")
                     continue
 
-                # The target model fixes the pair order its maps are stacked in, and
-                # every regressor is expanded onto exactly that order.
-                target_model_path = _resolve_rsa_model_path(
-                    datafolder, dataset, rsa_model, run_N
-                )
-                target_model_dict = read_model_dict(target_model_path)
-                pairs = target_model_dict['pairs']
-
-                regressor_names = ['intercept', rsa_model]
-                regressor_paths = {rsa_model: target_model_path}
-                design_columns = [
-                    np.ones(len(pairs), dtype=np.float64),
-                    _build_model_vector_for_pairs(target_model_dict, pairs, rsa_model),
-                ]
-                for control_name in control_model_names:
-                    control_model_path = _resolve_rsa_model_path(
-                        datafolder, dataset, control_name, run_N
+                # Union of the pairs the remaining targets need, in first-seen
+                # order, plus the columns each target's own pair order maps to.
+                union_pairs = []
+                union_pair_index = {}
+                for plan in planned_fits:
+                    for category_a, category_b in plan['pairs']:
+                        key = _canonical_pair(category_a, category_b)
+                        if key not in union_pair_index:
+                            union_pair_index[key] = len(union_pairs)
+                            union_pairs.append((category_a, category_b))
+                for plan in planned_fits:
+                    plan['columns'] = np.array(
+                        [union_pair_index[_canonical_pair(a, b)] for a, b in plan['pairs']],
+                        dtype=int,
                     )
-                    control_model_dict = read_model_dict(control_model_path)
-                    design_columns.append(_build_model_vector_for_pairs(
-                        control_model_dict, pairs, control_name
-                    ))
-                    regressor_names.append(control_name)
-                    regressor_paths[control_name] = control_model_path
-                design_matrix = np.column_stack(design_columns)
+                identity_columns = np.arange(len(union_pairs))
+
+                # load meta similarity map of this participant, session and run --
+                # once, for every target model
                 if verbose:
-                    print(f"Design matrix for {rsa_model} {design_matrix.shape}: "
-                          f"{regressor_names}")
+                    print(f"Loading {len(union_pairs)} pairwise maps for "
+                          f"{len(planned_fits)} target model(s)")
+                meta_similarity_map = load_meta_similarity_map(None, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose, mah_fold=mah_fold, pairs=union_pairs, ref_affine=ref_affine, ref_label=ref_label)
 
-                planned_fits.append({
-                    'rsa_model': rsa_model,
-                    'pairs': pairs,
-                    'design_matrix': design_matrix,
-                    'regressor_names': regressor_names,
-                    'regressor_paths': regressor_paths,
-                    'output_dir': output_dir,
-                    'pending': pending,
-                })
+                # go over each model in the rsa_models_list and perform regression
+                for plan in planned_fits:
+                    rsa_model = plan['rsa_model']
+                    pairs = plan['pairs']
+                    regressor_names = plan['regressor_names']
+                    columns = plan['columns']
 
-            if not planned_fits:
-                print(f"Nothing to do for {specie}-sub-{sub_N:02d} ses-{session} "
-                      f"run-{int(run_N):02d}: every target map exists.")
-                continue
+                    # filter the loaded stack down to this model's pairs, in this
+                    # model's order; when the target defines the whole union in the
+                    # same order -- the usual case -- no copy is made
+                    if np.array_equal(columns, identity_columns):
+                        model_similarity_map = meta_similarity_map
+                    else:
+                        model_similarity_map = meta_similarity_map[..., columns]
 
-            # Union of the pairs the remaining targets need, in first-seen
-            # order, plus the columns each target's own pair order maps to.
-            union_pairs = []
-            union_pair_index = {}
-            for plan in planned_fits:
-                for category_a, category_b in plan['pairs']:
-                    key = _canonical_pair(category_a, category_b)
-                    if key not in union_pair_index:
-                        union_pair_index[key] = len(union_pairs)
-                        union_pairs.append((category_a, category_b))
-            for plan in planned_fits:
-                plan['columns'] = np.array(
-                    [union_pair_index[_canonical_pair(a, b)] for a, b in plan['pairs']],
-                    dtype=int,
-                )
-            identity_columns = np.arange(len(union_pairs))
+                    prepared = (_prepare_regression_responses(
+                        model_similarity_map, voxel_mask, plan['design_matrix'], standardize
+                    ) if rnd else None)
+                    os.makedirs(plan['output_dir'], exist_ok=True)
+                    for rnd_index, paths in plan['pending']:
+                        design = plan['design_matrix'].copy()
+                        target_index = regressor_names.index(rsa_model)
+                        if rnd:
+                            # shuffle_vector jointly relabels the RDM rows/columns;
+                            # it does not shuffle voxels or independent pair values.
+                            design[:, target_index] = shuffle_vector(design[:, target_index])
+                        beta_map, t_map, p_map, dof = perform_multiple_regression_rsa(
+                            model_similarity_map, design, voxel_mask,
+                            target_index=target_index, standardize=standardize,
+                            prepared_responses=prepared,
+                        )
+                        for stat, data in [('beta', beta_map), ('t', t_map), ('p', p_map)]:
+                            nib.save(nib.Nifti1Image(data.astype(np.float32), ref_affine),
+                                     paths[f'{stat}_map_path'])
+                        # Write the receipt last so interrupted fits are retried.
+                        with open(paths['sidecar_path'], 'w') as f:
+                            json.dump({
+                                'regression_model': regression_model,
+                                'target_model': rsa_model,
+                                'regressors': regressor_names,
+                                'regressor_files': {
+                                    name: os.path.relpath(path, datafolder)
+                                    for name, path in plan['regressor_paths'].items()
+                                },
+                                'n_pairs': len(pairs),
+                                'dof': int(dof),
+                                'standardize': bool(standardize),
+                                'dis_method': dis_method,
+                                'mah_fold': mah_fold,
+                                'radius': radius,
+                                'specie': specie,
+                                'sub_N': int(sub_N),
+                                'session': session,
+                                'run_N': int(run_N),
+                                'rnd': rnd,
+                                'rnd_index': rnd_index,
+                                'permutation': 'target category labels only' if rnd else None,
+                                'target_vector': design[:, target_index].tolist() if rnd else None,
+                                'created': datetime.datetime.now().isoformat(timespec='seconds'),
+                            }, f, indent=2)
+                        print(f"Saved regression beta map: {paths['beta_map_path']} (dof={dof})")
+                    del prepared
+                    if model_similarity_map is not meta_similarity_map:
+                        del model_similarity_map
 
-            # load meta similarity map of this participant, session and run --
-            # once, for every target model
-            if verbose:
-                print(f"Loading {len(union_pairs)} pairwise maps for "
-                      f"{len(planned_fits)} target model(s)")
-            meta_similarity_map = load_meta_similarity_map(None, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method=dis_method, radius=radius, verbose=verbose, mah_fold=mah_fold, pairs=union_pairs, ref_affine=ref_affine, ref_label=ref_label)
+                del meta_similarity_map
 
-            # go over each model in the rsa_models_list and perform regression
-            for plan in planned_fits:
-                rsa_model = plan['rsa_model']
-                pairs = plan['pairs']
-                regressor_names = plan['regressor_names']
-                columns = plan['columns']
-
-                # filter the loaded stack down to this model's pairs, in this
-                # model's order; when the target defines the whole union in the
-                # same order -- the usual case -- no copy is made
-                if np.array_equal(columns, identity_columns):
-                    model_similarity_map = meta_similarity_map
-                else:
-                    model_similarity_map = meta_similarity_map[..., columns]
-
-                os.makedirs(plan['output_dir'], exist_ok=True)
-                for rnd_index, paths in plan['pending']:
-                    design = plan['design_matrix'].copy()
-                    target_index = regressor_names.index(rsa_model)
-                    if rnd:
-                        # shuffle_vector jointly relabels the RDM rows/columns;
-                        # it does not shuffle voxels or independent pair values.
-                        design[:, target_index] = shuffle_vector(design[:, target_index])
-                    beta_map, t_map, p_map, dof = perform_multiple_regression_rsa(
-                        model_similarity_map, design, voxel_mask,
-                        target_index=target_index, standardize=standardize,
+    if rnd:
+        # A completed step 15.4 must leave at least one beta map for every
+        # manifest run. Report absent runs before step 15.5's coverage check.
+        for rsa_model in rsa_models_list:
+            missing = []
+            for sub_N, entries in session_and_run_all_dict.items():
+                for entry in entries:
+                    output_dir = os.path.join(
+                        output_root, rsa_model, f'{specie}-sub-{sub_N:02d}',
+                        f"ses-{int(entry['session']):02d}_task-{task}_run-{int(entry['run_N']):02d}",
                     )
-                    for stat, data in [('beta', beta_map), ('t', t_map), ('p', p_map)]:
-                        nib.save(nib.Nifti1Image(data.astype(np.float32), ref_affine),
-                                 paths[f'{stat}_map_path'])
-                    # Write the receipt last so interrupted fits are retried.
-                    with open(paths['sidecar_path'], 'w') as f:
-                        json.dump({
-                            'regression_model': regression_model,
-                            'target_model': rsa_model,
-                            'regressors': regressor_names,
-                            'regressor_files': {
-                                name: os.path.relpath(path, datafolder)
-                                for name, path in plan['regressor_paths'].items()
-                            },
-                            'n_pairs': len(pairs),
-                            'dof': int(dof),
-                            'standardize': bool(standardize),
-                            'dis_method': dis_method,
-                            'mah_fold': mah_fold,
-                            'radius': radius,
-                            'specie': specie,
-                            'sub_N': int(sub_N),
-                            'session': session,
-                            'run_N': int(run_N),
-                            'rnd': rnd,
-                            'rnd_index': rnd_index,
-                            'permutation': 'target category labels only' if rnd else None,
-                            'target_vector': design[:, target_index].tolist() if rnd else None,
-                            'created': datetime.datetime.now().isoformat(timespec='seconds'),
-                        }, f, indent=2)
-                    print(f"Saved regression beta map: {paths['beta_map_path']} (dof={dof})")
-                if model_similarity_map is not meta_similarity_map:
-                    del model_similarity_map
+                    beta_path = _regression_map_paths(
+                        output_dir, radius, dis_method, 0)['beta_map_path']
+                    if not os.path.isfile(beta_path):
+                        missing.append((sub_N, int(entry['session']), int(entry['run_N'])))
+            if missing:
+                completed = False
+                print(f'{rsa_model}: step 15.4 beta maps missing for '
+                      f'{len(missing)} manifest runs: ' + ', '.join(
+                          f'{specie}-sub-{sub:02d} ses-{session:02d} run-{run:02d}'
+                          for sub, session, run in missing))
 
-            del meta_similarity_map
-
-    return True
-            
-    
+    return completed
 
 
 
-    
+
+
+
 
 def calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model, task, radius, rsa_model, rsa_class, rsa_method, dis_method, replace_file=True, verbose=True, min_percentage_available=0, mask_type=None):
     '''
@@ -1814,6 +1930,134 @@ def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_a
                     os.remove(temp_file)  # remove temp file after processing is done
                     if verbose:
                         print(f"Removed temp file {temp_file} after processing.")
+
+def export_average_rsa_models(datafolder, dataset, session_and_run_all_dict,
+                              participants, specie, mask, radius, dis_method,
+                              rsa_model, output_rsa_model, voxel_coords, config_path,
+                              mah_fold='stim-wise', replace_file=False, verbose=False,
+                              stimuli=None):
+    """Export step-12 searchlight values as labeled, symmetric model CSVs.
+
+    Mahalanobis stim-wise maps produce one CSV, loading each participant once
+    independently of run metadata. Use the static input model's labels, falling
+    back to its run-1 CSV when only run-dependent input models exist.
+
+    Average repeated sessions within participant/run first, then participants
+    equally among participants with that run. Warn about participants with no
+    session for a run. Require finite values for every contributing pair.
+    Read maps directly, avoiding step 12's unlabelled TXT cache.
+    The input model defines labels only; its numerical values are not averaged.
+    Optional stimuli selects exact labels in the supplied order; only pairs
+    among those labels are loaded. Every run must contain all selected labels.
+    """
+    participants = list(participants)
+    if not participants or len(set(participants)) != len(participants):
+        raise ValueError('Provide a nonempty list of unique participants.')
+    if stimuli is not None:
+        if isinstance(stimuli, str):
+            raise ValueError('stimuli must be a list of at least two unique stimulus labels.')
+        stimuli = list(stimuli)
+        if len(stimuli) < 2 or len(set(stimuli)) != len(stimuli):
+            raise ValueError('stimuli must contain at least two unique stimulus labels.')
+    for name in (rsa_model, output_rsa_model):
+        if not name or any(char in name for char in '/\\:') or name in ('.', '..') or name.endswith('.csv'):
+            raise ValueError('RSA model names must be filename stems without paths or .csv.')
+    if rsa_model == output_rsa_model:
+        raise ValueError('The output model must differ from the input model.')
+    coords = tuple(voxel_coords)
+    ref = nib.load(mask)
+    mask_data = ref.get_fdata()
+    if (len(coords) != 3 or any(not isinstance(c, (int, np.integer)) for c in coords)
+            or any(c < 0 or c >= size for c, size in zip(coords, ref.shape))):
+        raise ValueError('voxel_coords must contain three in-bounds integer voxel indices.')
+    if not np.isfinite(mask_data[coords]) or mask_data[coords] == 0:
+        raise ValueError('The selected voxel is outside the searchlight mask.')
+    single_model = dis_method == 'mahalanobis' and mah_fold == 'stim-wise'
+    runs = [None] if single_model else sorted({entry['run_N'] for sub in participants
+                                              for entry in session_and_run_all_dict[sub]})
+    if not runs:
+        raise ValueError('No runs found for the selected participants.')
+    folder = os.path.join(datafolder, dataset, 'rsa_models')
+    paths = [os.path.join(folder, f'{output_rsa_model}.csv' if single_model
+                          else f'{output_rsa_model}-run-{run}.csv') for run in runs]
+    for path in paths:
+        if os.path.exists(path) and not replace_file:
+            raise FileExistsError(f'{path} already exists; use --replace_file to overwrite.')
+    if dis_method == 'mahalanobis' and mah_fold != 'stim-wise-all-runs' and not single_model:
+        warnings.warn('This Mahalanobis folding uses participant-level maps shared across runs; '
+                      'run-wise CSVs may therefore contain identical values.')
+    outputs = []
+    for run in runs:
+        template = os.path.join(folder, f'{rsa_model}.csv')
+        if not os.path.exists(template):
+            template_run = 1 if single_model else run
+            template = os.path.join(folder, f'{rsa_model}-run-{template_run}.csv')
+        table = pd.read_csv(template, index_col=0)
+        categories = list(table.columns)
+        if (len(categories) < 2 or not table.index.is_unique
+                or list(table.index) != categories):
+            raise ValueError(f'{template} must be square with matching unique row/column labels.')
+        if stimuli is not None:
+            missing = [label for label in stimuli if label not in categories]
+            if missing:
+                raise ValueError(f'Stimuli missing from {template}: {missing}')
+            categories = stimuli
+        pairs = list(itertools.combinations(categories, 2))
+        participant_values = []
+        excluded_participants = []
+        for sub in participants:
+            if single_model:
+                sessions = [None]
+            else:
+                entries = [e for e in session_and_run_all_dict[sub] if e['run_N'] == run]
+                if not entries:
+                    excluded_participants.append(f'{specie}-sub-{sub:02d}')
+                    continue
+                sessions = sorted({e['session'] for e in entries})
+            session_values = []
+            for session in sessions:
+                values = []
+                for cat1, cat2 in pairs:
+                    pair_map = load_pairwise_similarity_map(
+                        datafolder, dataset, specie, sub,
+                        None if session is None else f'{session:02d}', run,
+                        cat1, cat2, config_path, dis_method=dis_method,
+                        radius=radius, verbose=verbose, mah_fold=mah_fold,
+                        ref_affine=ref.affine, ref_shape=ref.shape,
+                        ref_label=f'mask {os.path.basename(mask)}')
+                    if isinstance(pair_map, int) and pair_map == 0:
+                        raise FileNotFoundError(
+                            f'Missing pair {cat1}/{cat2}: {specie}-sub-{sub:02d}, session {session}, run {run}.')
+                    value = pair_map[coords]
+                    if not np.isfinite(value):
+                        raise ValueError(
+                            f'Non-finite pair {cat1}/{cat2} at {coords}: '
+                            f'{specie}-sub-{sub:02d}, session {session}, run {run}.')
+                    values.append(value)
+                session_values.append(values)
+            participant_values.append(np.mean(session_values, axis=0))
+        if excluded_participants:
+            warnings.warn(
+                f'Run {run}: participants who did not contribute (no session for this run): '
+                f'{", ".join(excluded_participants)}. '
+                f'Averaging {len(participant_values)} of {len(participants)} selected participants.',
+                stacklevel=2)
+        mean_values = np.mean(participant_values, axis=0)
+        matrix = np.zeros((len(categories), len(categories)), dtype=float)
+        upper = np.triu_indices(len(categories), k=1)
+        matrix[upper] = mean_values
+        matrix[(upper[1], upper[0])] = mean_values
+        outputs.append(pd.DataFrame(matrix, index=categories, columns=categories))
+    # Validate all contributing maps before writing any output. Participants
+    # with no session for a run are explicitly reported above.
+    os.makedirs(folder, exist_ok=True)
+    for path, table in zip(paths, outputs):
+        table.to_csv(path)
+        cache = os.path.splitext(path)[0] + '.npy'
+        if os.path.exists(cache):
+            os.remove(cache)  # read_model_dict must not reuse a stale model.
+    return paths
+
 
 def get_similarity_in_sphere(datafolder, dataset, specie, mask, sub_N, session, run_N, 
                              model, radius, rsa_method,
@@ -2937,7 +3181,7 @@ def apply_cluster_size_threshold(
         If 1, nothing is removed (all clusters survive).
     connectivity : int
         Neighborhood connectivity in 3D. One of:
-          - ndimage convention 1..3  (1≈6-neigh, 2≈18, 3≈26)
+          - ndimage convention 1..3  (1â‰ˆ6-neigh, 2â‰ˆ18, 3â‰ˆ26)
           - Common shorthands: 6, 18, or 26
     verbose : bool or callable
         - False (default): no logs.
@@ -3033,7 +3277,7 @@ def apply_cluster_size_threshold(
     remaining_fg_voxels = int((out > 0).sum())
     pct_removed = (removed_voxels / max(fg_voxels, 1)) * 100.0
 
-    # A few concise stats (don’t spam)
+    # A few concise stats (donâ€™t spam)
     _log(f"[cluster] removed voxels: {removed_voxels} / {fg_voxels} ({pct_removed:.2f}%)")
     _log(f"[cluster] remaining fg voxels: {remaining_fg_voxels}")
     _log(f"[cluster] runtime: {(perf_counter() - t0)*1000:.1f} ms")
@@ -4170,7 +4414,8 @@ def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, speci
     meta_similarity_map = np.empty((X, Y, Z, n_pairs), dtype=np.float32)
     pair_names = [] # to store pair names
     # get model name without extension and path
-    model_name = os.path.splitext(os.path.basename(rsa_model_path))[0]
+    model_name = (os.path.splitext(os.path.basename(rsa_model_path))[0]
+                  if rsa_model_path is not None else 'explicit pairs')
 
     k = 0 # index for meta_similarity_map
     for cat1, cat2 in pairs:
@@ -4365,7 +4610,7 @@ def similarity_searchlight(map_1, map_2, mask, radius, dis_method):
         Similarity metric:
           - 'pearson'  -> Pearson r
           - 'kendall'  -> Kendall's tau_b (requires SciPy)
-          - 'euclidean'-> negative Euclidean distance (−||x−y||_2)
+          - 'euclidean'-> negative Euclidean distance (âˆ’||xâˆ’y||_2)
           - 'mahalanobis' -> negative (regularized) Mahalanobis distance
 
     Returns
@@ -4377,10 +4622,10 @@ def similarity_searchlight(map_1, map_2, mask, radius, dis_method):
     -----
     * Correlations return coefficients in [-1,1].
     * Distances are negated so that larger = more similar (consistent with
-      PyMVPA’s use of distances; we convert to a similarity-like quantity).
+      PyMVPAâ€™s use of distances; we convert to a similarity-like quantity).
     * Mahalanobis uses a regularized covariance estimate over sphere features.
-      If scikit-learn is available, Ledoit–Wolf shrinkage is used; otherwise a
-      small ridge (λ) is added to the sample covariance for stability.
+      If scikit-learn is available, Ledoitâ€“Wolf shrinkage is used; otherwise a
+      small ridge (Î») is added to the sample covariance for stability.
 
     """
     # --- validations ---
@@ -4483,7 +4728,7 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
         with shrinkage (see `shrinkage`).
     shrinkage : {'ledoitwolf','oas','ridge','identity'}, optional
         How to estimate sigma when `sigma is None`.
-        - 'ledoitwolf' (default): Ledoit–Wolf shrinkage (sklearn)
+        - 'ledoitwolf' (default): Ledoitâ€“Wolf shrinkage (sklearn)
         - 'oas': Oracle Approximating Shrinkage (sklearn)
         - 'ridge': diagonal ridge using feature variances
         - 'identity': no whitening (yields cross-validated Euclidean)
@@ -4499,9 +4744,9 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
 
     Notes
     -----
-    Let Δ_m = u_i,m − u_j,m be the run-m difference (whitened). The crossnobis
+    Let Î”_m = u_i,m âˆ’ u_j,m be the run-m difference (whitened). The crossnobis
     for pair (i,j) is the mean cross-run inner product:
-        d(i,j) = (1 / (M*(M-1))) * sum_{m≠n} Δ_m · Δ_n
+        d(i,j) = (1 / (M*(M-1))) * sum_{mâ‰ n} Î”_m Â· Î”_n
     which equals the leave-one-run-out formulation. With identity sigma this
     reduces to cross-validated Euclidean distance. :contentReference[oaicite:1]{index=1}
     """
@@ -4560,10 +4805,10 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
         if sigma.shape != (P, P):
             raise ValueError(f"sigma must be ({P},{P}).")
 
-    # --- whiten: apply Σ^{-1/2} so dot-products equal δ^T Σ^{-1} δ ---
+    # --- whiten: apply Î£^{-1/2} so dot-products equal Î´^T Î£^{-1} Î´ ---
     eigvals, eigvecs = np.linalg.eigh(sigma)
     eigvals = np.clip(eigvals, np.finfo(float).eps, None)
-    Winvhalf = (eigvecs / np.sqrt(eigvals)).dot(eigvecs.T)   # Σ^{-1/2}
+    Winvhalf = (eigvecs / np.sqrt(eigvals)).dot(eigvecs.T)   # Î£^{-1/2}
     Z = np.einsum('mcp,pk->mck', U, Winvhalf)               # whitened patterns
 
     # --- crossnobis for each condition pair ---
@@ -4573,7 +4818,7 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
         for j in range(i + 1, C):
             Delta = Z[:, i, :] - Z[:, j, :]         # shape: (M, P)
             s = Delta.sum(axis=0)                   # sum over runs
-            # sum_{m≠n} Δ_m·Δ_n = ||∑Δ_m||^2 − ∑||Δ_m||^2
+            # sum_{mâ‰ n} Î”_mÂ·Î”_n = ||âˆ‘Î”_m||^2 âˆ’ âˆ‘||Î”_m||^2
             sum_off = float(np.dot(s, s) - np.einsum('mp,mp->', Delta, Delta))
             D[i, j] = D[j, i] = sum_off / denom
 
@@ -6689,8 +6934,37 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
                                             dis_method='pearson', verbose=False, 
                                             min_percentage_available=1.0,
                                             reps=1000, replace_rnd_files=False, wait_time=300,reps_group=1000,
-                                            mah_fold='stim-wise', mask_type=None, shuffle_participants=False
+                                            mah_fold='stim-wise', mask_type=None, shuffle_participants=False, skip_prefile_check=False,
                                             ):
+    '''
+    Calculate the group-level model similarity map using random permutation (RND) approach.
+
+    Parameters:
+    - datafolder: Path to the data folder.
+    - dataset: Name of the dataset.
+    - session_and_run_all_dict: Dictionary containing session and run information for all participants.
+    - specie: Species ('D' for dog, 'H' for human).
+    - model: Model name.
+    - task: Task name.
+    - radius: Searchlight radius.
+    - rsa_model: RSA model name.
+    - rsa_method: RSA method (default: 'pearson').
+    - dis_method: Dissimilarity method (default: 'pearson').
+    - verbose: Verbosity flag (default: False).
+    - min_percentage_available: Minimum percentage of available data (default: 1.0).
+    - reps: Number of repetitions (default: 1000).
+    - replace_rnd_files: Flag to replace existing RND files (default: False).
+    - wait_time: Wait time between checks (default: 300).
+    - reps_group: Number of group-level repetitions (default: 1000).
+    - mah_fold: Mahalanobis fold type (default: 'stim-wise').
+    - mask_type: Mask type (default: None).
+    - shuffle_participants: Flag to shuffle participants (default: False).
+    - skip_prefile_check: check first if the necessary files exist before running the main calculation (default: False).
+
+    Returns:
+    - Boolean indicating whether the group-level model similarity map was successfully calculated.
+    '''
+
     # print the variable rsa_model
     print(f"rsa_model: {rsa_model}")
     # 
@@ -6699,7 +6973,7 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
     if shuffle_participants:
         random.shuffle(participants)
     
-    print("Checking for existing output files...")
+    
     # check that outptut folder exists
     output_folder = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA_rnd' + os.sep +
                         model + os.sep + rsa_model + os.sep + 'mean')
@@ -6710,15 +6984,15 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
     # randomly shuffle rnd_N_list
     random.shuffle(rnd_N_list)
 
-    # Pre-scan available permutation files once per run so the main loop can
-    # sample from known-good indices without calling os.path.exists each iteration.
-    available_rnd_indices = {}  # key: (sub_N, session, run_N) or (sub_N, None, None)
+    # Build paths once per run; optionally scan the disk for available files.
+    available_rnd_files = {}  # key: (sub_N, session, run_N), value: index -> path
     file_counter_total = 0
-    prefix_mask = f"{mask_type}-" if mask_type else ""
-    rnd_file_prefix = f"{prefix_mask}r-{radius}_{dis_method}_{rsa_method}_"
+    rnd_file_prefixes = [f"{stem}_" for stem in
+                         _participant_rnd_map_stems(radius, dis_method, rsa_method, mask_type)]
     per_run = dis_method != 'mahalanobis' or mah_fold == 'stim-wise-all-runs'
-    
 
+    
+    # go one by one through participants and their runs/sessions
     for sub_N in participants:
         entries = session_and_run_all_dict[sub_N] if per_run else [None]
         for entry in entries:
@@ -6732,20 +7006,32 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
                 mah_fold=mah_fold, rnd=True, session=session, run_N=run_N,
                 rnd_index=0,
             ))
-            if os.path.isdir(run_rnd_folder):
-                indices = []
-                for fname in os.listdir(run_rnd_folder):
-                    if fname.startswith(rnd_file_prefix) and fname.endswith('.nii.gz'):
-                        try:
-                            idx = int(fname[len(rnd_file_prefix):-7])
-                            if 0 <= idx < reps:
-                                indices.append(idx)
-                        except ValueError:
-                            pass
-                available_rnd_indices[key] = indices
+            if skip_prefile_check:
+                files = {}
+                if os.path.isdir(run_rnd_folder):
+                    names = set(os.listdir(run_rnd_folder))
+                    # Prefer the mask-prefixed form when both forms exist.
+                    for prefix in reversed(rnd_file_prefixes):
+                        for fname in names:
+                            if fname.startswith(prefix) and fname.endswith('.nii.gz'):
+                                try:
+                                    idx = int(fname[len(prefix):-7])
+                                    if 0 <= idx < reps:
+                                        files[idx] = os.path.join(run_rnd_folder, fname)
+                                except ValueError:
+                                    pass
             else:
-                available_rnd_indices[key] = []
-    print(f"Pre-scanned permutation files across {file_counter_total} runs.")
+                # Step 4 writes unprefixed correlation maps and mask-prefixed
+                # Mahalanobis maps. Assume all indices exist; nifti_mean will
+                # read the selected files during the actual calculation.
+                prefix = (rnd_file_prefixes[0] if dis_method == 'mahalanobis'
+                          else rnd_file_prefixes[-1])
+                files = {idx: os.path.join(run_rnd_folder, f"{prefix}{idx:04d}.nii.gz")
+                         for idx in range(reps)}
+            available_rnd_files[key] = files
+
+    if skip_prefile_check:
+        print("Skipping precheck for available permutation files.")
 
     # check if output file already exists
     for indx, rnd_N in enumerate(rnd_N_list):
@@ -6793,8 +7079,8 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             for entry in entries:
                 session = entry['session'] if entry is not None else None
                 run_N = entry['run_N'] if entry is not None else None
-                indices = available_rnd_indices.get((sub_N, session, run_N), [])
-                if not indices:
+                files = available_rnd_files.get((sub_N, session, run_N), {})
+                if not files:
                     if verbose:
                         print(
                             f"rsa_model {rsa_model} sub_N {sub_N} rnd "
@@ -6802,13 +7088,8 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
                             f"files for session={session}, run={run_N}; skipping."
                         )
                     continue
-                rnd_individual_N = random.choice(indices)
-                files_list.append(_model_similarity_map_file(
-                    datafolder, dataset, specie, sub_N, model, rsa_model, task,
-                    radius, dis_method, rsa_method, mask_type=mask_type,
-                    mah_fold=mah_fold, rnd=True, session=session, run_N=run_N,
-                    rnd_index=rnd_individual_N,
-                ))
+                rnd_individual_N = random.choice(list(files))
+                files_list.append(files[rnd_individual_N])
         # check if enough files are available
         available_percentage = len(files_list) / file_counter_total
         if available_percentage < min_percentage_available:
@@ -6819,6 +7100,7 @@ def calculate_group_model_similarity_map_rnd(datafolder, dataset, session_and_ru
             continue
         else:
             print(f"rsa_model {rsa_model} rnd {(indx+1):05d}/{reps_group:05d} processing {len(files_list)} files ({available_percentage*100:.2f}% available)...")
+            print(f"Calculating {mean_model_map_path}")
         try:
             # calculate group model similarity map
             # nifti_mean(files_list, result_map_path=mean_model_map_path, verbose=False, mask_img=mask_img)
@@ -7263,7 +7545,7 @@ def shuffle_vector(vector, verbose=False):
     # Original pairs in canonical order (i < j)
     pairs = list(itertools.combinations(range(n), 2))
 
-    # Map old pairs → values
+    # Map old pairs â†’ values
     pair_to_val = dict(zip(pairs, vector))
 
     # Random permutation of category labels
@@ -7740,11 +8022,59 @@ import nibabel as nib
 from scipy.ndimage import maximum_filter, label, generate_binary_structure
 import shutil
 
+def voxel_to_mm(voxel_coords, image_or_affine):
+    """Convert zero-based NIfTI voxel coordinates to world (millimetre) space.
+
+    Parameters
+    ----------
+    voxel_coords : array-like
+        One ``(i, j, k)`` voxel coordinate or an ``(N, 3)`` collection of
+        coordinates.  Coordinates are not rounded: a fractional input produces
+        its corresponding fractional world coordinate.
+    image_or_affine : nibabel image, path-like, or array-like
+        NIfTI image (or filename) defining the voxel grid, or its 4x4 affine.
+        The conversion is affine-driven, so it applies equally to the human
+        MNI grid and the dog Nitzsche grid.
+
+    Returns
+    -------
+    numpy.ndarray
+        A shape ``(3,)`` array for one input coordinate, otherwise ``(N, 3)``.
+
+    Notes
+    -----
+    This is the voxel-to-mm operation used when step-10 peak coordinates are
+    extracted.  ``clusters_to_table`` receives those already-converted values
+    in each peak's ``xyz_mm`` field.
+    """
+    if isinstance(image_or_affine, (str, os.PathLike)):
+        affine = nib.load(str(image_or_affine)).affine
+    elif hasattr(image_or_affine, 'affine'):
+        affine = image_or_affine.affine
+    else:
+        affine = image_or_affine
+
+    affine = np.asarray(affine, dtype=float)
+    if affine.shape != (4, 4):
+        raise ValueError(f"image_or_affine must define a 4x4 affine, got {affine.shape}")
+
+    coords = np.asarray(voxel_coords, dtype=float)
+    is_single_coordinate = coords.shape == (3,)
+    if is_single_coordinate:
+        coords = coords[None, :]
+    if coords.ndim != 2 or coords.shape[1] != 3:
+        raise ValueError(
+            "voxel_coords must have shape (3,) or (N, 3); "
+            f"got {coords.shape}"
+        )
+
+    mm_coords = nib.affines.apply_affine(affine, coords)
+    return mm_coords[0] if is_single_coordinate else mm_coords
+
+
 def world_coords(ijk, affine):
-    ijk = np.asarray(ijk)
-    ijk_h = np.c_[ijk, np.ones(len(ijk))]
-    xyz = ijk_h @ affine.T
-    return xyz[:, :3]
+    """Backward-compatible batch wrapper for :func:`voxel_to_mm`."""
+    return np.atleast_2d(voxel_to_mm(ijk, affine))
 
 def local_maxima(mask, stat, footprint=None):
     """Return indices of voxels that are local maxima inside 'mask'."""
@@ -7812,7 +8142,7 @@ def extract_clusters_and_peaks(
     struct = generate_binary_structure(3, 3)
     labeled, n_clu = label(mask, structure=struct)
 
-    # An empty (all-zero) map is a valid cluster-corrected result — nothing was
+    # An empty (all-zero) map is a valid cluster-corrected result â€” nothing was
     # significant. Return before touching the atlas: with no peaks to label there
     # is nothing to map into atlas space, so a label grid that doesn't match the
     # stat grid must not turn "no clusters" into a crash.
@@ -7931,7 +8261,7 @@ def write_empty_cluster_table(out_path):
 
     Used when the cluster-corrected map has no surviving clusters. Writing the
     real header (rather than no file, or a one-off 'message' column) means every
-    reader — ``pd.read_csv``, the viewer, the pipeline dashboard probe — sees a
+    reader â€” ``pd.read_csv``, the viewer, the pipeline dashboard probe â€” sees a
     valid table with zero rows, and the step can report success.
     """
     df = pd.DataFrame(columns=CLUSTER_TABLE_INDEX + CLUSTER_TABLE_COLUMNS)
@@ -8010,7 +8340,8 @@ def clusters_to_table(results, out_path, apply_coords_transform=False, atlas_fil
 def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                   dis_method, rsa_method, z_threshold=3.1, min_dist_mm=8.0, max_peaks_per_cluster=3,
                   label_dict=None, label_nii_data=None, label_affine=None, apply_coords_transform=True,
-                  atlas_file=None, mask=None, mask_type=None):
+                  atlas_file=None, mask=None, mask_type=None, report_title=None, atlas_name=None):
+    from publication_report import export_publication_report, mirror_results
     res_folder = r"G:\My Drive\Results" + os.sep + dataset + os.sep + "current-results"
     if mask_type is None:
         res_image = (datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'RSA' + os.sep +
@@ -8064,31 +8395,23 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
         clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
         print(f"Files written in: {out_path}")
 
-    # Mirror the result image + table to the Google-Drive results tree. This is a
-    # convenience for the Windows dashboard and must never fail the step: the Drive
-    # root (res_folder) is a hardcoded G:\ path that does not exist on the Linux
-    # remote, so guard the whole block and continue on any error.
-    try:
-        os.makedirs(os.path.dirname(out_path_copy), exist_ok=True)
-        # Copy the result image and table to the short Drive filenames.
-        shutil.copyfile(res_image, res_image_copy)
-        shutil.copyfile(out_path, out_path_copy)
-        print(f"Copied result image to: {res_image_copy}")
-        print(f"Copied table to: {out_path_copy}")
+    publication_paths = export_publication_report(
+        out_path, res_image, dataset=dataset, specie=specie, rsa_model=rsa_model,
+        report_title=report_title, min_dist_mm=min_dist_mm,
+        max_peaks_per_cluster=max_peaks_per_cluster, atlas_name=atlas_name)
+    print(f"Publication reports written beside: {out_path}")
 
-        # Also mirror the UNTHRESHOLDED z-map (the corrected map's name minus
-        # '_corrected') so the dashboard viewer's threshold slider can explore the
-        # data freely; clusters/tables remain threshold-specific (this corrected
-        # copy + csv). See viz/viewer_app.py.
-        res_image_unthr = res_image.replace('_corrected', '')
-        res_unthr_copy = res_image_copy.replace('_corrected', '')
-        if os.path.exists(res_image_unthr):
-            shutil.copyfile(res_image_unthr, res_unthr_copy)
-            print(f"Copied unthresholded z-map to: {res_unthr_copy}")
-        else:
-            print(f"Unthresholded z-map not found, skipped: {res_image_unthr}")
-    except Exception as e:
-        print(f"WARNING: skipped Google-Drive mirror copy "
-              f"({e.__class__.__name__}: {e}). Primary outputs are in: "
-              f"{os.path.dirname(out_path)}")
+    # The optional mirror must never create a Windows-looking directory on Linux
+    # or create a replacement for an unavailable Google Drive mount on Windows.
+    pairs = [(res_image, res_image_copy), (out_path, out_path_copy)]
+    source_stem, destination_stem = out_path[:-4], out_path_copy[:-4]
+    pairs.extend((path, destination_stem + path[len(source_stem):]) for path in publication_paths)
+    correction_sidecar = res_image[:-len('.nii.gz')] + '.json'
+    if os.path.isfile(correction_sidecar):
+        pairs.append((correction_sidecar, res_image_copy[:-len('.nii.gz')] + '.json'))
+    # Retain the dashboard's existing unthresholded map mirror.
+    res_image_unthr = res_image.replace('_corrected', '')
+    if os.path.isfile(res_image_unthr):
+        pairs.append((res_image_unthr, res_image_copy.replace('_corrected', '')))
+    mirror_results(pairs)
     return True

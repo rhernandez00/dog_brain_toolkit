@@ -2,6 +2,7 @@
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -20,6 +21,12 @@ from tools.unpack_results import _safe_member
 
 class ColabInferenceTests(unittest.TestCase):
     def setUp(self):
+        colab = patch.dict(os.environ, {'COLAB_RELEASE_TAG': 'test-runtime'})
+        colab.start()
+        self.addCleanup(colab.stop)
+        mirror = patch('publication_report.mirror_results')
+        mirror.start()
+        self.addCleanup(mirror.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -84,6 +91,10 @@ class ColabInferenceTests(unittest.TestCase):
             np.testing.assert_allclose(nib.load(path).get_fdata(), nib.load(reference).get_fdata(),
                                        atol=1e-6, rtol=1e-6)
         csv = next(actual.rglob('*.csv'))
+        for suffix in ('_publication.docx', '_publication.tex', '_results.txt', '_report.json'):
+            companion = csv.with_name(csv.stem + suffix)
+            self.assertTrue(companion.is_file(), suffix)
+            self.assertIsNotNone(_safe_member(companion.relative_to(actual).as_posix()))
         pd.testing.assert_frame_equal(pd.read_csv(csv), pd.read_csv(expected / csv.relative_to(actual)))
         self.assertTrue((pd.read_csv(csv).region == 'Test region').all())
         dist = next(actual.rglob('*.npy'))
@@ -105,6 +116,19 @@ class ColabInferenceTests(unittest.TestCase):
             inference.discover_groups(self.results, **dict(args, radius=3))
         with self.assertRaisesRegex(ValueError, 'required group mean maps missing'):
             inference.discover_groups(self.results, **dict(args, reps_group=11))
+
+    def test_support_package_includes_publication_exporter(self):
+        from tools.create_regression_inference_package import build_package
+        source = self.root / 'support.zip'
+        with zipfile.ZipFile(source, 'w') as archive:
+            archive.writestr('regression_manifest.json', json.dumps(
+                dict(dataset='tiny', participants_by_species={})))
+        output = build_package(source, self.root / 'package')
+        with zipfile.ZipFile(output) as archive:
+            self.assertIn('code/publication_report.py', archive.namelist())
+            self.assertIn('code/requirements-reporting.txt', archive.namelist())
+            notebook = archive.read('colab_rsa_regression_inference.ipynb').decode()
+            self.assertIn('python-docx', notebook)
 
     def test_empty_report_and_omit_permutation_z_export(self):
         self.save(self.inputs / self.real / f'{self.stem}_mean.nii.gz', np.zeros((3, 3, 3)))

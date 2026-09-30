@@ -3,7 +3,7 @@
 `searchlight.py` is the command-line runner for the Representational Similarity
 Analysis (RSA) pipeline. It processes fMRI BOLD data from **dogs (`D`)** and
 **humans (`H`)** through a sequence of numbered steps, ending in thresholded,
-cluster-corrected z-maps and an Excel table of significant brain regions.
+cluster-corrected z-maps, a cluster CSV, and publication tables and Results text.
 
 All heavy lifting lives in `rsa_utils.py`; `searchlight.py` is a thin driver that
 parses CLI arguments, loads the dataset config, and dispatches each requested
@@ -45,6 +45,69 @@ python searchlight.py --dataset EmoC --model basic-block --rsa_model test-model 
 ---
 
 ## 2. Prerequisites
+
+### Export a coordinate as a run-dependent RSA model (step 12.1)
+
+After step 1 has produced the pairwise searchlight maps, use:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" searchlight.py `
+    --dataset EmoB --model basic --specie H --steps_to_run 12.1 `
+    --rsa_model visual1 --output_rsa_model H-roi-example `
+    --coords 40,50,30 --radius 4 --dis_method correlation
+```
+
+Replace the example coordinates with your voxel indices and use the GLM model,
+radius, distance method and `--mah_fold` used to generate the maps. Coordinates
+are zero-based voxel indices in the mask/map grid, not millimeters. As in step
+12, extraction samples the existing searchlight value at that center; it does
+not average neighboring searchlight centers again.
+
+Alternatively, replace `--coords 40,50,30` with `--coords_mm=10,-20,30` to
+provide world coordinates in millimeters. The options are mutually exclusive.
+Use the `=` form when the first coordinate is negative, e.g.
+`--coords_mm=-10,-20,30`. Conversion uses the selected mask's inverse affine
+(including orientation, voxel size and origin) and rounds to the nearest voxel
+with NumPy's nearest-even rule for exact half-voxel ties. The step prints both
+the zero-based voxel indices and their mm coordinates. With mm input, it also
+prints the requested mm coordinates so rounding is visible. Coordinates must
+be in the mask's world space (e.g. the appropriate human or dog template).
+
+`--rsa_model` supplies stimulus labels and pair ordering from an existing CSV
+(or its `-run-N.csv` variants). `--output_rsa_model` is a new filename stem.
+The example writes `EmoB/rsa_models/H-roi-example-run-1.csv` through
+`H-roi-example-run-4.csv` when the participant metadata contains runs 1–4.
+Each CSV is a symmetric labeled matrix with a zero diagonal, readable later
+with `--rsa_model H-roi-example`. Values retain the input maps' distance or
+similarity convention, including negative values.
+
+To include only selected stimuli, add `--stimuli A-1 A-2 H-1 H-2`.
+Use exact labels from the input model, separated by spaces (quote labels that
+contain spaces). Only pairs among these stimuli are loaded and exported, in
+the order you specify. Provide at least two distinct labels; each must exist
+in every run's input model. Omitting `--stimuli` retains all stimuli.
+
+Configured participants of `--specie` with a session for a run contribute equally.
+Repeated sessions for a participant/run are averaged before averaging across
+participants. Participants with no session for that run are excluded from its
+average; a warning lists their IDs, the run number, and the contributor count.
+Runs are taken from the union of the selected participants' session/run metadata.
+`--participants_forced` explicitly restricts the cohort. Missing maps for listed
+sessions, non-finite pair values, and coordinates outside the mask are errors;
+all contributing maps are validated before any CSV is written. Use `--replace_file` to
+overwrite existing models (also invalidates their cached `.npy` model data).
+Step 12 does not need to be run first.
+
+With `--dis_method mahalanobis --mah_fold stim-wise`, step 12.1 writes a single
+`<output_rsa_model>.csv` in the same `rsa_models` directory. It loads each
+selected participant's map once and averages participants equally, independently
+of their run/session metadata. Labels come from `<rsa_model>.csv`, falling back
+to `<rsa_model>-run-1.csv`; `--stimuli` still selects a subset. Missing participant
+maps remain errors. Existing run-specific output files are not deleted.
+
+Other folding modes retain their current output naming. Mahalanobis modes other
+than `stim-wise` and `stim-wise-all-runs` also share maps across runs and may
+produce identical run CSVs; step 12.1 warns about this.
 
 Before running, the following must already exist on the shared data disk:
 
@@ -89,7 +152,7 @@ upstream outputs already exist.
 | **7.5** (`75`) | Z-map for real data only | `calculate_z_map_real_data` | Optional; run the real-data z-map separately. |
 | **8** | Cluster size distribution | `calculate_cluster_size_distribution` | Controlled by `--z_threshold`. |
 | **9** | Cluster correction | `apply_cluster_correction` | Requires steps **7 and 8**. |
-| **10** | Create tables | `create_tables` | Output: `.xlsx` report. |
+| **10** | Publication reports | `create_tables` | CSV, editable Word, LaTeX, Results text and provenance JSON. |
 | **11** | Cross-participant similarity | `calculate_cross_participant_similarity` | Out of scheduler scope. |
 | **12** | DSM extraction | `calculate_similarity_across_all_pairs` | Per significant cluster; uses `roi_database.csv`. |
 | **13** | Movement (`.par`) parameters | `calculate_movement_parameters` + `preprocess_functions.fwd` | Runs mcflirt to derive framewise displacement. |
@@ -101,7 +164,7 @@ upstream outputs already exist.
 | **15.7** | Regression z-maps | `calculate_regression_inference` | Standardizes every null mean and the step-15.3 observed beta mean using step 15.6. |
 | **15.8** | Regression cluster null | `calculate_regression_inference` | Positive-tail, 26-neighbour cluster sizes, with a maximum per permutation for correction. |
 | **15.9** | Corrected regression z-map | `calculate_regression_inference` | Uses `--z_threshold` and `--cluster_threshold`; writes a correction JSON sidecar. |
-| **15.10** | Regression cluster report | `calculate_regression_inference` | CSV of surviving clusters, peaks, coordinates and atlas regions; header-only if empty. |
+| **15.10** | Regression publication reports | `calculate_regression_inference` | CSV, Word, LaTeX, Results text and provenance; valid empty reports if no clusters survive. |
 
 Run regression inference after steps 15.3 and 15.5, for example:
 
@@ -184,6 +247,11 @@ run, then averages the selected beta maps with the same weighting as 15.3.
 It preserves separate group draws for a subsequent null distribution, rather
 than collapsing every permutation into a single mean. Each std map again
 describes variation across the selected run maps.
+With `--shuffle_participants`, group permutation files are produced in random
+index order to reduce collisions between concurrent instances. Completed files
+with matching cache signatures are still skipped.
+Progress messages show the current loop position and the shuffled file index,
+for example `Permutation 1/1000, map 00427 running`; cached maps say `skipping`.
 
 Outputs, relative to `{datafolder}/{dataset}/results/`:
 
@@ -345,7 +413,7 @@ reproduce legacy runs; results produced with it are not valid.
 Results are written under `{datafolder}/{dataset}/results/`:
 
 - `results/RSA/{model}/{rsa_model}/mean/` — group mean maps, z-maps, corrected
-  maps, and Excel tables.
+  maps, cluster CSVs, and publication reports.
 - `results/RSA/{model}/{rsa_model}/dist/` — cluster-size distributions.
 - `results/RSA_rnd/{model}/` — permutation (null) mean/std maps.
 
@@ -353,7 +421,78 @@ Results are written under `{datafolder}/{dataset}/results/`:
 overwrite each other:
 
 - Step 9: `{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}_corrected.nii.gz`
-- Step 10: `{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}.xlsx`
+- Step 10: `{specie}-r-{radius}_{dis_method}_{rsa_method}_zt{z_threshold}.csv`
+  plus `_publication.docx`, `_publication.tex`, `_results.txt`, and `_report.json`
+  appended to the same filename stem (including the mask prefix when present).
+
+### Step 10 and 15.10 publication reports
+
+On Windows or Google Colab, install the additional Word-export dependency in the
+pipeline environment: `python -m pip install -r requirements-reporting.txt`.
+No Word installation, LaTeX compiler, network service or LLM is needed to export.
+
+On any **non-Windows, non-Colab computer**, steps 10 and 15.10 print a warning
+and skip Word generation completely, without importing `python-docx` or attempting
+Google Drive operations. CSV, LaTeX, Results text and provenance JSON still run
+and the step can complete successfully. The JSON records the skipped Word file;
+an older Word file, if present, is not refreshed. These remote workers do not
+need `requirements-reporting.txt`. Colab detection uses its runtime environment
+markers (`COLAB_RELEASE_TAG` or `COLAB_BACKEND_VERSION`), not installed libraries.
+Even in Colab, the Windows `G:` mirror is never accessed.
+
+Running step 10 or 15.10 writes the original CSV plus these companion files
+(Word is omitted on unsupported platforms):
+
+- `_publication.docx`: an editable journal-style table with all reported peaks,
+  grouped cluster extents, coordinates in mm, two-decimal Z values, caption,
+  statistical notes, and a deterministic Results paragraph.
+- `_publication.tex`: the same Results text and a multipage-capable table. Include
+  it with `\input{...}` after loading `booktabs`, `longtable`, and `array`.
+- `_results.txt`: the Results paragraph alone, ready to paste into a manuscript.
+- `_report.json`: full-precision facts, source paths and SHA-256 hashes, saved
+  correction settings, peak-selection settings, and metadata/anatomy warnings.
+
+Use `--report_title "Action tendency"` to supply a manuscript-friendly model
+name; by default, underscores in `--rsa_model` become spaces. All exports are
+rebuilt when step 10 runs; existing CSV names and columns are unchanged.
+
+Reports validate the CSV against the corrected NIfTI. Sample size is derived
+from actual group input files in the saved mean-map metadata, not the current
+participant configuration. Correction settings come from the corrected-map
+sidecar, not current CLI defaults. Legacy YAML-formatted `.json` files are
+supported. Missing metadata produces warnings and omits unsupported statements;
+contradictory metadata or mismatched peaks/extents fails the report. No surviving
+clusters is a valid result and produces a header-only CSV and explicit prose.
+On Windows/Colab, missing `python-docx` fails with an installation instruction, leaving the CSV
+available but not marking step 10 complete.
+
+Anatomical names describe peak locations, not full cluster coverage. Unknown
+labels remain unlabelled; Results text does not invent interpretations, effect
+sizes, exact corrected p-values, or comparisons between models. Author review
+is still required before manuscript submission.
+
+The Google Drive mirror runs **only on Windows and only when
+`G:\My Drive\Results` already exists**. Otherwise, it skips copying without
+creating any Drive-style directories. When available, the existing dataset,
+species and mask destination layout is preserved; corrected/unthresholded maps,
+CSV, publication companions, and the correction sidecar (when present) are
+copied. A copy failure is a warning and does not invalidate the primary outputs.
+
+Step **15.10** uses the same exporter for each target model. Its captions and
+Results text identify regression RSA and the control-model specification.
+Z describes the group target coefficient standardized against the permutation
+null, not the beta coefficient or its regression t statistic. The report uses
+the strict `Z > threshold` rule of step 15.9, including for older sidecars that
+did not record the comparison explicitly. Sample size comes from the actual
+step-15.3 input list, and correction settings from the step-15.9 sidecar.
+
+Regression reports retain the existing CSV stem (including `_beta`, z and
+cluster-probability thresholds). Their optional Windows mirror is under
+`G:\My Drive\Results\{dataset}\current-results\RSA_regression\{model}\{regression_model}\{target}\mean\`,
+separate from ordinary RSA and other control/target combinations. The same
+Windows/existing-root guard applies. `--report_title` also applies to 15.10.
+Rebuild the Colab inference support ZIP to include the exporter; the notebook
+installs `python-docx`, and downloaded result ZIPs retain `.docx` and `.tex` files.
 
 ---
 
@@ -402,3 +541,28 @@ the step function reports success, `searchlight.py` writes a
   job IDs; a mismatched method silently reads/writes the wrong files.
 - **`--z_threshold` mismatch** — steps 8, 9, 10 must share the same threshold, or
   step 9/10 will not find the step 8 distribution.
+
+
+### Concurrent regression runs (steps 15 and 15.4)
+
+Multiple instances can process different target models or runs of the same
+participant. Regression workers atomically claim each target/participant/session/run
+before checking outputs or loading pairwise maps. Claimed target runs are skipped,
+while other target models for that run can proceed. All workers must use this
+updated version and the same output storage. Locks live under
+`results/RSA_regression_rnd/<model>/<regression_model>/<target_model>/.locks/`
+(or `RSA_regression` for step 15), with participant folders and session/task/run
+filenames. They cover all settings that write that target's run files. Output
+existence is checked after claiming the target run, preserving resumable fits.
+A worker that skips a claimed target run does not write a whole-step completion marker;
+rerun after the workers finish to confirm all requested outputs are complete.
+
+Locks are removed on normal completion and Python exceptions. A forcibly killed
+worker may leave a `.lock` file containing its host, PID, and creation time.
+After confirming that worker has stopped, remove that specific lock and rerun.
+Locks never expire automatically, so long-running fits remain protected.
+
+Step 15.4 caches masked neural responses and their standardization once per target
+and run when the design and responses are finite. Missing-value cases retain the
+original fitting path, since shuffled exclusions can change the fitted rows.
+Beta, t, and p maps and the target-label permutation scheme are unchanged.

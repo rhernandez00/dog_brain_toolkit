@@ -114,12 +114,33 @@ on CPU and compare every beta/t/p and group mean/std against NumPy/CPU results.
 
 ## Regression continuation: steps 15.6--15.10
 
+For the saved EmoB human step-15.4 outputs, the Drive notebook
+`G:\My Drive\Colab Notebooks\colab_rsa_regression2.ipynb` completes missing
+participant step-15 fits. It audits the selected participant ZIPs, computes
+real fits in a separate local staging folder, and merges them into each
+existing ZIP through a checked `.zip.part` replacement. This preserves the
+step-15.4 permutation maps even when re-synced package timestamps make the
+original runner's cache signatures stale. Its implementation is also kept in
+`tools/colab_gpu/run_saved_regression_step15.py`. The notebook selects 24 human
+targets; `happiness-strictBnew` is excluded until its participant ZIPs exist.
+After this completes, finish human group steps 15.3 and 15.5 before inference.
+
 Open `colab_rsa_regression_inference.ipynb` after the first regression notebook
 has written **`result_regression_group_<target>_<species>.zip`** files. These
 contain the real group beta mean (15.3) and the permuted group beta means (15.5).
-Participant ZIPs and `run_checkpoints/` alone are not sufficient. The default
-input is `rsa_colab/results_regression_EmoB`, with species `H`; `D` also works.
+Participant ZIPs and `run_checkpoints/` alone are not sufficient. The current
+default input is `rsa_colab/results_regression_EmoB_inference_ready`, with
+species `D`.
 The new output folder is `rsa_colab/results_regression_inference_EmoB`.
+
+For the dog results published on 2026-09-24, the 24 group ZIPs contained step
+15.5 but no real step-15.3 mean. The continuation notebook now selects dogs and
+reads `rsa_colab/results_regression_EmoB_inference_ready`. That folder contains
+combined group ZIPs built from the saved participant step-15 beta maps with
+`tools/colab_gpu/complete_regression_groups.py`. The original group ZIPs in
+`results_regression_EmoB` are preserved. The 25th target,
+`happiness-strictBnew`, still lacks complete participant results and is not in
+the inference-ready folder.
 
 Build the independent support ZIP, including the actual inference implementation
 and atlas assets, from the existing regression support package:

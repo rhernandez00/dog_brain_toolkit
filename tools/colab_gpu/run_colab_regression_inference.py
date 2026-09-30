@@ -22,7 +22,7 @@ try:
 except ImportError:
     from run_colab_regression import extract_safe, copy_with_progress, log
 
-VERSION = '1.0.0'
+VERSION = '1.1.0'
 STEPS = ('15.6', '15.7', '15.8', '15.9', '15.10')
 
 

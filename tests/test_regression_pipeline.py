@@ -16,6 +16,9 @@ import rsa_utils as rsa
 
 class RegressionPipelineTests(unittest.TestCase):
     def setUp(self):
+        mirror = patch('publication_report.mirror_results')
+        mirror.start()
+        self.addCleanup(mirror.stop)
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name)
@@ -38,10 +41,10 @@ class RegressionPipelineTests(unittest.TestCase):
         nib.save(nib.Nifti1Image(np.array(values, dtype=float).reshape(2, 1, 1),
                                 np.eye(4) if affine is None else affine), str(path))
 
-    def run_folder(self, sub, session, run, rnd=False):
+    def run_folder(self, sub, session, run, rnd=False, rsa_model='target'):
         return (self.root / 'test/results' /
                 ('RSA_regression_rnd' if rnd else 'RSA_regression') /
-                f'basic/controls/target/H-sub-{sub:02d}/'
+                f'basic/controls/{rsa_model}/H-sub-{sub:02d}/'
                 f'ses-{session:02d}_task-test_run-{run:02d}')
 
     def group_path(self, stat='mean', rnd_index=None):
@@ -160,7 +163,11 @@ class RegressionPipelineTests(unittest.TestCase):
     def test_missing_coverage_and_partial_cache_refresh(self):
         folder = self.run_folder(1, 1, 1)
         self.save_map(folder / 'r-4_correlation_beta_map.nii.gz', [1, 0])
-        self.assertFalse(rsa.calculate_group_regression_maps(**self.common))
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            self.assertFalse(rsa.calculate_group_regression_maps(**self.common))
+        self.assertIn('H-sub-01 ses-01 run-02', output.getvalue())
+        self.assertIn('H-sub-02 ses-02 run-01', output.getvalue())
         self.assertFalse(self.group_path().exists())
         self.assertTrue(rsa.calculate_group_regression_maps(
             **self.common, min_percentage_available=0.3))
@@ -169,6 +176,19 @@ class RegressionPipelineTests(unittest.TestCase):
         self.assertEqual(nib.load(self.group_path()).get_fdata()[0, 0, 0], 4)
         missing_target = dict(self.common, rsa_models_list=['target', 'absent'])
         self.assertFalse(rsa.calculate_group_regression_maps(**missing_target))
+
+    def test_group_uses_database_manifest_with_nonconsecutive_runs(self):
+        bids = self.root / 'test/BIDS'
+        bids.mkdir(parents=True)
+        pd.DataFrame([{'sub_N': 20, 'session': 1, 'run_N': 2}]).to_csv(
+            bids / 'H_database-details.csv', index=False)
+        runs = rsa.get_session_and_run_dict(str(self.root), 'test', 'H', 20)
+        self.assertEqual(runs, [{'session': 1, 'run_N': 2}])
+        self.save_map(self.run_folder(20, 1, 2, True) /
+                      'r-4_correlation_beta_map_0000.nii.gz', [2, 0])
+        self.assertTrue(rsa.calculate_group_regression_maps(
+            **dict(self.common, session_and_run_all_dict={20: runs}),
+            rnd=True, reps=1, reps_group=1))
 
     def test_grid_mismatch_is_rejected(self):
         self.write_betas()
@@ -184,6 +204,7 @@ class RegressionPipelineTests(unittest.TestCase):
         (folder / 'regression_models').mkdir(parents=True)
         (folder / 'regression_models/controls.csv').write_text('visual\n')
         vectors = {'target': [0, 1, 0, 1, 0, 1],
+                   'target2': [1, 0, 1, 0, 1, 0],
                    'visual-run-1': [1, 2, 5, 4, 3, 7],
                    'visual-run-2': [8, 1, 4, 3, 5, 2]}
         for name, vector in vectors.items():
@@ -192,6 +213,61 @@ class RegressionPipelineTests(unittest.TestCase):
             matrix += matrix.T
             pd.DataFrame(matrix, index=list('ABCD'), columns=list('ABCD')).to_csv(folder / f'{name}.csv')
         return vectors
+
+    def test_cached_solver_matches_original(self):
+        rng = np.random.default_rng(21)
+        data = rng.normal(size=(9, 1, 1, 15))
+        data[0] = 3  # constant response
+        mask = np.ones((9, 1, 1), dtype=bool)
+        design = np.column_stack([np.ones(15), rng.normal(size=(15, 3))])
+        for standardize in (True, False):
+            prepared = rsa._prepare_regression_responses(data, mask, design, standardize)
+            for _ in range(5):
+                design[:, 1] = rsa.shuffle_vector(design[:, 1])
+                original = rsa.perform_multiple_regression_rsa(
+                    data, design, mask, standardize=standardize, chunk_size=4)
+                cached = rsa.perform_multiple_regression_rsa(
+                    data, design, mask, standardize=standardize, chunk_size=4,
+                    prepared_responses=prepared)
+                for actual, expected in zip(cached, original):
+                    np.testing.assert_allclose(actual, expected, atol=1e-12, rtol=1e-10)
+        design[0, 1] = np.nan
+        self.assertIsNone(rsa._prepare_regression_responses(data, mask, design, True))
+        design[0, 1] = 1
+        data[1, 0, 0, 2] = np.nan
+        self.assertIsNone(rsa._prepare_regression_responses(data, mask, design, True))
+
+    def test_run_lock_exclusion_independence_and_cleanup(self):
+        args = (str(self.root), 'H', 1, '01', 'test')
+        with rsa._regression_run_lock(args[0], 'target', *args[1:], 1) as first:
+            self.assertTrue(first)
+            with rsa._regression_run_lock(args[0], 'target', *args[1:], 1) as duplicate:
+                self.assertFalse(duplicate)
+            with rsa._regression_run_lock(args[0], 'target2', *args[1:], 1) as other_target:
+                self.assertTrue(other_target)
+            with rsa._regression_run_lock(args[0], 'target', *args[1:], 2) as other_run:
+                self.assertTrue(other_run)
+        with self.assertRaisesRegex(RuntimeError, 'failed'):
+            with rsa._regression_run_lock(args[0], 'target', *args[1:], 1) as reclaimed:
+                self.assertTrue(reclaimed)
+                raise RuntimeError('failed')
+        self.assertEqual(list(self.root.rglob('*.lock')), [])
+
+    def test_claimed_run_skips_loading_but_other_run_completes(self):
+        self.write_models()
+        args = dict(self.common, participants=[1], verbose=False,
+                    session_and_run_all_dict={1: self.units[1]},
+                    rsa_models_list=['target', 'target2'])
+        root = str(self.root / 'test/results/RSA_regression_rnd/basic/controls')
+        neural = np.arange(12, dtype=float).reshape(2, 1, 1, 6)
+        with rsa._regression_run_lock(root, 'target', 'H', 1, '01', 'test', 1):
+            with patch.object(rsa, 'load_meta_similarity_map', return_value=neural) as load:
+                self.assertFalse(rsa.calculate_multiple_regression_rsa(**args, rnd=True, reps=1))
+                self.assertEqual(load.call_count, 2)
+        self.assertFalse(self.run_folder(1, 1, 1, True).exists())
+        self.assertTrue(self.run_folder(1, 1, 2, True).exists())
+        self.assertTrue(self.run_folder(1, 1, 1, True, 'target2').exists())
+        self.assertTrue(self.run_folder(1, 1, 2, True, 'target2').exists())
 
     def test_permuted_fits_keep_controls_and_neural_data_and_resume(self):
         vectors = self.write_models()

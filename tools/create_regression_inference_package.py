@@ -18,7 +18,9 @@ def build_package(regression_support, out_dir):
         dataset = old['dataset']
         payload = {n: source.read(n) for n in source.namelist()
                    if n.startswith(f'data/{dataset}/ROI/') and n.endswith('.nii.gz')}
-    files = {f'code/{name}': REPO / name for name in ('rsa_utils.py', 'utils.py', 'preprocess_functions.py')}
+    files = {f'code/{name}': REPO / name for name in (
+        'rsa_utils.py', 'utils.py', 'preprocess_functions.py',
+        'publication_report.py', 'requirements-reporting.txt')}
     files.update({f'code/{name}': COLAB / name for name in (
         'gpu_rsa.py', 'gpu_regression.py', 'run_colab_regression.py', 'run_colab_regression_inference.py')})
     species = {

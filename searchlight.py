@@ -163,9 +163,10 @@ std across maps. Save as nifti.
     (a dropped connection to the data disk) is finished by running the step again.
 8: Threshold z maps, calculate cluster size distribution
 9: Threshold z maps, apply cluster correction, save significant maps
-10: Summarize results, create formatted report and save xlsx
+10: Save CSV, Word and LaTeX publication tables, Results text and provenance
 11: Calculate cross-participant similarity, use one participant as model and calculate similarity with other participants, repeat for all participants
-12: DSM extraction: For each significant cluster, extract the similarity values 
+12: DSM extraction: For each significant cluster, extract the similarity values
+12.1: Export participant-averaged DSMs at --coords as one RSA model CSV per run.
 15: Calculate multiple regression RSA per participant, using the models in regression_model as controls and each model in rsa_models_list as target. This will calculate the unique contribution of each target model to the similarity maps, controlling for the other models in regression_model
     One fit per participant, run and target model: at each voxel the pairwise similarity
     values are regressed on [intercept, target model, controls...] and the target's
@@ -182,7 +183,7 @@ std across maps. Save as nifti.
     under RSA_regression/{model}/{regression_model}/{rsa_model}/mean/.
 15.4: Repeat step 15 with permuted target model category labels, keeping the
     neural pairwise maps and real control models fixed. Step 15 uses model RDMs,
-    not RSA z-maps. --reps fits per run, saved under RSA_regression_rnd/;
+    --reps fits per run, saved under RSA_regression_rnd/;
     --replace_rnd_files overwrites existing permutation fits.
 15.5: Make --reps_group group beta mean/std maps under RSA_regression_rnd/,
     sampling one of the --reps step-15.4 fits per run for each group draw.
@@ -191,7 +192,7 @@ std across maps. Save as nifti.
 15.7: Convert permuted and real (15.3) beta means to z-maps using 15.6.
 15.8: Estimate positive-tail cluster-size null distributions from 15.7.
 15.9: Apply maximum-cluster correction to the real regression z-map.
-15.10: Write a CSV report of surviving clusters, coordinates and atlas regions.
+15.10: Save CSV, Word and LaTeX regression reports, Results text and provenance.
 
 # Keep adding numbers for steps, reorganize later for better structure
 
@@ -246,6 +247,32 @@ def _parse_step(value):
     return value if value == '15.10' else float(value)
 
 
+def _resolve_export_coordinates(mask, coords=None, coords_mm=None):
+    """Resolve step 12.1 coordinates on the mask grid (nearest voxel for mm)."""
+    import rsa_utils
+
+    if (coords is None) == (coords_mm is None):
+        raise ValueError('Provide exactly one of --coords x,y,z or --coords_mm x,y,z.')
+    raw = coords if coords is not None else coords_mm
+    values = np.asarray([float(value.strip()) for value in raw.strip('()').split(',')])
+    if values.shape != (3,) or not np.all(np.isfinite(values)):
+        raise ValueError('Coordinates must contain exactly three finite numbers.')
+    ref = nib.load(mask)
+    if coords_mm is not None:
+        # voxel_to_mm applies the supplied affine; its inverse maps world mm
+        # back into voxel space, including grid orientation and translation.
+        voxel = np.rint(rsa_utils.voxel_to_mm(values, np.linalg.inv(ref.affine)))
+    else:
+        if not np.all(values == np.rint(values)):
+            raise ValueError('--coords requires integer voxel indices; use --coords_mm for millimeters.')
+        voxel = values
+    if len(ref.shape) != 3 or np.any(voxel < 0) or np.any(voxel >= np.asarray(ref.shape)):
+        raise ValueError('Coordinates resolve outside the mask voxel grid.')
+    voxel = tuple(int(value) for value in voxel)
+    mm = tuple(float(value) for value in rsa_utils.voxel_to_mm(voxel, ref))
+    return voxel, mm
+
+
 def parse_arguments():
     parser = argparse.ArgumentParser(description='RSA Pipeline Execution')
     # parse dataset
@@ -262,6 +289,10 @@ def parse_arguments():
                         help='Method for pairwise similarity calculation')
     parser.add_argument('--rsa_model', type=str, default=None, required=False,
                         help='RSA model to use')
+    parser.add_argument('--output_rsa_model', type=str, default=None,
+                        help='Step 12.1: output stem; <name>.csv for Mahalanobis stim-wise, otherwise <name>-run-<N>.csv')
+    parser.add_argument('--stimuli', type=str, nargs='+', default=None,
+                        help='Step 12.1: exact stimulus labels to include (space separated); defaults to all labels')
     parser.add_argument('--rsa_method', type=str, default='kendall',
                         help='Method to compare similarity maps with model')
     parser.add_argument('--rsa_class', type=str, default=None,
@@ -295,6 +326,8 @@ def parse_arguments():
                         help='Minimum percentage of database available to process')
     parser.add_argument('--min_dist_mm', type=float, default=8.0,
                         help='Minimum distance between peaks in mm')
+    parser.add_argument('--report_title', type=str, default=None,
+                        help='Human-readable target model title for step 10/15.10 publication reports')
     parser.add_argument('--atlas_type', type=str, default='Nitzsche',
                         help='Type of atlas to use in case of dogs')
     parser.add_argument('--replace_file', action='store_true',
@@ -330,8 +363,11 @@ def parse_arguments():
                         help='Overwrite existing movement files')
     parser.add_argument('--skip_prefile_check', action='store_true',
                         help='Skip prefile check and overwrite files if they exist')
-    parser.add_argument('--coords', type=str, default=None,
+    coordinate_group = parser.add_mutually_exclusive_group()
+    coordinate_group.add_argument('--coords', type=str, default=None,
                         help='Coordinates for similarity files in voxel space, format: x,y,z')
+    coordinate_group.add_argument('--coords_mm', type=str, default=None,
+                        help='Step 12.1: world millimeter coordinates on the mask grid, format: x,y,z; rounded to nearest voxel')
     parser.add_argument('--mah_fold', type=str, default='stim-wise',
                         help='Mahalanobis folding: stim-wise, stim-wise-multiple-folds, stim-wise-all-runs (EmoC within-run classes), or run-wise')
     parser.add_argument('--job_marker_dir', type=str, default=None,
@@ -447,7 +483,7 @@ def main():
     radius_fwd = config["radius_fwd"]
     threshold_fwd = config["threshold_fwd"]
     print(f"Dataset: {dataset}, Task: {task}, Specie: {specie}, Model: {model}, RSA model: {rsa_model}, RSA method: {rsa_method} ")
-    print(f"Threshold for fwd calculation from config: {threshold_fwd}")
+    
     smooth = config["smooth"]
     img_type = config["img_type"]
     # if model_dict is in config, get it, otherwise set it to None
@@ -563,14 +599,14 @@ def main():
     elif specie == 'H':
         print(f"specie is H, mask_type: {mask_type}")
         if mask_type == 'cope13':
-            print('getting cope 13')
+            #print('getting cope 13')
             # get mask from GLM results, cope13
             # mask = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + 'initial' + os.sep + 'group' + os.sep + 'H-group_cope13.gfeat' + os.sep + 'cope1.feat' + os.sep + 'thresh_zstat1.nii.gz'
             # mask = r"P:\userdata\raulh87\data\EmoB\ROI\H\cope13.nii.gz"
             mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
             #b_greyMatter2mmB
         else:
-            print('not getting cope 13')
+            #print('not getting cope 13')
             # get path
             mask = rsa_utils.roi_mask_path(datafolder, dataset, specie, mask_type)
     print(f"Using mask: {mask}")
@@ -822,7 +858,7 @@ def main():
                                                 dis_method=dis_method, verbose=verbose,
                                                 min_percentage_available=min_percentage_available,
                                                 reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300, shuffle_participants=args.shuffle_participants,
-                                                reps_group=reps_group, mah_fold=mah_fold, mask_type=mask_type)
+                                                reps_group=reps_group, mah_fold=mah_fold, mask_type=mask_type, skip_prefile_check=skip_prefile_check)
             print("### Done computing group rnd mean model similarity maps ###")
             if result:
                 _write_marker(job_marker_dir, 5)
@@ -901,13 +937,14 @@ def main():
             print("### Done applying cluster correction to z maps ###")
             if result:
                 _write_marker(job_marker_dir, 9)
-        if step == 10: # Summarize results, create formatted report and save xlsx
-            print("### Step 10: Summarizing results and saving to Excel ###")
+        if step == 10: # CSV plus Word, LaTeX, Results text and report provenance
+            print("### Step 10: Creating CSV and publication reports ###")
             result = rsa_utils.create_tables(datafolder, dataset, specie, model, rsa_model, radius,
                   dis_method=dis_method, rsa_method=rsa_method, z_threshold=z_threshold, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
                   label_dict=label_dict, label_nii_data=label_nii_data, label_affine=label_affine,
                   apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask,
-                  mask_type=mask_type)
+                  mask_type=mask_type, report_title=args.report_title,
+                  atlas_name=atlas_for_labels if specie == 'D' else 'AAL3')
             if result:
                 _write_marker(job_marker_dir, 10)
         if step == 11: # Calculate cross-participant similarity, use one participant as model and calculate similarity with other participants, repeat for all participants
@@ -977,6 +1014,26 @@ def main():
                                                 rsa_model=rsa_model, voxel_coords=voxel_coords, config_path=config_path, verbose=True, shuffle_participants=True,
                                                 shuffle_runs=shuffle_runs, wait_time=wait_time)
             print("### Done computing similarity across all pairs in a model ###")
+        if step == 12.1:
+            print("### Step 12.1: Exporting participant-averaged RSA models ###")
+            if (coords is None and args.coords_mm is None) or not rsa_model or not args.output_rsa_model:
+                raise ValueError("Step 12.1 requires --coords x,y,z or --coords_mm x,y,z, --rsa_model and --output_rsa_model.")
+            voxel_coords, mm_coords = _resolve_export_coordinates(mask, coords, args.coords_mm)
+            if args.coords_mm is not None:
+                print(f"Requested mm coordinates: {args.coords_mm}")
+            print(f"Voxel coordinates (zero-based): {voxel_coords}")
+            print(f"MM coordinates (sampled voxel center): {mm_coords}")
+            session_and_run_all_dict = {
+                sub_N: rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                for sub_N in participants
+            }
+            paths = rsa_utils.export_average_rsa_models(
+                datafolder, dataset, session_and_run_all_dict, participants, specie,
+                mask, radius, dis_method, rsa_model, args.output_rsa_model,
+                voxel_coords, config_path, mah_fold=mah_fold,
+                replace_file=replace_file, verbose=verbose, stimuli=args.stimuli)
+            for path in paths:
+                print(f"Saved RSA model: {path}")
         if step == 13: # get movement .par files from each run using mcflirt outputs
             print("### Step 13: running mcflirt to get movement parameters (.par) ###")
             # print threshold for fwd calculation
@@ -1065,6 +1122,7 @@ def main():
                 min_percentage_available=min_percentage_available,
                 replace_file=replace_rnd_files if step == 15.5 else replace_file,
                 rnd=step == 15.5, reps=reps, reps_group=reps_group, verbose=verbose,
+                shuffle_participants=args.shuffle_participants,
             )
             if result:
                 _write_marker(job_marker_dir, step)
@@ -1080,7 +1138,8 @@ def main():
                 verbose=verbose, min_dist_mm=min_dist_mm,
                 label_dict=label_dict, label_nii_data=label_nii_data,
                 label_affine=label_affine, apply_coords_transform=apply_coords_transform,
-                atlas_file=atlas_file,
+                atlas_file=atlas_file, report_title=args.report_title,
+                atlas_name=atlas_for_labels if specie == 'D' else 'AAL3',
             )
             if result:
                 _write_marker(job_marker_dir, step)
