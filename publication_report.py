@@ -188,34 +188,25 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
         text = f"{intro} yielded {n_clusters} surviving {noun}, comprising {n_voxels} voxels{threshold_text}."
         if n_clusters > 1:
             text += f" Cluster sizes ranged from {int(sizes.min())} to {int(sizes.max())} voxels."
-        largest = max(clusters, key=lambda c: c["size_vox"])
-        strongest = max(clusters, key=lambda c: c["peaks"][0]["z"])
-
-        def describe(cluster):
-            peak = cluster["peaks"][0]
+        def describe_peak(peak):
             location = peak["region"]
             if location == "Unlabelled":
                 location = "an unlabelled atlas location"
             elif location == "Outside atlas":
                 location = "a location outside the atlas"
-            else:
-                location = "the " + location[0].lower() + location[1:]
             coords = ", ".join(_number(v) for v in peak["xyz_mm"])
-            return (f"{location} ({cluster['size_vox']} voxels; peak Z = {peak['z']:.2f}; "
+            return (f"{location} (Z = {peak['z']:.2f}; "
                     f"coordinates: {coords} mm)")
 
-        if largest == strongest:
-            text += f" The {'cluster' if n_clusters == 1 else 'largest cluster'} contained the highest peak statistic at {describe(largest)}."
-        else:
-            text += f" The largest cluster had its maximum at {describe(largest)}."
-            text += f" The highest peak statistic occurred at {describe(strongest)}."
-        secondary = list(dict.fromkeys(p["region"] for p in strongest["peaks"][1:]
-                                      if p["region"] not in {"Unlabelled", "Outside atlas"}))
-        if secondary:
-            names = [name[0].lower() + name[1:] for name in secondary]
-            locations = " and ".join(names) if len(names) < 3 else ", ".join(names[:-1]) + ", and " + names[-1]
-            text += f" Reported secondary {'peaks' if len(names) > 1 else 'peak'} in this cluster "
-            text += f"{'were' if len(names) > 1 else 'was'} labelled as {locations}."
+        # Describe every row, not just the largest/strongest cluster or unique
+        # named regions. Peak IDs tie the narrative back to the raw CSV.
+        for cluster in clusters:
+            peak = cluster["peaks"][0]
+            paragraph = (f"Cluster {cluster['cluster_id']} comprised {cluster['size_vox']} voxels. "
+                         f"Its maximum (peak {peak['subpeak_id']}) was at {describe_peak(peak)}.")
+            for peak in cluster["peaks"][1:]:
+                paragraph += f" Secondary peak {peak['subpeak_id']} was at {describe_peak(peak)}."
+            text += "\n\n" + paragraph
     else:
         text = f"{intro} yielded no surviving clusters{threshold_text}."
 
@@ -348,7 +339,8 @@ def write_docx(report, path):
     normal = document.styles["Normal"].paragraph_format
     normal.space_after, normal.line_spacing = Pt(7), 1.08
     document.add_paragraph(f"{report['dataset']} {report['title']} RSA results", "Title")
-    document.add_paragraph(report["results_text"])
+    for paragraph in report["results_text"].split("\n\n"):
+        document.add_paragraph(paragraph)
     caption = document.add_paragraph("Table 1. " + report["caption"], "Caption")
     caption.paragraph_format.keep_with_next = True
     table = document.add_table(rows=1, cols=7)

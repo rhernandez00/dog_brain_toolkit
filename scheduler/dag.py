@@ -70,7 +70,7 @@ def rsa_models_token(rsa_models_list):
     return f"list{len(names)}-{digest}"
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None, rsa_models_list=None):
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None, rsa_models_list=None, model_specie=None):
     # A batch job (several target models, one shared load of the pairwise maps)
     # takes a digest token in the rsa_model slot instead of a model name.
     if rsa_models_list:
@@ -89,6 +89,8 @@ def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps
     )
     if regression_model is not None:
         job_id += f"__reg{regression_model}"
+    if model_specie is not None:
+        job_id += f"__model-specie{model_specie}"
     # Per-participant jobs (scheduled from the dashboard for a single missing map)
     # get a __subNN suffix so they never collide with the whole-step job or with
     # each other. participant=None keeps the classic whole-step id unchanged.
@@ -202,7 +204,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                      replace_file=False, replace_rnd_files=False,
                      verbose=True, priority=DEFAULT_PRIORITY,
                      min_percentage_available=1.0, regression_model=None,
-                     rsa_models_list=None):
+                     rsa_models_list=None, model_specie=None):
     """Build a single, *independent* job dict (no dependencies, status=pending).
 
     Used by the dashboard's "schedule missing" / per-map buttons: the user has
@@ -231,7 +233,8 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                          reps, reps_group, rsa_method, dis_method, mah_fold,
                          participant=participant,
                          regression_model=regression_model,
-                         rsa_models_list=rsa_models_list)
+                         rsa_models_list=rsa_models_list,
+                         model_specie=model_specie)
     label = STEP_LABELS.get(step, f"Step {step}")
     if rsa_models_list is not None:
         label = f"{label} ({len(rsa_models_list)} models)"
@@ -243,6 +246,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
         "model": model,
         "rsa_model": rsa_model,
         "rsa_models_list": rsa_models_list,
+        "model_specie": model_specie,
         "regression_model": regression_model,
         "specie": specie,
         "step": step,

@@ -59,6 +59,8 @@ def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None
         cmd += ["--rsa_models_list"] + [str(m) for m in job["rsa_models_list"]]
     if job.get("rsa_model"):
         cmd += ["--rsa_model", str(job["rsa_model"])]
+    if job.get("model_specie"):
+        cmd += ["--model_specie", str(job["model_specie"])]
     if not job.get("rsa_models_list") and not job.get("rsa_model"):
         raise ValueError(
             f"Job {job.get('job_id')} names neither rsa_model nor rsa_models_list."

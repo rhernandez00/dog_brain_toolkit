@@ -1,0 +1,15 @@
+{
+  "batch_id": "cross-model-step5-99df0f3931784fb9b7e274a2e27c5fad",
+  "queue": "P:\\userdata\\raulh87\\data\\job_queue",
+  "models": [
+    "LcSSG_mah",
+    "RmSSG_mah",
+    "RcSG_mah"
+  ],
+  "model_specie": "D",
+  "specie": "H",
+  "priority": 1,
+  "expected_jobs": 45,
+  "created_jobs": 45,
+  "verified_jobs": 45
+}

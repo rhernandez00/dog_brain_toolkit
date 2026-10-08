@@ -278,6 +278,10 @@ def parse_arguments():
     # parse dataset
     parser.add_argument('--dataset', type=str, default='EmoC',
                         help='Dataset to use')
+    parser.add_argument('--datafolder', type=str, default=None,
+                        help='Override the parent directory containing the dataset')
+    parser.add_argument('--toolkit_dir', type=str, default=None,
+                        help='Override the directory containing this toolkit and Atlas')
     # parse task
     parser.add_argument('--task', type=str, default=None,
                         help='Task to use, if not provided, will use the same as dataset')
@@ -289,8 +293,12 @@ def parse_arguments():
                         help='Method for pairwise similarity calculation')
     parser.add_argument('--rsa_model', type=str, default=None, required=False,
                         help='RSA model to use')
+    parser.add_argument('--model_specie', type=str, choices=['D', 'H'], default=None,
+                        help='Steps 3 and 5: combine maps from <rsa_model>_<model_specie>-sub-XX models')
     parser.add_argument('--output_rsa_model', type=str, default=None,
                         help='Step 12.1: output stem; <name>.csv for Mahalanobis stim-wise, otherwise <name>-run-<N>.csv')
+    parser.add_argument('--individual', action='store_true',
+                        help='Step 12.1: export one model per participant from the species BIDS manifest')
     parser.add_argument('--stimuli', type=str, nargs='+', default=None,
                         help='Step 12.1: exact stimulus labels to include (space separated); defaults to all labels')
     parser.add_argument('--rsa_method', type=str, default='kendall',
@@ -384,6 +392,11 @@ def main():
     dis_method = args.dis_method
     coords = args.coords
     rsa_model = args.rsa_model
+    model_specie = args.model_specie
+    if model_specie is not None and any(step not in (3, 5) for step in steps_to_run):
+        raise ValueError('--model_specie is supported only for steps 3 and 5.')
+    if model_specie is not None and not rsa_model:
+        raise ValueError('--model_specie requires --rsa_model to name the model prefix.')
     rsa_method = args.rsa_method
     rsa_class = args.rsa_class
     comparison_model = args.comparison_model
@@ -435,6 +448,11 @@ def main():
         #'/home/raulh87/mnt/a471/userdata/raulh87/github
         git_folder = os.path.join('/home', 'raulh87', 'mnt', 'a471', 'userdata', 'raulh87', 'github')
         
+    if args.datafolder is not None:
+        datafolder = os.path.abspath(args.datafolder)
+    if args.toolkit_dir is not None:
+        git_folder = os.path.dirname(os.path.abspath(args.toolkit_dir))
+
     config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
 
     # Load config.yaml
@@ -444,7 +462,8 @@ def main():
     # stim_types = config['stim_types']
     
 
-    path_to_dog_brain_toolkit = os.path.join(git_folder, 'dog_brain_toolkit')
+    path_to_dog_brain_toolkit = (os.path.abspath(args.toolkit_dir) if args.toolkit_dir
+                                 else os.path.join(git_folder, 'dog_brain_toolkit'))
     
     sys.path.append(path_to_dog_brain_toolkit)
     import utils
@@ -498,7 +517,7 @@ def main():
     
 
     # if rsa_model is not None, get rsa_model_path
-    if rsa_model is not None:
+    if rsa_model is not None and model_specie is None:
         rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
         # check if model is available
         if not os.path.exists(rsa_model_path):
@@ -799,9 +818,12 @@ def main():
             result = rsa_utils.calculate_group_model_similarity_map(datafolder, dataset, session_and_run_all_dict, specie, model,
                                                 task, radius, rsa_model=rsa_model,
                                                 rsa_method=rsa_method,
-                                                dis_method=dis_method, replace_file=True, verbose=verbose,
+                                                dis_method=dis_method,
+                                                replace_file=replace_file if model_specie else True,
+                                                verbose=verbose,
                                                 min_percentage_available=min_percentage_available, mask_type=mask_type,
-                                                mah_fold=mah_fold, mask=mask
+                                                mah_fold=mah_fold, mask=mask,
+                                                model_specie=model_specie
                                                 )
             print("### Done computing group model similarity map ###")
             if result:
@@ -858,7 +880,9 @@ def main():
                                                 dis_method=dis_method, verbose=verbose,
                                                 min_percentage_available=min_percentage_available,
                                                 reps=reps, replace_rnd_files=replace_rnd_files, wait_time=300, shuffle_participants=args.shuffle_participants,
-                                                reps_group=reps_group, mah_fold=mah_fold, mask_type=mask_type, skip_prefile_check=skip_prefile_check)
+                                                reps_group=reps_group, mah_fold=mah_fold, mask_type=mask_type,
+                                                skip_prefile_check=skip_prefile_check or model_specie is not None,
+                                                model_specie=model_specie)
             print("### Done computing group rnd mean model similarity maps ###")
             if result:
                 _write_marker(job_marker_dir, 5)
@@ -868,7 +892,7 @@ def main():
             result = rsa_utils.calculate_voxelwise_rnd_distribution(datafolder, dataset, specie, model, task, radius,
                                         dis_method=dis_method, rsa_method=rsa_method,
                                         rsa_model=rsa_model, reps_group=reps_group,
-                                        verbose=verbose)
+                                        verbose=verbose, min_percentage_available=min_percentage_available)
             print("### Done computing per voxel rnd distribution ###")
             if result:
                 _write_marker(job_marker_dir, 6)
@@ -1015,7 +1039,7 @@ def main():
                                                 shuffle_runs=shuffle_runs, wait_time=wait_time)
             print("### Done computing similarity across all pairs in a model ###")
         if step == 12.1:
-            print("### Step 12.1: Exporting participant-averaged RSA models ###")
+            print(f"### Step 12.1: Exporting {'individual' if args.individual else 'participant-averaged'} RSA models ###")
             if (coords is None and args.coords_mm is None) or not rsa_model or not args.output_rsa_model:
                 raise ValueError("Step 12.1 requires --coords x,y,z or --coords_mm x,y,z, --rsa_model and --output_rsa_model.")
             voxel_coords, mm_coords = _resolve_export_coordinates(mask, coords, args.coords_mm)
@@ -1023,15 +1047,22 @@ def main():
                 print(f"Requested mm coordinates: {args.coords_mm}")
             print(f"Voxel coordinates (zero-based): {voxel_coords}")
             print(f"MM coordinates (sampled voxel center): {mm_coords}")
-            session_and_run_all_dict = {
-                sub_N: rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
-                for sub_N in participants
-            }
+            if args.individual:
+                session_and_run_all_dict = rsa_utils.get_rsa_export_manifest(
+                    datafolder, dataset, specie, participants_forced)
+                export_participants = list(session_and_run_all_dict)
+            else:
+                export_participants = participants
+                session_and_run_all_dict = {
+                    sub_N: rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                    for sub_N in export_participants
+                }
             paths = rsa_utils.export_average_rsa_models(
-                datafolder, dataset, session_and_run_all_dict, participants, specie,
+                datafolder, dataset, session_and_run_all_dict, export_participants, specie,
                 mask, radius, dis_method, rsa_model, args.output_rsa_model,
                 voxel_coords, config_path, mah_fold=mah_fold,
-                replace_file=replace_file, verbose=verbose, stimuli=args.stimuli)
+                replace_file=replace_file, verbose=verbose, stimuli=args.stimuli,
+                individual=args.individual)
             for path in paths:
                 print(f"Saved RSA model: {path}")
         if step == 13: # get movement .par files from each run using mcflirt outputs

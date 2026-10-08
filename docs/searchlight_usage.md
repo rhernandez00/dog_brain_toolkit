@@ -109,6 +109,56 @@ Other folding modes retain their current output naming. Mahalanobis modes other
 than `stim-wise` and `stim-wise-all-runs` also share maps across runs and may
 produce identical run CSVs; step 12.1 warns about this.
 
+Add `--individual` to export separate participant models instead of a group
+average. In this mode, participants and sessions/runs come from the unique
+`sub_N` entries in `BIDS/{specie}_database-details.csv`, rather than the config's
+participant list. `--participants_forced` restricts these manifest participants;
+IDs absent from the manifest are errors.
+
+For example, `--output_rsa_model LcSSG_mah --specie D --dis_method mahalanobis
+--mah_fold stim-wise --stimuli A H C --individual` writes
+`rsa_models/LcSSG_mah_D-sub-01.csv`, `LcSSG_mah_D-sub-02.csv`, etc.
+For run-specific exports, the names include both identifiers:
+`LcSSG_mah_D-sub-01-run-1.csv`. Repeated sessions are averaged within each
+participant/run; participants are never averaged together. Absent runs are
+skipped with a warning. Missing maps for expected inputs remain errors.
+Coordinate options, stimulus selection, and `--replace_file` work as before.
+
+### Average maps across individual source-species models (steps 3 and 5)
+
+Use `--model_specie` when `--rsa_model` is a prefix for individual models. For
+example:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" searchlight.py `
+    --dataset EmoB --model basic-block --specie H --steps_to_run 3 `
+    --rsa_model LcSSG_mah --dis_method mahalanobis `
+    --mah_fold stim-wise --model_specie D
+```
+
+This expects `LcSSG_mah_D-sub-01.csv`, `LcSSG_mah_D-sub-02.csv`, and one
+individual model for every D participant in the BIDS manifest. A missing model
+CSV is an error. Step 3 reads each model's H
+participant maps from `results/RSA/basic-block/<individual-model>/H-sub-XX/`
+and averages every available source-model × H-participant map into one H mean
+and standard deviation under `results/RSA/basic-block/LcSSG_mah_D/mean/`. Its
+JSON log records the exact source models and input maps. `--specie` names the
+species whose brain maps are averaged; `--model_specie` names the species in
+the individual model filenames. The base model CSV is not required.
+
+Step 5 with the same options reads the permutation maps under each individual
+model's `results/RSA_rnd/` folder. For each group permutation it samples one
+available participant permutation map for every source-model × H-participant
+unit and writes a combined map under `results/RSA_rnd/basic-block/LcSSG_mah_D/mean/`.
+The usual `--reps` and `--reps_group` options apply. Both steps honor
+`--min_percentage_available` over the full set of expected maps; its default
+of `1.0` requires every source-model × participant unit. Step 5 checks which
+permutation maps actually exist when `--model_specie` is set. Step 3 will not
+overwrite an existing combined map unless `--replace_file` is supplied.
+
+Without `--model_specie`, steps 3 and 5 retain their usual single-model behavior.
+The option is accepted only for these two steps.
+
 Before running, the following must already exist on the shared data disk:
 
 | Requirement | Location |
@@ -145,7 +195,7 @@ upstream outputs already exist.
 | **1** | Pairwise similarity maps | `calculate_pairwise_similarity_maps2` | Most expensive step; independent of the RSA model. |
 | **2** | Model similarity (real) | `compare_with_model2(rnd=False)` | Requires `--rsa_model`. |
 | **3** | Group model similarity map | `calculate_group_model_similarity_map` | Averages step 2 across participants. |
-| **4** | Permuted model similarity (RND) | `compare_with_model2(rnd=True)` | Controlled by `--reps` (default 100). |
+| **4** | Permuted model similarity (RND) | `compare_with_model2(rnd=True)` | Controlled by `--reps` (default 100); visits output indices in random order and skips existing maps unless `--replace_rnd_files` is set. |
 | **5** | Group permutations (RND) | `calculate_group_model_similarity_map_rnd` | Controlled by `--reps_group` (default 1000). |
 | **6** | Voxelwise RND distribution | `calculate_voxelwise_rnd_distribution` | Per-voxel mean & std of the null. |
 | **7** | Z-maps | `calculate_z_maps_rnd` + `calculate_z_map_real_data` | Requires steps **3 and 6**. |
@@ -445,10 +495,13 @@ Running step 10 or 15.10 writes the original CSV plus these companion files
 
 - `_publication.docx`: an editable journal-style table with all reported peaks,
   grouped cluster extents, coordinates in mm, two-decimal Z values, caption,
-  statistical notes, and a deterministic Results paragraph.
+  statistical notes, and deterministic Results prose: an overview followed by
+  one paragraph per cluster describing its extent and every reported peak's
+  ID, anatomical label, Z value, and coordinates. Repeated and unlabelled peak
+  locations are retained; coverage is of all CSV rows, not unreported maxima.
 - `_publication.tex`: the same Results text and a multipage-capable table. Include
   it with `\input{...}` after loading `booktabs`, `longtable`, and `array`.
-- `_results.txt`: the Results paragraph alone, ready to paste into a manuscript.
+- `_results.txt`: the Results prose alone, ready to paste into a manuscript.
 - `_report.json`: full-precision facts, source paths and SHA-256 hashes, saved
   correction settings, peak-selection settings, and metadata/anatomy warnings.
 

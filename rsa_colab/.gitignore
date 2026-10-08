@@ -1,0 +1,9 @@
+_local_data/
+toolkit/
+toolkit_cpu.zip
+input_data.zip
+jobs/
+results/
+BIDS/
+config_files/
+rsa_models/
