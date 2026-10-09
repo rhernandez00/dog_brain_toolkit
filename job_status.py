@@ -52,6 +52,8 @@ def main():
     parser.add_argument("--z_threshold", type=float, default=3.1)
     parser.add_argument("--reps", type=int, default=100)
     parser.add_argument("--reps_group", type=int, default=1000)
+    parser.add_argument("--radius", type=int, default=None,
+                        help="Searchlight radius (default: species default)")
     args = parser.parse_args()
 
     datafolder, _, _ = get_paths()
@@ -62,7 +64,8 @@ def main():
     print(f"Model     : {args.model}")
     print(f"RSA model : {args.rsa_model}")
     print(f"dis_method: {args.dis_method}  rsa_method: {args.rsa_method}  mah_fold: {args.mah_fold}")
-    print(f"z_thresh  : {args.z_threshold}  reps: {args.reps}  reps_group: {args.reps_group}")
+    radius_label = args.radius if args.radius is not None else "species default"
+    print(f"z_thresh  : {args.z_threshold}  reps: {args.reps}  reps_group: {args.reps_group}  radius: {radius_label}")
     print()
 
     col_w = 10
@@ -78,7 +81,7 @@ def main():
                 args.dataset, args.model, args.rsa_model, specie, step,
                 args.z_threshold, args.reps, args.reps_group,
                 rsa_method=args.rsa_method, dis_method=args.dis_method,
-                mah_fold=args.mah_fold,
+                mah_fold=args.mah_fold, radius=args.radius,
             )
             state = find_state(queue_dir, job_id)
             cell = STATE_LABEL.get(state, "  --  ")

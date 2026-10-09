@@ -67,63 +67,10 @@ from scheduler.jobs import (create_job, normalize_priority,  # noqa: E402
 # Version — bump VERSION and update LAST_CHANGE on every edit to this file.
 # See the "Versioning pipeline_dashboard.py" rule in CLAUDE.md.
 # ---------------------------------------------------------------------------
-VERSION = "2.7.0"
-LAST_CHANGE = ("Added step 15 (multiple regression RSA, searchlight.py's --regression_model "
-               "step): a new 'regression_model' dropdown in the param panel (populated from "
-               "rsa_models/regression_models/*.csv, reloaded by the same '⟳ reload models' "
-               "button), a probe_step15 in pipeline_console that checks the "
-               "beta/t/p map trio + JSON sidecar per participant, and per-run — always "
-               "per-run, whatever dis_method/mah_fold, because the control models are "
-               "rebuilt per run regardless — so a participant's note reads 'n/expected' "
-               "runs done instead of a bare DONE/MISSING. That per-run count is what makes "
-               "dis_method=correlation or mah_fold=run-wise (more runs per participant, and "
-               "currently no models exercise them) show a real number rather than just "
-               "'some missing'. Step 15 is a side step like 4.5/7.6: listed and checked like "
-               "any other row, but 'Sched from here' is disabled on it and it is scheduled "
-               "via 'Sched missing' / per-participant buttons, which now pass regression_model "
-               "through to build_single_job. 'regression_model' also joined PARAM_KEYS, so it "
-               "is part of the cache signature like every other parameter. Previously (2.6.0): "
-               "steps 4.5 (RND participant distribution) and 7.6 (participant z-maps) are "
-               "now verified like every other step: two new probes in pipeline_console "
-               "(probe_step4_5 / probe_step7_6) count, per participant, the units that "
-               "have their _mean/_std pair in RSA_rnd (4.5) and their _z map next to the "
-               "step-2 map (7.6) — a unit being a run or a whole participant, whichever "
-               "the fold writes. The table iterates pc.ALL_STEPS, so both rows appear "
-               "with Check / Clear / Details / Sched missing and per-participant Schedule "
-               "buttons; they count as per-participant steps. 'Sched from here' is "
-               "disabled on them because they hang off the main line — the DAG it builds "
-               "walks 0→10 and starting it at 4.5 would queue 5→10 and skip 4.5 itself. "
-               "'Check all' now scans them too but still focuses the first incomplete "
-               "step on the main line. Also (2.5.0): the rsa_model menu is now filtered "
-               "by dis_method, not just by fold. "
-               "It offered every model _models.csv classifies, because it queried the "
-               "manifest by mah_fold alone (mahalanobis) or not at all (any other "
-               "method) — and a fold name is not unique across methods, so e.g. "
-               "correlation listed the mahalanobis models too. Both menus now go "
-               "through models_manifest.concrete_models_for(dis_method, mah_fold): "
-               "mahalanobis lists that fold's models, every other method lists its own "
-               "models with the fold ignored, and the mah_fold menu itself lists only "
-               "the selected method's folds. The dis_method menu marks which methods "
-               "the manifest actually classifies. Also (2.4.0): following the cache "
-               "file is a switch — '⟳ live' next to the "
-               "verbose toggle, off by default and remembered per browser. Off, the page "
-               "behaves exactly as it always did: it re-reads the cache only when you "
-               "press a button or change a parameter, and the poll interval is disabled "
-               "so it does not even stat the file. On, a 3 s poll compares the cache "
-               "file's mtime with the last one rendered and redraws when it moved, so "
-               "results written by another process (tools/bulk_check.py, a second "
-               "dashboard, the other machine's copy of the file) appear without touching "
-               "the page; switching it on also picks up anything written while it was "
-               "off. The status line under the buttons says which of the two you are in. "
-               "Also (2.2.0): model-independent steps are now cached once and shared. Step 1 (pairwise "
-               "similarity) writes into the subject folder, not the model folder, so its "
-               "result is stored under a reduced signature (dataset/model/specie/dis_method/"
-               "radius, plus mah_fold and — for the stim-wise fold, whose expected pairs come "
-               "from the model CSV — a fingerprint of the model's categories); step 0 (beta "
-               "maps) is shared over dataset/model/specie. Checking either step for one "
-               "rsa_model now fills it in for every matching model, and Clear / Clear all "
-               "drop the shared entry. Per-parameter-set entries written before this are "
-               "still read as a fallback, so nothing already cached is lost.")
+VERSION = "2.7.1"
+LAST_CHANGE = ("The rsa_model menu now lists every concrete model classified in "
+               "_models.csv, including run-dependent models such as visual1__all "
+               "whose CSVs exist only as per-run files.")
 
 # Final step of the pipeline; "Schedule from here" queues start_step .. FINAL_STEP.
 FINAL_STEP = 10
@@ -934,7 +881,8 @@ def populate_mah_folds(dataset, dis_method, _n, current):
 # 'mahalanobis' alone: with that method the list is narrowed further to the
 # selected fold's models; with any other distance method the fold decides nothing
 # about which models exist, so it is ignored and every model of that method is
-# offered. Only models whose CSV exists on disk are kept.
+# offered. A manifest entry may name a run-dependent model with only
+# {model}-run-{N}.csv files, so an exact {model}.csv is not required here.
 @app.callback(
     Output('p-rsa_model', 'options'),
     Output('p-rsa_model', 'value'),
@@ -952,13 +900,11 @@ def populate_models(dataset, dis_method, mah_fold, _n, current):
     mm.clear_cache()
     clear_model_cache()  # model CSVs may have changed too (step-1 sharing key)
     dirs = mm.rsa_models_dirs(DATAFOLDER, dataset)
-    on_disk = {m for m in pc.list_rsa_models(DATAFOLDER, dataset)[0] if not m.startswith('_')}
-    candidates = mm.concrete_models_for(dirs, dis_method, mah_fold)
+    models = mm.concrete_models_for(dirs, dis_method, mah_fold)
     if mm.uses_fold(dis_method):
         note = f"{dis_method} / {mah_fold}"
     else:
         note = f"{dis_method or 'non-mahalanobis'} (fold ignored)"
-    models = [m for m in candidates if m in on_disk]
     _log(f"  {len(models)} model(s) from _models.csv — {note}")
     options = [{'label': m, 'value': m} for m in models]
     value = current if current in models else (models[0] if models else None)

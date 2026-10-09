@@ -57,6 +57,8 @@ def main():
     parser.add_argument("--mah_fold", default="stim-wise",
                         help="Folding strategy for Mahalanobis distance with cross-validation "
                              "(stim-wise [default], stim-wise-all-runs, run-wise-multiple-runs)")
+    parser.add_argument("--radius", type=int, default=None,
+                        help="Searchlight radius (default: 3 for D, 4 for H)")
     args = parser.parse_args()
 
     datafolder, _, _ = get_paths()
@@ -83,6 +85,7 @@ def main():
             mah_fold=args.mah_fold,
             replace_rnd_files=args.replace_rnd_files,
             priority=args.priority,
+            radius=args.radius,
         )
         for job in jobs:
             created = create_job(queue_dir, job)

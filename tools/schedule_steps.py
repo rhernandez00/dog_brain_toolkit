@@ -97,6 +97,8 @@ def main():
     p.add_argument('--z_threshold', type=float, default=3.1)
     p.add_argument('--reps', type=int, default=100)
     p.add_argument('--reps_group', type=int, default=1000)
+    p.add_argument('--radius', type=int, default=None,
+                   help="Searchlight radius (default: 3 for D, 4 for H)")
     p.add_argument('--min_percentage_available', type=float, default=1.0,
                    help='Minimum fraction of the dataset required to process the analysis')
     p.add_argument('--priority', type=int, default=DEFAULT_PRIORITY,
@@ -125,9 +127,10 @@ def main():
     print('queue   : %s' % queue_dir)
     print('models  : %d   species: %s' % (len(entries), species))
     print('steps   : %s  (no dependency check -- each job is independent, status=pending)' % steps)
-    print('params  : dis=%s rsa=%s mah=%s zt=%s r=%s rg=%s min_pct=%s verbose=True priority=%d'
+    print('params  : dis=%s rsa=%s mah=%s zt=%s r=%s rg=%s radius=%s min_pct=%s verbose=True priority=%d'
           % (args.dis_method, args.rsa_method, args.mah_fold,
              args.z_threshold, args.reps, args.reps_group,
+             args.radius if args.radius is not None else 'species default',
              args.min_percentage_available, args.priority))
     print('total   : %d jobs\n' % (len(entries) * len(species) * len(steps)))
 
@@ -145,6 +148,7 @@ def main():
                     replace_rnd_files=args.replace_rnd_files,
                     verbose=True,
                     priority=args.priority,
+                    radius=args.radius,
                 )
                 if not args.dry_run:
                     create_job(queue_dir, j)

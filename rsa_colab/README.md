@@ -10,13 +10,13 @@ data from the parent folder of your dataset (on Windows or Linux):
 
 ```powershell
 & 'C:\ProgramData\anaconda3\python.exe' tools/colab_cpu.py pack --output rsa_colab/toolkit_cpu.zip
-& 'C:\ProgramData\anaconda3\python.exe' tools/colab_cpu.py pack-data --datafolder 'P:\userdata\raulh87\data' --allow-missing --output rsa_colab/input_data.zip
+& 'C:\ProgramData\anaconda3\python.exe' tools/colab_cpu.py pack-data --datafolder 'P:\userdata\raulh87\data' --radius 4 --allow-missing --output rsa_colab/input_data.zip
 ```
 
 The Python function is `pack_for_CPU_colab(datafolder, output_zip=None,
 dataset='EmoC', model='basic-block', specie='D', participants=None,
-mask_type='b_GreyMatter2mmB', allow_missing=False)`. It packs the YAML config, BIDS run table, all
-step-1 pairwise NIfTI maps for the selected participants, and the dataset-local
+mask_type='b_GreyMatter2mmB', radius=3, allow_missing=False)`. It packs the YAML config, BIDS run table, all
+step-1 pairwise NIfTI maps for the selected participants and radius, and the dataset-local
 mask for human or `cope13` analyses. With `participants=None`, it uses unique
 `sub_N` values from `BIDS/{specie}_database-details.csv` and fails if any lacks step-1
 maps. It excludes `rsa_models` deliberately.

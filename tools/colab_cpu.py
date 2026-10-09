@@ -105,12 +105,13 @@ def pack_for_CPU_colab(
     specie: str = 'D',
     participants: list[int] | None = None,
     mask_type: str = 'b_GreyMatter2mmB',
+    radius: int = 3,
     allow_missing: bool = False,
 ) -> Path:
     """Pack step-2/4 input data from ``datafolder/dataset`` for the CPU notebook.
 
     The archive has the flat ``rsa_colab`` layout: config, BIDS run table,
-    step-1 pairwise maps, and a dataset-local ROI mask when required. It
+    step-1 pairwise maps for ``radius``, and a dataset-local ROI mask when required. It
     intentionally excludes ``rsa_models``; add the model CSV manually.
     With no participant list, all unique ``sub_N`` values in the BIDS run
     manifest are selected. Set ``allow_missing`` to pack available maps while
@@ -121,6 +122,8 @@ def pack_for_CPU_colab(
         raise ValueError('dataset must be a single directory name')
     if specie not in ('D', 'H'):
         raise ValueError('specie must be D or H')
+    if radius < 1:
+        raise ValueError('radius must be a positive integer')
     dataset_root = datafolder / dataset
     if not dataset_root.is_dir():
         raise FileNotFoundError(f'Dataset folder missing: {dataset_root}')
@@ -161,7 +164,7 @@ def pack_for_CPU_colab(
             # for every NIfTI on mounted data shares.
             for current, _, names in os.walk(folder):
                 maps.extend(Path(current) / name for name in names
-                            if name.endswith('.nii.gz'))
+                            if name.endswith('.nii.gz') and f'r-{radius}_' in name)
             maps.sort()
         if not maps:
             missing.append(str(folder))
@@ -170,10 +173,10 @@ def pack_for_CPU_colab(
             files.extend(maps)
             per_participant[f'{specie}-sub-{participant:02d}'] = len(maps)
     if missing and not allow_missing:
-        raise FileNotFoundError('Step-1 pairwise maps missing for: ' + ', '.join(missing))
+        raise FileNotFoundError(f'Step-1 r-{radius} pairwise maps missing for: ' + ', '.join(missing))
 
     output_zip.parent.mkdir(parents=True, exist_ok=True)
-    manifest = dict(dataset=dataset, model=model, specie=specie,
+    manifest = dict(dataset=dataset, model=model, specie=specie, radius=radius,
                     participants=chosen, mask_type=mask_stem,
                     participant_source=f'BIDS/{specie}_database-details.csv:sub_N',
                     ready_participants=sorted(set(chosen) - set(missing_participants)),
@@ -435,6 +438,7 @@ def main() -> None:
     pack_data.add_argument('--specie', choices=('D', 'H'), default='D')
     pack_data.add_argument('--participants', type=int, nargs='+', default=None)
     pack_data.add_argument('--mask_type', default='b_GreyMatter2mmB')
+    pack_data.add_argument('--radius', type=int, default=3)
     pack_data.add_argument('--allow-missing', action='store_true',
                            help='Pack available maps and record participants missing step-1 maps')
     run = sub.add_parser('run-job', help='Run one saved step-4/5 job')
@@ -447,6 +451,7 @@ def main() -> None:
         pack_for_CPU_colab(args.datafolder, args.output, dataset=args.dataset,
                            model=args.model, specie=args.specie,
                            participants=args.participants, mask_type=args.mask_type,
+                           radius=args.radius,
                            allow_missing=args.allow_missing)
     else:
         run_job(args.job_file, args.root)

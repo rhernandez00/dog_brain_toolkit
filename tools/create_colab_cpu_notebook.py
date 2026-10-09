@@ -61,9 +61,9 @@ Use **Runtime → Change runtime type → CPU**. The free tier is sufficient for
 runtime type; actual steps 2, 4 and 5 may take hours and can exceed a free session.
 
 1. On the workstation run `python tools/colab_cpu.py pack --output rsa_colab/toolkit_cpu.zip`
-   and `python tools/colab_cpu.py pack-data --datafolder <parent-of-EmoC> --output rsa_colab/input_data.zip`.
+   and `python tools/colab_cpu.py pack-data --datafolder <parent-of-EmoC> --radius 3 --output rsa_colab/input_data.zip`.
    `pack_for_CPU_colab()` also accepts `dataset`, `model`, `specie`, `participants`
-   `mask_type` and `allow_missing` options. It takes participants from the BIDS run table's
+   `mask_type`, `radius` and `allow_missing` options. It takes participants from the BIDS run table's
    `sub_N` column by default, and packs the config, table, step-1 maps and
    dataset-local mask when needed. Use `--allow-missing` to record missing step-1
    participants while still making an archive of the available maps.

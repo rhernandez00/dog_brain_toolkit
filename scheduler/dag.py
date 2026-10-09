@@ -70,7 +70,7 @@ def rsa_models_token(rsa_models_list):
     return f"list{len(names)}-{digest}"
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None, rsa_models_list=None, model_specie=None):
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None, rsa_models_list=None, model_specie=None, radius=None):
     # A batch job (several target models, one shared load of the pairwise maps)
     # takes a digest token in the rsa_model slot instead of a model name.
     if rsa_models_list:
@@ -91,6 +91,11 @@ def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps
         job_id += f"__reg{regression_model}"
     if model_specie is not None:
         job_id += f"__model-specie{model_specie}"
+    # Preserve historical IDs at each species' searchlight default. Other
+    # radii need distinct IDs so queue records and dependencies cannot collide.
+    default_radius = {"D": 3, "H": 4}.get(specie)
+    if radius is not None and radius != default_radius:
+        job_id += f"__rad{radius}"
     # Per-participant jobs (scheduled from the dashboard for a single missing map)
     # get a __subNN suffix so they never collide with the whole-step job or with
     # each other. participant=None keeps the classic whole-step id unchanged.
@@ -108,7 +113,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
                     verbose=True,
                     priority=DEFAULT_PRIORITY,
                     min_percentage_available=1.0,
-                    regression_model=None):
+                    regression_model=None, radius=None):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.  Steps below start_step are never
@@ -162,10 +167,10 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
     for step in topo_order:
         dep_steps = adj[step]
         dep_ids = [
-            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model)
+            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model, radius=radius)
             for d in dep_steps
         ]
-        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model)
+        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model, radius=radius)
         jobs.append({
             "job_id": job_id,
             "dataset": dataset,
@@ -185,6 +190,7 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "z_threshold": z_threshold,
             "reps": reps,
             "reps_group": reps_group,
+            "radius": radius,
             "replace_rnd_files": replace_rnd_files,
             "verbose": verbose,
             "created_at": None,
@@ -234,7 +240,8 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                          participant=participant,
                          regression_model=regression_model,
                          rsa_models_list=rsa_models_list,
-                         model_specie=model_specie)
+                         model_specie=model_specie,
+                         radius=radius)
     label = STEP_LABELS.get(step, f"Step {step}")
     if rsa_models_list is not None:
         label = f"{label} ({len(rsa_models_list)} models)"
