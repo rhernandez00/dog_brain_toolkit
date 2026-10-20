@@ -7,6 +7,8 @@ Usage:
   python schedule_rsa.py --dataset EmoC --model basic-block --rsa_model test-model \\
       --specie D --reps 10 --reps_group 50 --z_threshold 3.1
   python schedule_rsa.py --dataset EmoC --rsa_model urgent-model --priority 1
+  python schedule_rsa.py --dataset EmoC --rsa_class all --specie D \\
+      --start_step 11.2 --target_step 11.5 --radius 4
 """
 import argparse
 import sys
@@ -15,7 +17,7 @@ import os
 sys.path.insert(0, os.path.dirname(__file__))
 
 from scheduler.paths import get_paths, get_queue_dir
-from scheduler.dag import build_job_graph
+from scheduler.dag import build_job_graph, step_token
 from scheduler.jobs import create_job, DEFAULT_PRIORITY, PRIORITIES
 
 
@@ -27,13 +29,15 @@ def main():
                         help="Dataset name (e.g. EmoC)")
     parser.add_argument("--model", default="basic-block",
                         help="GLM model name (default: basic-block)")
-    parser.add_argument("--rsa_model", required=True,
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--rsa_model",
                         help="RSA model name (CSV filename without .csv extension)")
+    target.add_argument("--rsa_class", help="Comparison class for steps 11.2--11.5")
     parser.add_argument("--specie", default="both", choices=["H", "D", "both"],
                         help="Species to schedule: H, D, or both (default: both)")
-    parser.add_argument("--target_step", type=int, default=10,
+    parser.add_argument("--target_step", type=float, default=10,
                         help="Final pipeline step to schedule (default: 10)")
-    parser.add_argument("--start_step", type=int, default=2,
+    parser.add_argument("--start_step", type=float, default=2,
                         help="Earliest pipeline step to schedule; steps below are assumed "
                              "to exist on disk already (default: 2)")
     parser.add_argument("--rsa_method", default="kendall",
@@ -74,6 +78,7 @@ def main():
             dataset=args.dataset,
             model=args.model,
             rsa_model=args.rsa_model,
+            rsa_class=args.rsa_class,
             specie=specie,
             target_step=args.target_step,
             start_step=args.start_step,
@@ -93,7 +98,7 @@ def main():
             if created:
                 total_created += 1
             print(
-                f"  [{marker}] step {job['step']:02d} ({job['label']:<26}) -> {job['status']}"
+                f"  [{marker}] {step_token(job['step'])} ({job['label']:<26}) -> {job['status']}"
                 f"  [p{job['priority']}]"
             )
 

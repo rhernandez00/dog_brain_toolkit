@@ -15,7 +15,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(__file__))
 
 from scheduler.paths import get_paths, get_queue_dir
-from scheduler.dag import STEP_LABELS, make_job_id
+from scheduler.dag import CLASS_STEPS, STEP_LABELS, make_job_id
 from scheduler.jobs import job_files
 
 STATE_LABEL = {
@@ -42,7 +42,9 @@ def main():
     parser = argparse.ArgumentParser(description="Show RSA job status")
     parser.add_argument("--dataset", required=True)
     parser.add_argument("--model", default="basic-block")
-    parser.add_argument("--rsa_model", required=True)
+    target = parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--rsa_model")
+    target.add_argument("--rsa_class")
     parser.add_argument("--dis_method", default="mahalanobis",
                         help="Pairwise similarity method (default: mahalanobis)")
     parser.add_argument("--rsa_method", default="kendall",
@@ -62,7 +64,7 @@ def main():
     print()
     print(f"Dataset   : {args.dataset}")
     print(f"Model     : {args.model}")
-    print(f"RSA model : {args.rsa_model}")
+    print(f"RSA target: {args.rsa_class or args.rsa_model}")
     print(f"dis_method: {args.dis_method}  rsa_method: {args.rsa_method}  mah_fold: {args.mah_fold}")
     radius_label = args.radius if args.radius is not None else "species default"
     print(f"z_thresh  : {args.z_threshold}  reps: {args.reps}  reps_group: {args.reps_group}  radius: {radius_label}")
@@ -73,7 +75,7 @@ def main():
     print(header)
     print("-" * len(header))
 
-    for step in range(11):
+    for step in (sorted(CLASS_STEPS) if args.rsa_class else range(11)):
         label = STEP_LABELS.get(step, f"Step {step}")
         row = f"{step:<5} {label:<28}"
         for specie in ("D", "H"):
@@ -81,7 +83,7 @@ def main():
                 args.dataset, args.model, args.rsa_model, specie, step,
                 args.z_threshold, args.reps, args.reps_group,
                 rsa_method=args.rsa_method, dis_method=args.dis_method,
-                mah_fold=args.mah_fold, radius=args.radius,
+                mah_fold=args.mah_fold, radius=args.radius, rsa_class=args.rsa_class,
             )
             state = find_state(queue_dir, job_id)
             cell = STATE_LABEL.get(state, "  --  ")

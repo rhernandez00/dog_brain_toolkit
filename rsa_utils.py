@@ -1733,7 +1733,6 @@ def calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, s
     # determine which possible runs, sessions, and participants are available in session_and_run_all_dict
     for sub_N_1 in session_and_run_all_dict.keys():
         # exclude 
-
         for entry in session_and_run_all_dict[sub_N_1]:
             run_N_1 = entry['run_N']
             session_1 = entry['session']
@@ -1870,67 +1869,76 @@ def calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_a
         random.shuffle(participants)
     X, Y, Z = voxel_coords
     for sub_N in participants:
-        session_and_run_dict = session_and_run_all_dict[sub_N]
-        # if shuffle_runs is True, shuffle the order of runs for this participant
-        if shuffle_runs:
-            random.shuffle(session_and_run_dict)
-        for entry in session_and_run_dict:
-            session = entry['session']
-            session = f"{session:02d}"
-            run_N = entry['run_N']
-            print(f"Calculating similarity across all pairs for {specie}-sub-{sub_N:02d}, session {session}, run {run_N}...")
-            
-            # create output path
-            output_path = os.path.join(datafolder, dataset, 'results', 'RSA_sphere', model,
-                                        f"{specie}-sub-{sub_N:02d}",
-                                        f"ses-{session}_task-{task}_run-{run_N:02d}",
-                                        f"r-{radius}_{dis_method}_{rsa_model}_voxel-{X}_{Y}_{Z}.txt")
-            # check if output file already exists
-            if os.path.exists(output_path):
-                if verbose:
-                    print(f"Skipping: Found existing output file {output_path}.")
-                continue
-            # create temporary file to flag that this comparison is being processed, to avoid duplicate processing in case of parallel execution
-            temp_file = output_path + ".temp"
-            if os.path.exists(temp_file):
-                # check if temp file is older than wait_time seconds
-                temp_file_age = time() - os.path.getmtime(temp_file)
-                if temp_file_age < wait_time:
-                    if verbose:
-                        print(f"Skipping: Found existing temp file {temp_file} that is {temp_file_age:.2f} seconds old, indicating that this comparison is being processed by another instance.")
-                    continue
-                else:
-                    if verbose:
-                        print(f"Temp file {temp_file} is older than {wait_time} seconds (age: {temp_file_age:.2f} seconds). Assuming previous process crashed and removing temp file.")
-                    os.remove(temp_file)  # remove old temp file
-            # make sure output folder exists
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-            # create temp file to flag that this comparison is being processed
-            open(temp_file, 'a').close()  # create temp file
-            try:
-                if verbose:
-                    print(f"Created temp file {temp_file} to indicate that this comparison is being processed.")
-                # get similarity values            
-                vals = get_similarity_in_sphere(datafolder, dataset, specie, mask, sub_N, session, run_N, 
-                                        model, radius, dis_method,
-                                        rsa_model, config_path, verbose=False,
-                                        voxel_coords=(X, Y, Z))
-
+        # if dis_method is correlation, then get stimuli for each run
+        if dis_method == 'correlation':
+            session_and_run_dict = session_and_run_all_dict[sub_N]
+            # if shuffle_runs is True, shuffle the order of runs for this participant
+            if shuffle_runs:
+                random.shuffle(session_and_run_dict)
+            for entry in session_and_run_dict:
+                session = entry['session']
+                session = f"{session:02d}"
+                run_N = entry['run_N']
+                print(f"Calculating similarity across all pairs for {specie}-sub-{sub_N:02d}, session {session}, run {run_N}...")
                 
-                # save similarity values to txt file
-                np.savetxt(output_path, vals)
-            except SpaceMismatchError:
-                # dataset-wide configuration error, not a bad run
-                raise
-            # if any error occurs, print error message and continue with next iteration, removing temp file if it exists
-            except Exception as e:
-                print(f"Error processing {specie}-sub-{sub_N:02d}, session {session}, run {run_N}: {e}")
-            finally:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)  # remove temp file after processing is done
+                # create output path
+                output_path = os.path.join(datafolder, dataset, 'results', 'RSA_sphere', model,
+                                            f"{specie}-sub-{sub_N:02d}",
+                                            f"ses-{session}_task-{task}_run-{run_N:02d}",
+                                            f"r-{radius}_{dis_method}_{rsa_model}_voxel-{X}_{Y}_{Z}.txt")
+                # check if output file already exists
+                if os.path.exists(output_path):
                     if verbose:
-                        print(f"Removed temp file {temp_file} after processing.")
+                        print(f"Skipping: Found existing output file {output_path}.")
+                    continue
+                # create temporary file to flag that this comparison is being processed, to avoid duplicate processing in case of parallel execution
+                temp_file = output_path + ".temp"
+                if os.path.exists(temp_file):
+                    # check if temp file is older than wait_time seconds
+                    temp_file_age = time() - os.path.getmtime(temp_file)
+                    if temp_file_age < wait_time:
+                        if verbose:
+                            print(f"Skipping: Found existing temp file {temp_file} that is {temp_file_age:.2f} seconds old, indicating that this comparison is being processed by another instance.")
+                        continue
+                    else:
+                        if verbose:
+                            print(f"Temp file {temp_file} is older than {wait_time} seconds (age: {temp_file_age:.2f} seconds). Assuming previous process crashed and removing temp file.")
+                        os.remove(temp_file)  # remove old temp file
+                # make sure output folder exists
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+                # create temp file to flag that this comparison is being processed
+                open(temp_file, 'a').close()  # create temp file
+                try:
+                    if verbose:
+                        print(f"Created temp file {temp_file} to indicate that this comparison is being processed.")
+                    # get similarity values            
+                    vals = get_similarity_in_sphere(datafolder, dataset, specie, mask, sub_N, session, run_N, 
+                                            model, radius, dis_method,
+                                            rsa_model, config_path, verbose=False,
+                                            voxel_coords=(X, Y, Z))
+
+                    
+                    # save similarity values to txt file
+                    np.savetxt(output_path, vals)
+                except SpaceMismatchError:
+                    # dataset-wide configuration error, not a bad run
+                    raise
+                # if any error occurs, print error message and continue with next iteration, removing temp file if it exists
+                except Exception as e:
+                    print(f"Error processing {specie}-sub-{sub_N:02d}, session {session}, run {run_N}: {e}")
+                finally:
+                    if os.path.exists(temp_file):
+                        os.remove(temp_file)  # remove temp file after processing is done
+                        if verbose:
+                            print(f"Removed temp file {temp_file} after processing.")
+        # elif dis_method is mahalanobis, return error and indicate that this is not supported yet
+        elif dis_method == 'mahalanobis':
+            raise NotImplementedError("Mahalanobis distance is not supported yet.")
+        else:
+            raise ValueError(f"Unsupported dis_method: {dis_method}")
+    
+    
 
 def get_rsa_export_manifest(datafolder, dataset, specie, participants_forced=None):
     """Return unique participants and sessions/runs from the species manifest."""
@@ -2098,7 +2106,7 @@ def export_average_rsa_models(datafolder, dataset, session_and_run_all_dict,
 
 
 def get_similarity_in_sphere(datafolder, dataset, specie, mask, sub_N, session, run_N, 
-                             model, radius, rsa_method,
+                             model, radius, dis_method,
                              rsa_model, config_path, verbose=False,
                              voxel_coords=None):
     '''
@@ -2116,7 +2124,7 @@ def get_similarity_in_sphere(datafolder, dataset, specie, mask, sub_N, session, 
     # load meta similarity map for participant, session, run, and model
     meta_similarity_map = load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset,
                                                            specie, sub_N, session, run_N, config_path,
-                                                           rsa_method=rsa_method, radius=radius, verbose=verbose,
+                                                           dis_method=dis_method, radius=radius, verbose=verbose,
                                                            ref_affine=ref_affine,
                                                            ref_label=f"mask {os.path.basename(mask)}")
     X, Y, Z = voxel_coords
@@ -2181,6 +2189,277 @@ def calculate_cross_participant_similarity_map(meta_similarity_map1, meta_simila
                 # assign value to cross-participant similarity map
                 cross_participant_similarity_map[x, y, z] = val
     return cross_participant_similarity_map
+
+def _loo_layout(datafolder, dataset, session_and_run_all_dict, participants,
+                specie, model, task, radius, rsa_class, dis_method, rsa_method,
+                rsa_model, mah_fold, mask_type):
+    """Shared step 11.2/11.3 paths; never read pairwise step-11 outputs."""
+    participants = list(participants)
+    if len(participants) < 2 or len(set(participants)) != len(participants):
+        raise ValueError('Leave-one-out similarity requires at least two unique participants.')
+    if dis_method not in ('mahalanobis', 'correlation'):
+        raise ValueError('Steps 11.2/11.3 support mahalanobis and correlation.')
+    if dis_method == 'mahalanobis' and mah_fold not in ('stim-wise', 'run-wise'):
+        raise ValueError('Steps 11.2/11.3 support Mahalanobis stim-wise and run-wise.')
+    if rsa_method not in ('kendall', 'spearman', 'pearson'):
+        raise ValueError('rsa_method must be kendall, spearman, or pearson.')
+    if rsa_class is None and rsa_model is None:
+        raise ValueError('Steps 11.2/11.3 require rsa_class or rsa_model to select pairs.')
+    root = os.path.join(datafolder, dataset, 'results', 'RSA_same', model, 'leave-one-out')
+    if dis_method == 'mahalanobis' and mah_fold != 'stim-wise':
+        root = os.path.join(root, mah_fold)
+    selection = str(rsa_class if rsa_class is not None else rsa_model)
+    prefix = f'{mask_type}-' if mask_type else ''
+    stem = f'{prefix}r-{radius}_{dis_method}_{rsa_method}'
+    units = {}
+    paths = {}
+    for sub in participants:
+        entries = ([(None, None)] if dis_method == 'mahalanobis' else
+                   sorted({(int(e['session']), int(e['run_N']))
+                           for e in session_and_run_all_dict[sub]}))
+        units[sub] = entries
+        for session, run in entries:
+            subject = f'{specie}-sub-{sub:02d}'
+            if run is not None:
+                subject += f'_ses-{session:02d}_task-{task}_run-{run:02d}'
+            paths[sub, session, run] = os.path.join(root, subject, selection, stem + '.nii.gz')
+    group_stem = f'{prefix}{specie}-r-{radius}_{dis_method}_{rsa_method}'
+    group = os.path.join(root, selection, group_stem)
+    return participants, units, paths, group
+
+
+def calculate_leave_one_out_cross_participant_similarity(
+        datafolder, dataset, session_and_run_all_dict, participants, specie, mask,
+        model, task, radius, rsa_class=None, dis_method='mahalanobis',
+        rsa_method='kendall', rsa_model=None, verbose=False, mah_fold='stim-wise',
+        mask_type=None, replace_file=False):
+    """Step 11.2: correlate each participant RDM with the mean of the others.
+
+    Run-wise Mahalanobis inputs already pool runs: load once per participant.
+    Correlation inputs are compared only within the same run number. Average
+    repeated sessions within each reference participant before averaging peers,
+    so participants with more sessions do not get greater reference weight.
+    Missing input maps are fatal; absent runs are excluded with a warning.
+    Constant RDMs yield NaN inside the mask, zero is reserved for outside it.
+    rsa_class selects by_class/class_<name>.csv; otherwise rsa_model selects
+    the model's pairs (including run-dependent model CSVs).
+    """
+    from scipy.stats import kendalltau, spearmanr, pearsonr
+
+    participants, units, paths, _ = _loo_layout(
+        datafolder, dataset, session_and_run_all_dict, participants, specie,
+        model, task, radius, rsa_class, dis_method, rsa_method, rsa_model,
+        mah_fold, mask_type)
+    ref = nib.load(mask)
+    mask_data = ref.get_fdata()
+    inside = np.isfinite(mask_data) & (mask_data != 0)
+    if mask_data.ndim != 3 or not inside.any():
+        raise ValueError('The searchlight mask must be a nonempty 3D mask.')
+    config_path = os.path.join(datafolder, dataset, 'config_files', f'{specie}_{model}.yaml')
+    runs = sorted({run for entries in units.values() for _, run in entries},
+                  key=lambda run: -1 if run is None else run)
+    if not runs:
+        raise ValueError('No runs found for the selected participants.')
+    outputs = []
+    correlate = {'kendall': kendalltau, 'spearman': spearmanr, 'pearson': pearsonr}[rsa_method]
+    for run in runs:
+        pending = [key for key, path in paths.items() if key[2] == run
+                   and (replace_file or not os.path.exists(path))]
+        if not pending:
+            outputs.extend(path for key, path in paths.items() if key[2] == run)
+            continue
+        if rsa_class is not None:
+            table = pd.read_csv(os.path.join(datafolder, dataset, 'rsa_models',
+                                            'by_class', f'class_{rsa_class}.csv'))
+            pairs = list(table[['cat1', 'cat2']].itertuples(index=False, name=None))
+        else:
+            template = os.path.join(datafolder, dataset, 'rsa_models', f'{rsa_model}.csv')
+            if not os.path.exists(template) and run is not None:
+                template = os.path.join(datafolder, dataset, 'rsa_models', f'{rsa_model}-run-{run}.csv')
+            pairs = read_model_dict(template)['pairs']
+        if (len(pairs) < 2 or any(a == b for a, b in pairs)
+                or len({_canonical_pair(*pair) for pair in pairs}) != len(pairs)):
+            raise ValueError('Cross-participant similarity requires at least two unique pairs.')
+        # Hold masked RDMs only, rather than a full 4D volume for every subject.
+        rdms = {}
+        means = {}
+        for sub in participants:
+            entries = [(session, r) for session, r in units[sub] if r == run]
+            if not entries:
+                warnings.warn(f'Run {run}: excluding {specie}-sub-{sub:02d} (no session for this run).')
+                continue
+            total = np.zeros((int(inside.sum()), len(pairs)), dtype=float)
+            for session, r in entries:
+                values = np.empty_like(total)
+                for index, (cat1, cat2) in enumerate(pairs):
+                    pair_map = load_pairwise_similarity_map(
+                        datafolder, dataset, specie, sub,
+                        None if session is None else f'{session:02d}', r, cat1, cat2,
+                        config_path, dis_method=dis_method, radius=radius,
+                        verbose=verbose, mah_fold=mah_fold, ref_affine=ref.affine,
+                        ref_shape=ref.shape, ref_label=f'mask {os.path.basename(mask)}')
+                    if isinstance(pair_map, int) and pair_map == 0:
+                        raise FileNotFoundError(
+                            f'Missing pair {cat1}/{cat2} for {specie}-sub-{sub:02d}, session {session}, run {r}.')
+                    values[:, index] = pair_map[inside]
+                if not np.isfinite(values).all():
+                    raise ValueError(f'Non-finite RDM inside mask for participant {sub}, session {session}, run {r}.')
+                total += values
+                # Only retain target sessions whose outputs need computing.
+                if (sub, session, r) in pending:
+                    rdms[sub, session, r] = values
+            means[sub] = total / len(entries)
+        if len(means) < 2:
+            raise ValueError(f'Run {run}: at least two participants with data are required.')
+        total = sum(means.values())
+        for key in pending:
+            sub, session, r = key
+            peer_mean = (total - means[sub]) / (len(means) - 1)
+            target = rdms[key]
+            result = np.full(len(target), np.nan)
+            for index, (a, b) in enumerate(zip(target, peer_mean)):
+                if np.ptp(a) > 0 and np.ptp(b) > 0:
+                    result[index] = correlate(a, b)[0]
+            output = np.zeros(ref.shape, dtype=float)
+            output[inside] = result
+            path = paths[key]
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            nib.save(nib.Nifti1Image(output, ref.affine), path)
+            if verbose:
+                print(f'Saved leave-one-out map: {path}')
+        outputs.extend(path for key, path in paths.items() if key[2] == run)
+    return outputs
+
+
+def calculate_mean_leave_one_out_cross_participant_similarity_map(
+        datafolder, dataset, session_and_run_all_dict, participants, specie, mask,
+        model, task, radius, rsa_class=None, dis_method='mahalanobis',
+        rsa_method='kendall', rsa_model=None, verbose=False, mah_fold='stim-wise',
+        mask_type=None, replace_file=False, min_percentage_available=0):
+    """Step 11.3: average sessions, then runs, then participants equally.
+
+    A participant contributes only if all their expected step-11.2 maps exist.
+    Missing participants are reported and subject to min_percentage_available
+    (a fraction in [0, 1]). Undefined in-mask correlations propagate as NaN.
+    Write the arithmetic mean, population std across participants, and JSON
+    provenance beside the group maps.
+    """
+    participants, units, paths, group = _loo_layout(
+        datafolder, dataset, session_and_run_all_dict, participants, specie,
+        model, task, radius, rsa_class, dis_method, rsa_method, rsa_model,
+        mah_fold, mask_type)
+    if not 0 <= min_percentage_available <= 1:
+        raise ValueError('min_percentage_available must be between 0 and 1.')
+    mean_path, std_path = group + '_mean.nii.gz', group + '_std.nii.gz'
+    log_path = group + '_mean.json'
+    if not replace_file and all(os.path.exists(p) for p in (mean_path, std_path, log_path)):
+        with open(log_path) as handle:
+            previous = json.load(handle)
+        if (previous.get('participants_requested') == participants
+                and previous.get('perc_available', 0) >= min_percentage_available):
+            return mean_path, std_path
+    ref = nib.load(mask)
+    participant_maps, included, missing, inputs = [], [], [], []
+    for sub in participants:
+        entries = units[sub]
+        if not entries or any(not os.path.exists(paths[sub, s, r]) for s, r in entries):
+            missing.append(sub)
+            continue
+        by_run = {}
+        for session, run in entries:
+            path = paths[sub, session, run]
+            img = nib.load(path)
+            check_same_space(('searchlight mask', ref), [(path, img)], context='step 11.3')
+            if img.shape != ref.shape:
+                raise ValueError(f'Expected a 3D similarity map: {path}')
+            by_run.setdefault(run, []).append(img.get_fdata())
+            inputs.append(path)
+        participant_maps.append(np.mean([np.mean(maps, axis=0)
+                                         for maps in by_run.values()], axis=0))
+        included.append(sub)
+    if missing:
+        warnings.warn(f'Step 11.3: excluding participants with incomplete step-11.2 maps: {missing}.')
+    available = len(included) / len(participants)
+    if len(included) < 2 or available < min_percentage_available:
+        raise ValueError(f'Step 11.3: insufficient complete participants ({len(included)}/{len(participants)}).')
+    os.makedirs(os.path.dirname(mean_path), exist_ok=True)
+    nib.save(nib.Nifti1Image(np.mean(participant_maps, axis=0), ref.affine), mean_path)
+    nib.save(nib.Nifti1Image(np.std(participant_maps, axis=0), ref.affine), std_path)
+    with open(log_path, 'w') as handle:
+        json.dump(dict(participants_requested=participants, participants_included=included,
+                       participants_missing=missing, perc_available=available,
+                       input_files=inputs, dis_method=dis_method, mah_fold=mah_fold,
+                       rsa_method=rsa_method, rsa_class=rsa_class, rsa_model=rsa_model,
+                       weighting='sessions within run, runs within participant, then participants equally',
+                       output_mean_file=mean_path, output_std_file=std_path), handle, indent=2)
+    if verbose:
+        print(f'Saved average leave-one-out map: {mean_path}')
+    return mean_path, std_path
+
+
+def calculate_voxelwise_cross_similarity(
+        datafolder, dataset, session_and_run_all_dict=None, participants=None,
+        specie='D', mask=None, model='basic-block', task=None, radius=None,
+        rsa_class=None, dis_method='mahalanobis', rsa_method='kendall',
+        rsa_model=None, verbose=False, *, target_specie='H', target_radius=None,
+        target_participants=None, mask_type='b_GreyMatter2mmB',
+        target_mask_type='b_GreyMatter2mmB', dog_participants=None,
+        human_participants=None, dog_mask=None, human_mask=None,
+        mah_fold='stim-wise', toolkit_dir=None, output_root=None,
+        device='auto', source_batch=128, target_batch=4096):
+    """Step 16.2: each source participant vs target-species mean RDMs.
+
+    Load the ordered ``rsa_class`` pairs from existing pooled step-1 maps,
+    average only the selected target participants, then calculate the full
+    masked source-by-target Kendall tau-b matrix for each source participant.
+    Return final HDF5 paths; each has one same-stem log, with no NIfTI outputs.
+
+    ``radius`` and ``target_radius`` are independent. ``participants=None``
+    reads the source cohort from its own config. ``mask`` overrides the source
+    mask; dog_mask/human_mask provide explicit species-specific overrides.
+    Session/run, task and rsa_model arguments follow the surrounding pipeline
+    interface but do not select these pooled Mahalanobis inputs.
+
+    Dependency-light I/O/GPU kernels remain in cross_species_rsa so the same
+    numerical code can be shipped in a self-contained Colab package.
+    """
+    import cross_species_rsa as cross_rsa
+
+    if dis_method != 'mahalanobis' or mah_fold != 'stim-wise' or rsa_method != 'kendall':
+        raise ValueError('Step 16.2 requires Mahalanobis stim-wise inputs and Kendall tau-b.')
+    if not rsa_class:
+        raise ValueError('Step 16.2 requires rsa_class, e.g. all-mahalanobis.')
+    if source_batch <= 0 or target_batch <= 0:
+        raise ValueError('Source and target batch sizes must be positive.')
+    if mask is not None:
+        source_mask = dog_mask if specie == 'D' else human_mask
+        if source_mask is not None and os.path.abspath(source_mask) != os.path.abspath(mask):
+            raise ValueError('Conflicting source mask overrides.')
+        if specie == 'D':
+            dog_mask = mask
+        else:
+            human_mask = mask
+    destination = datafolder if output_root is None else output_root
+    if os.path.splitext(os.fspath(destination))[1].lower() in ('.h5', '.hdf5'):
+        raise ValueError('Step 16.2 output_root must be a directory, not a matrix filename.')
+    manifest = cross_rsa.discover_inputs(
+        datafolder=datafolder, dataset=dataset, model=model, rsa_class=rsa_class,
+        radius=radius if radius is not None else (3 if specie == 'D' else 4),
+        specie=specie, target_specie=target_specie, target_radius=target_radius,
+        source_participants=participants, target_participants=target_participants,
+        dog_participants=dog_participants, human_participants=human_participants,
+        dog_mask=dog_mask, human_mask=human_mask, toolkit_dir=toolkit_dir,
+        mask_type=mask_type, target_mask_type=target_mask_type)
+    # Compute the target group once. The source RDMs are never group-averaged.
+    target_data = cross_rsa.group_rdms(manifest, target_specie)
+    outputs = []
+    for participant, single in cross_rsa.participant_manifests(manifest):
+        output = os.path.join(destination, cross_rsa.relative_output_path(manifest, participant))
+        outputs.append(cross_rsa.run_analysis(
+            single, output, target_data=target_data, device=device,
+            dog_batch=source_batch, human_batch=target_batch))
+    return outputs
+
 
 def calculate_cross_participant_similarity(datafolder, dataset, session_and_run_all_dict, participants, specie, mask, model, task, radius, rsa_class, dis_method='mahalanobis', rsa_method='kendall',  mask_type='b_GreyMatter2mmB', verbose=False, shuffle_participants=True):
     '''
@@ -4423,7 +4702,7 @@ def load_meta_similarity_map2(ref_img, datafolder, dataset, specie, sub_N, sessi
     return meta_similarity_map
 
 
-def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method='pearson', radius=3, verbose=False, mah_fold='stim-wise', pairs=None, ref_affine=None, ref_label='reference grid'):
+def load_meta_similarity_map(rsa_model_path, ref_img, datafolder, dataset, specie, sub_N, session, run_N, config_path, dis_method='correlation', radius=3, verbose=False, mah_fold='stim-wise', pairs=None, ref_affine=None, ref_label='reference grid'):
     '''
     Loads the meta similarity map for given parameters.
     
@@ -8165,6 +8444,47 @@ def voxel_to_mm(voxel_coords, image_or_affine):
 
     mm_coords = nib.affines.apply_affine(affine, coords)
     return mm_coords[0] if is_single_coordinate else mm_coords
+
+
+def resolve_roi_coordinates(row, image_or_path):
+    """Resolve an ROI table row on its species' NIfTI grid.
+
+    Prefer supplied zero-based voxel_coords; otherwise x/y/z are world mm
+    in the reference image's space (MNI for humans, Nitzsche for dogs).
+    Return (integer voxel indices, sampled voxel-center mm, coordinate source).
+    """
+    import ast
+
+    image = (nib.load(str(image_or_path))
+             if isinstance(image_or_path, (str, os.PathLike)) else image_or_path)
+    raw = row.get('voxel_coords')
+    missing = raw is None or (isinstance(raw, str) and not raw.strip())
+    if not missing and np.isscalar(raw):
+        missing = bool(pd.isna(raw))
+    if missing:
+        try:
+            values = np.asarray([row.get(axis, np.nan) for axis in ('x', 'y', 'z')], dtype=float)
+        except (ValueError, TypeError) as error:
+            raise ValueError('Missing voxel_coords: x, y, z must contain finite world-mm coordinates.') from error
+        if not np.isfinite(values).all():
+            raise ValueError('Missing voxel_coords: x, y, z must contain finite world-mm coordinates.')
+        voxel = np.rint(voxel_to_mm(values, np.linalg.inv(image.affine)))
+        source = 'mm'
+    else:
+        try:
+            values = np.asarray(ast.literal_eval(raw) if isinstance(raw, str) else raw, dtype=float)
+        except (ValueError, TypeError, SyntaxError) as error:
+            raise ValueError(f'Invalid voxel_coords: {raw!r}') from error
+        if (values.shape != (3,) or not np.isfinite(values).all()
+                or not np.equal(values, np.rint(values)).all()):
+            raise ValueError(f'voxel_coords must contain three finite integer indices: {raw!r}')
+        voxel = values
+        source = 'voxel_coords'
+    if len(image.shape) != 3 or np.any(voxel < 0) or np.any(voxel >= np.asarray(image.shape)):
+        raise ValueError(f'Coordinates resolve outside reference grid {image.shape}: {tuple(voxel)}')
+    voxel = tuple(int(value) for value in voxel)
+    sampled_mm = tuple(float(value) for value in voxel_to_mm(voxel, image))
+    return voxel, sampled_mm, source
 
 
 def world_coords(ijk, affine):

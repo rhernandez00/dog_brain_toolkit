@@ -27,6 +27,7 @@ Usage
   python schedule_steps.py --steps 3,5-10 --dry_run     # preview + counts
   python schedule_steps.py --steps 3,5-10               # actually queue them
   python schedule_steps.py --steps 4 --rsa_model action_tendency__all
+  python schedule_steps.py --steps 11.2,11.3,11.4,11.5 --rsa_class all --dry_run
 """
 import argparse
 import ast
@@ -87,7 +88,9 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument('--dataset', default='EmoC')
     p.add_argument('--model', default='basic-block')
-    p.add_argument('--rsa_model', help='Schedule only this model (skips the registry)')
+    target = p.add_mutually_exclusive_group()
+    target.add_argument('--rsa_model', help='Schedule only this model (skips the registry)')
+    target.add_argument('--rsa_class', help='Schedule this comparison class (skips the registry)')
     p.add_argument('--models_csv')
     p.add_argument('--dis_method', default='mahalanobis')
     p.add_argument('--rsa_method', default='kendall')
@@ -115,7 +118,10 @@ def main():
     models_csv = args.models_csv or os.path.join(
         datafolder, args.dataset, 'rsa_models', '_models.csv')
 
-    if args.rsa_model:
+    if args.rsa_class:
+        entries = [{'rsa_model': None, 'dis_method': args.dis_method,
+                    'mah_fold': args.mah_fold}]
+    elif args.rsa_model:
         entries = [{'rsa_model': args.rsa_model, 'dis_method': args.dis_method,
                     'mah_fold': args.mah_fold}]
     else:
@@ -141,6 +147,7 @@ def main():
                 j = build_single_job(
                     dataset=args.dataset, model=args.model,
                     rsa_model=e['rsa_model'], specie=sp, step=step,
+                    rsa_class=args.rsa_class,
                     z_threshold=args.z_threshold, reps=args.reps,
                     reps_group=args.reps_group, rsa_method=args.rsa_method,
                     dis_method=e['dis_method'], mah_fold=e['mah_fold'],
@@ -155,7 +162,7 @@ def main():
                 made += 1
                 if args.dry_run and made <= len(steps) * 2:
                     print('  [dry] %-46s %s %s -> %s'
-                          % (j['rsa_model'], j['specie'], step_token(j['step']),
+                          % (j.get('rsa_class') or j['rsa_model'], j['specie'], step_token(j['step']),
                              j['status']))
 
     verb = 'would create' if args.dry_run else 'created'

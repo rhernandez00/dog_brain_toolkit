@@ -1,0 +1,6 @@
+# Step 16.2 and its reader. CUDA-enabled torch is preinstalled in GPU Colab.
+numpy
+nibabel
+PyYAML
+h5py
+# Optional GPU acceleration: install PyTorch for your CUDA runtime.

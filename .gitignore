@@ -14,5 +14,11 @@ CLAUDE.md
 /scheduler/__pycache__
 /viz/__pycache__
 /tools/zmap_summary_out
-/tests
+/tests/*
+!/tests/test_leave_one_out_inference.py
+!/tests/test_leave_one_out_similarity.py
+!/tests/test_leave_one_out_permutations.py
+!/tests/test_create_rsa_class.py
+!/tests/test_clean_group_results.py
+!/tests/test_cross_species_rsa.py
 Atlas/Hum/~$AAL_dictionary.xlsx

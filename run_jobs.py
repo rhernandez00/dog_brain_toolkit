@@ -32,9 +32,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from scheduler.paths import get_paths, get_queue_dir
 from scheduler.jobs import claim_job, complete_job, fail_job, job_priority
+from scheduler.dag import CLASS_STEPS
 
 
 def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None):
+    if job["step"] in CLASS_STEPS and not job.get("rsa_class"):
+        raise ValueError(f"Step {job['step']} requires rsa_class.")
     searchlight = os.path.join(git_folder, "dog_brain_toolkit", "searchlight.py")
     cmd = [
         python_exe,
@@ -54,16 +57,18 @@ def build_command(job, git_folder, python_exe, marker_dir, verbose_override=None
     ]
     # A batch job (step 15) names several target models and no single
     # rsa_model: searchlight fits them all against one load of each run's
-    # pairwise maps. Every other job still carries exactly one rsa_model.
+    # pairwise maps. Steps 11.2--11.5 use rsa_class without an RSA model.
     if job.get("rsa_models_list"):
         cmd += ["--rsa_models_list"] + [str(m) for m in job["rsa_models_list"]]
     if job.get("rsa_model"):
         cmd += ["--rsa_model", str(job["rsa_model"])]
+    if job.get("rsa_class"):
+        cmd += ["--rsa_class", str(job["rsa_class"])]
     if job.get("model_specie"):
         cmd += ["--model_specie", str(job["model_specie"])]
-    if not job.get("rsa_models_list") and not job.get("rsa_model"):
+    if not any(job.get(key) for key in ("rsa_models_list", "rsa_model", "rsa_class")):
         raise ValueError(
-            f"Job {job.get('job_id')} names neither rsa_model nor rsa_models_list."
+            f"Job {job.get('job_id')} names no rsa_model, rsa_models_list, or rsa_class."
         )
     if job.get("regression_model"):
         cmd += ["--regression_model", str(job["regression_model"])]

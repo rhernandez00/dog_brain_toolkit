@@ -1,5 +1,16 @@
 # colab_gpu/ — GPU acceleration for RSA and regression
 
+## Dog–human RSA: step 16.2
+
+`colab_rsa_cross_species.ipynb` computes the complete dog-by-human searchlight
+Kendall tau-b matrix from existing Mahalanobis stim-wise maps, with automatic
+CUDA acceleration and a CPU fallback. It compares each source participant with
+the target species' equal-participant mean, using independent radii. Each source
+produces one compressed HDF5 and a log for later thresholding and summaries.
+Build inputs with `tools/create_cross_species_package.py`.
+See [step 16.2 instructions](../../docs/cross_species_rsa.md) for packaging,
+local CLI execution, GPU settings, storage requirements, and the lazy reader.
+
 For a concise handoff of the active EmoB regression-Colab work, including its
 Drive paths and notebooks, see [`docs/colab_searchlight_handoff.md`](../../docs/colab_searchlight_handoff.md).
 

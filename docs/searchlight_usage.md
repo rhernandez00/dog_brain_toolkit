@@ -1,5 +1,9 @@
 # `searchlight.py` — RSA Pipeline Usage Guide
 
+Step **16.2** computes a compact dog-by-human searchlight Kendall tau-b matrix
+from existing Mahalanobis stim-wise maps. It supports the local CLI and a GPU
+Colab notebook; see [step 16.2](cross_species_rsa.md) for inputs and usage.
+
 `searchlight.py` is the command-line runner for the Representational Similarity
 Analysis (RSA) pipeline. It processes fMRI BOLD data from **dogs (`D`)** and
 **humans (`H`)** through a sequence of numbered steps, ending in thresholded,
@@ -204,6 +208,15 @@ upstream outputs already exist.
 | **9** | Cluster correction | `apply_cluster_correction` | Requires steps **7 and 8**. |
 | **10** | Publication reports | `create_tables` | CSV, editable Word, LaTeX, Results text and provenance JSON. |
 | **11** | Cross-participant similarity | `calculate_cross_participant_similarity` | Out of scheduler scope. |
+| **11.2** | Participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` | Correlates each participant's pairwise maps with the average of all other participants. |
+| **11.3** | Average leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map` | Averages step 11.2 with equal participant weight; writes mean/std and JSON provenance. |
+| **11.4** | Permuted participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` (`rnd=True`) | Shuffles held-out participant category labels for each of `--reps` maps; reference participants stay fixed. |
+| **11.5** | Permuted group leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map_rnd` | Samples step 11.4 maps for `--reps_group` group mean/std maps. |
+| **11.6** | Leave-one-out voxelwise null | `calculate_leave_one_out_inference` | Population mean/std across step 11.5 group means. |
+| **11.7** | Leave-one-out z-maps | `calculate_leave_one_out_inference` | Z-scores the real 11.3 mean and permuted 11.5 means using 11.6. |
+| **11.8** | Leave-one-out cluster null | `calculate_leave_one_out_inference` | Positive-tail, 26-neighbour cluster sizes from permuted z-maps. |
+| **11.9** | Leave-one-out cluster correction | `calculate_leave_one_out_inference` | Applies the empirical maximum-cluster cutoff to the real z-map. |
+| **11.10 / 11.101** | Leave-one-out reports | `calculate_leave_one_out_inference` | CSV and publication reports, including empty results. |
 | **12** | DSM extraction | `calculate_similarity_across_all_pairs` | Per significant cluster; uses `roi_database.csv`. |
 | **13** | Movement (`.par`) parameters | `calculate_movement_parameters` + `preprocess_functions.fwd` | Runs mcflirt to derive framewise displacement. |
 | **15** | Multiple regression RSA | `calculate_multiple_regression_rsa` | Target model coefficient controlling for `--regression_model`; needs step 1. |
@@ -215,6 +228,140 @@ upstream outputs already exist.
 | **15.8** | Regression cluster null | `calculate_regression_inference` | Positive-tail, 26-neighbour cluster sizes, with a maximum per permutation for correction. |
 | **15.9** | Corrected regression z-map | `calculate_regression_inference` | Uses `--z_threshold` and `--cluster_threshold`; writes a correction JSON sidecar. |
 | **15.10** | Regression publication reports | `calculate_regression_inference` | CSV, Word, LaTeX, Results text and provenance; valid empty reports if no clusters survive. |
+
+### Leave-one-out cross-participant similarity (11.2 and 11.3)
+
+Create a class containing every available comparison from a GLM config with
+`rsa_utils.create_rsa_class(config_path, rsa_class, dis_method, mah_fold='stim-wise')`.
+The function writes only `cat1,cat2` columns, with one row per unordered pair,
+and returns the saved path. No RSA model is required. A command-line wrapper
+is also available:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" tools/create_rsa_class.py `
+    --config "P:\userdata\raulh87\data\EmoC\config_files\H_basic-block.yaml" `
+    --rsa_class all_mahalanobis --dis_method mahalanobis --mah_fold stim-wise
+```
+
+This creates `EmoC/rsa_models/by_class/class_all_mahalanobis.csv`: the 45
+comparisons among the config's 10 category labels. `stim-wise` is the default
+and follows the pipeline's category collapse (EmoC removes the final exemplar
+digit; EmoB uses the category before the first hyphen). Correlation uses all
+40 `stim_types` in this config, producing 780 comparisons; use
+`--rsa_class all_correlation --dis_method correlation` for that class.
+Mahalanobis `--mah_fold run-wise` also uses all 40 raw stimulus labels and
+produces 780 comparisons, so give that class a separate name such as
+`all_mahalanobis_runwise`. Choose a class generated for the same fold as the
+pairwise maps used in step 11.2.
+
+Optional `--stimuli` restricts the class to selected available labels.
+`--output_dir` overrides the default `rsa_models/by_class` directory;
+`--replace_file` allows overwriting. Mahalanobis `stim-wise-multiple-folds`
+uses the pipeline's repeated exact-stimulus labels; `stim-wise-all-runs` takes
+the union of comparisons that coexist within a run, excluding comparisons
+between labels that never occur together.
+
+Run both steps after the pairwise maps from step 1 exist:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" searchlight.py `
+    --dataset EmoB --model basic-block --specie H `
+    --steps_to_run 11.2 11.3 --rsa_class all `
+    --dis_method mahalanobis --mah_fold run-wise --rsa_method kendall
+```
+
+`--rsa_class` is required. For example, `--rsa_class dog` reads exactly the
+comparison rows in `rsa_models/by_class/class_dog.csv`, whose two columns are
+`cat1` and `cat2`. The `class_dog` stem is also accepted. These steps ignore
+`--rsa_model`: it cannot select pairs or substitute for a missing class. When
+running only steps 11.2/11.3, no RSA model file is loaded or validated. For correlation
+inputs, replace `--dis_method mahalanobis --mah_fold run-wise` with
+`--dis_method correlation`. `--rsa_method` independently selects the RDM
+correlation statistic: Kendall tau-b, Spearman, or Pearson.
+
+Step 11.2 correlates a participant's RDM with the arithmetic mean RDM of the
+other participants. Mahalanobis run-wise maps already pool runs, so each
+participant contributes once. Correlation maps are compared only within the
+same run number; repeated sessions are averaged within each reference
+participant before averaging the peers. Missing pairwise maps or incompatible
+image grids stop the calculation. Absent runs are excluded with a warning;
+every run needs at least two participants.
+
+The output root follows the existing cross-participant `results/RSA_same`
+hierarchy, with a separate leave-one-out directory:
+
+```text
+results/RSA_same/<model>/class_<rsa_class>/leave-one-out/[run-wise/]
+  <specie>-sub-NN[_ses-SS_task-TASK_run-RR]/
+    <mask_type>-r-R_<dis_method>_<rsa_method>_task-TASK.nii.gz
+  <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_mean.nii.gz
+  <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_std.nii.gz
+  <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_mean.json
+```
+
+The `run-wise/` directory applies to Mahalanobis only; session/run suffixes
+apply to correlation only. Step 11.3 averages sessions within each run, runs
+within each participant, and finally participants equally. It writes the
+arithmetic mean and population standard deviation across participant maps,
+plus an input inventory. Participants with incomplete step-11.2 outputs are
+excluded with a warning; `--min_percentage_available 1` requires all selected
+participants, and at least two complete participants are always required.
+Constant RDMs yield NaN inside the mask; these propagate through the group
+average. Outside-mask voxels are zero. Existing outputs are reused unless
+`--replace_file` is supplied. These steps run through `searchlight.py` directly
+and are outside scheduler scope.
+
+With `--verbose`, steps 11.2/11.3 announce input counts and each loading,
+averaging, correlation, and saving phase. Loading messages include participant
+progress, the map count within that participant, the overall file count, and
+the actual input path. Existing outputs that are reused are reported explicitly.
+
+### Leave-one-out permutations (11.4 and 11.5)
+
+Run after step 1, using the same class and folding as 11.2/11.3:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" searchlight.py `
+    --dataset EmoB --specie H --model basic `
+    --steps_to_run 11.4 11.5 --rsa_class all `
+    --dis_method mahalanobis --mah_fold run-wise --rsa_method kendall `
+    --reps 100 --reps_group 1000
+```
+
+Step 11.4 permutes category labels of the held-out participant, using one
+label mapping across all voxels of each map. The other participants' RDMs and
+their class-pair selection remain fixed. For a sparse class definition, target
+permutations can require any pair among the labels in the class: those step-1
+pairwise maps must also exist. No RSA model file is required or loaded when
+running only steps 11.2 through 11.5.
+
+Outputs mirror 11.2/11.3 under `RSA_same_rnd`, keeping the class, task, mask,
+method and folding in the paths:
+
+```text
+results/RSA_same_rnd/<model>/class_<rsa_class>/leave-one-out/[run-wise/]
+  <specie>-sub-NN[_ses-SS_task-TASK_run-RR]/
+    <mask_type>-r-R_<dis_method>_<rsa_method>_task-TASK_0000.nii.gz
+  mean/
+    <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_mean_00000.nii.gz
+    <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_std_00000.nii.gz
+    <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_mean_00000.json
+```
+
+Participant indices run from zero to `--reps - 1`; group indices run from zero
+to `--reps_group - 1`. As in step 5, each group draw independently samples one
+available permutation per participant/session/run. As in 11.3, it averages
+sessions within runs, runs within participants, then participants equally.
+The std map is the population standard deviation across participant averages;
+the JSON records the sampled files. Participants need at least one permutation
+for every expected unit. Missing participants trigger a warning and obey
+`--min_percentage_available`; at least two complete participants are required.
+Both steps reuse existing outputs; use `--replace_rnd_files` to replace them.
+Both steps create permutation file numbers in randomized order and recheck
+outputs before calculating and before saving, so concurrent instances can skip
+work completed by another instance.
+
+### Regression inference
 
 Run regression inference after steps 15.3 and 15.5, for example:
 
@@ -239,6 +386,53 @@ voxels receive z=0. Inference tests positive effects with strict `z > threshold`
 consistently for real and null maps, using the same empirical maximum-cluster
 cutoff helper as steps 8/9. `15.10` is retained as a textual step ID because
 floating-point conversion would turn it into `15.1`.
+
+### Leave-one-out inference (11.6–11.10)
+
+After steps 11.3 and 11.5, use the same class, task, mask, folding, radius,
+distance method and RSA method:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" searchlight.py `
+    --dataset EmoB --model basic-block --specie H --rsa_class all `
+    --steps_to_run 11.6 11.7 11.8 11.9 11.101 --reps_group 1000
+```
+
+`11.101` is an alias for `11.10`. Both are preserved as textual report step
+IDs, so they do not collide with step 11.1. These steps do not need an RSA
+model CSV; `--rsa_class` selects the leave-one-out inputs.
+
+Let `root` be `results/RSA_same/{model}/class_{class}/leave-one-out/`, with
+`run-wise/` appended for Mahalanobis run-wise folding, and let `stem` be
+`{mask_type-}{specie}-r-{radius}_{dis_method}_{rsa_method}_task-{task}`.
+The corresponding permutation root uses `RSA_same_rnd`.
+
+- **11.6** reads permutation `mean/{stem}_mean_{index:05d}.nii.gz` files and
+  writes `dist/{stem}_mean.nii.gz`, `dist/{stem}_std.nii.gz` and an exact input
+  inventory under the permutation root. It uses `--reps_group` and
+  `--min_percentage_available`, requiring at least two group permutations.
+- **11.7** reads the real `{stem}_mean.nii.gz` directly from the real root
+  (the existing step-11.3 layout), writes real `mean/{stem}_z.nii.gz` and
+  permutation `mean/{stem}_z_{index:05d}.nii.gz` files. Zero null variance
+  yields zero z; values outside the mask are zero. Voxels with a non-finite
+  value in any group permutation or in the real mean are excluded from all
+  z-maps. Step 11.6 records non-finite exclusion counts in its distribution
+  receipt; step 11.7 records the final valid voxel count beside the real
+  z-map. Inconsistent voxel grids are rejected.
+- **11.8** writes real-root `dist/{stem}_dist.npy`, using exactly the null
+  inventory from 11.6. Clusters use the strict positive threshold
+  `z > --z_threshold` and 26-neighbour connectivity.
+- **11.9** writes real `mean/{stem}_zt{z_threshold}_corrected.nii.gz` and a
+  JSON receipt, using `--cluster_threshold` for maximum-cluster correction.
+- **11.10 / 11.101** writes real `mean/{stem}_zt{z_threshold}.csv` and the
+  usual publication companions. Word export and optional Google Drive
+  mirroring follow the same runtime rules as step 10; mirrored files retain
+  the class, fold, task and mask paths under `RSA_same`.
+
+Derived outputs are rebuilt whenever their step runs. After changing 11.3
+or 11.5 inputs, rerun 11.6 through 11.10 in order. Use the same z threshold
+for 11.8, 11.9 and 11.10. As in steps 6–10, changing the cluster probability
+replaces the corrected map and report for that z threshold.
 
 ### Dependency graph (steps 0–10)
 

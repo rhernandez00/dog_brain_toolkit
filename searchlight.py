@@ -165,6 +165,20 @@ std across maps. Save as nifti.
 9: Threshold z maps, apply cluster correction, save significant maps
 10: Save CSV, Word and LaTeX publication tables, Results text and provenance
 11: Calculate cross-participant similarity, use one participant as model and calculate similarity with other participants, repeat for all participants
+11.1 Calculate Group-level cross-participant similarity: Average the similarity maps obtained in step 11 across participants to get a group-level representation.
+11.2 Calculate By-participant leave-one-out-cross-participant similarity: calculate the similarity maps of each participant with all other participants.
+11.3 Calculate average cross-participant similarity map: Average the similarity maps obtained in step 11.2 across participants to get an overall representation.
+11.4 Repeat 11.2 with --reps category-label permutations of the held-out participant;
+    keep the other participants' reference RDMs fixed. Save under RSA_same_rnd.
+11.5 Make --reps_group group mean/std maps by sampling the step-11.4 permutations,
+    with the same equal participant weighting as 11.3. Save under RSA_same_rnd/.../mean.
+11.6 Estimate voxelwise null mean/std across the step-11.5 group means.
+11.7 Convert permuted and real (11.3) group means to z-maps using 11.6.
+11.8 Estimate the cluster-size null distribution from the permuted z-maps.
+11.9 Apply maximum-cluster correction to the real leave-one-out z-map.
+11.10 (alias 11.101): Save CSV and publication reports, as in step 10.
+
+
 12: DSM extraction: For each significant cluster, extract the similarity values
 12.1: Export participant-averaged DSMs at --coords as one RSA model CSV per run.
 15: Calculate multiple regression RSA per participant, using the models in regression_model as controls and each model in rsa_models_list as target. This will calculate the unique contribution of each target model to the similarity maps, controlling for the other models in regression_model
@@ -243,8 +257,10 @@ Input arguments:
 
 # parser function
 def _parse_step(value):
-    # A float would silently turn the report step 15.10 into 15.1.
-    return value if value == '15.10' else float(value)
+    # Preserve report step IDs: floats would collapse .10 into .1.
+    if value == '11.101':
+        return '11.10'
+    return value if value in ('11.10', '15.10') else float(value)
 
 
 def _resolve_export_coordinates(mask, coords=None, coords_mm=None):
@@ -326,6 +342,10 @@ def parse_arguments():
                         help='Cluster threshold for cluster correction')
     parser.add_argument('--peak_id', type=str, default=None,
                         help='peak_id for running step 12, if not provided, it will calculate based on roi_database.csv')
+    parser.add_argument('--shuffle_rois', action='store_true',
+                        help='Shuffle ROI database processing order in step 12 (without modifying the CSV).')
+    parser.add_argument('--roi_seed', type=int, default=None,
+                        help='Optional random seed for --shuffle_rois.')
     parser.add_argument('--reps', type=int, default=100,
                         help='Number of repetitions for permutations in individual run')
     parser.add_argument('--reps_group', type=int, default=1000,
@@ -335,7 +355,7 @@ def parse_arguments():
     parser.add_argument('--min_dist_mm', type=float, default=8.0,
                         help='Minimum distance between peaks in mm')
     parser.add_argument('--report_title', type=str, default=None,
-                        help='Human-readable target model title for step 10/15.10 publication reports')
+                        help='Human-readable title for step 10/11.10/15.10 publication reports')
     parser.add_argument('--atlas_type', type=str, default='Nitzsche',
                         help='Type of atlas to use in case of dogs')
     parser.add_argument('--replace_file', action='store_true',
@@ -381,12 +401,15 @@ def parse_arguments():
     parser.add_argument('--job_marker_dir', type=str, default=None,
                         help='Directory where step completion markers are written (used by the scheduler)')
     
+    from cross_species_rsa import add_arguments as add_cross_species_arguments
+    add_cross_species_arguments(parser)
     return parser.parse_args()
 
 # main execution
 def main():
     args = parse_arguments()
     steps_to_run = args.steps_to_run
+    cross_species_only = bool(steps_to_run) and all(step == 16.2 for step in steps_to_run)
     model = args.model
     # mask_path = args.mask_path
     dis_method = args.dis_method
@@ -399,6 +422,12 @@ def main():
         raise ValueError('--model_specie requires --rsa_model to name the model prefix.')
     rsa_method = args.rsa_method
     rsa_class = args.rsa_class
+    loo_steps = (11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, '11.10')
+    if any(step in loo_steps for step in steps_to_run) and not rsa_class:
+        raise ValueError('Steps 11.2–11.10 require --rsa_class (cat1/cat2 comparison list).')
+    if steps_to_run and all(step in loo_steps for step in steps_to_run):
+        # Class comparisons never load or validate an RSA model file.
+        rsa_model = None
     comparison_model = args.comparison_model
     regression_model = args.regression_model
     # Step 15 fits several target models against one loaded stack of pairwise
@@ -453,188 +482,192 @@ def main():
     if args.toolkit_dir is not None:
         git_folder = os.path.dirname(os.path.abspath(args.toolkit_dir))
 
-    config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
-
-    # Load config.yaml
-    with open(config_path, 'r') as f:
-        config = yaml.safe_load(f)
-    print(f"Loaded config from: {config_path}")
-    # stim_types = config['stim_types']
-    
-
-    path_to_dog_brain_toolkit = (os.path.abspath(args.toolkit_dir) if args.toolkit_dir
-                                 else os.path.join(git_folder, 'dog_brain_toolkit'))
-    
-    sys.path.append(path_to_dog_brain_toolkit)
-    import utils
-    reload(utils)
-    import preprocess_functions
-    reload(preprocess_functions)
     import rsa_utils
-    reload(rsa_utils)
-    # import utils_EmoB
-    # reload(utils_EmoB)
+    # Step 16.2 resolves both species inside rsa_utils; atlas labels/model setup
+    # are only needed by the other steps. Dispatch remains in the main loop.
+    if not cross_species_only:
+        config_path = datafolder + os.sep + dataset + os.sep + 'config_files' + os.sep + specie + '_' + model + '.yaml'
 
-    # Every step that combines images does so by array index, so all inputs must
-    # share one voxel grid. Enforce that unless the user explicitly opts out.
-    # Must come after reload(), which resets the module-level policy.
-    rsa_utils.set_space_check(strict=not args.allow_space_mismatch)
-
-    # mask_type is a bare stem everywhere: it names a mask file *and* prefixes the
-    # result filenames. Strip an extension a caller may have included, so the two
-    # uses cannot disagree (a mask read as "...B.nii.gz" but results written under
-    # the prefix "...B.nii.gz-" would land in a second, invisible set of files).
-    mask_type = rsa_utils.strip_nii_extension(mask_type)
-
-
-    project_dict = {
-        "Dataset": config["dataset"],
-        "Task": config["task"],
-        "Participants": config["participants"],
-        "Runs": config["runs"],
-        "Sessions": config["sessions"],
-        "Specie": config["specie"],
-        "Atlas_type": config["atlas_type"],
-        "Datafolder": datafolder,
-    }
-
-    # GLM parameters
-    radius_fwd = config["radius_fwd"]
-    threshold_fwd = config["threshold_fwd"]
-    print(f"Dataset: {dataset}, Task: {task}, Specie: {specie}, Model: {model}, RSA model: {rsa_model}, RSA method: {rsa_method} ")
-    
-    smooth = config["smooth"]
-    img_type = config["img_type"]
-    # if model_dict is in config, get it, otherwise set it to None
-    if "model_dict" in config:
-        model_dict = config["model_dict"]
-    else:
-        model_dict = None
-    
-    participants = config["participants"]
-    stim_types = config['stim_types']
-    #atlas_type = config["atlas_type"]
+        # Load config.yaml
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        print(f"Loaded config from: {config_path}")
+        # stim_types = config['stim_types']
     
 
-    # if rsa_model is not None, get rsa_model_path
-    if rsa_model is not None and model_specie is None:
-        rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
-        # check if model is available
-        if not os.path.exists(rsa_model_path):
-            # the model might be run dependent
-            print(f"RSA model {rsa_model} not found in {rsa_model_path}, checking for run-dependent model, run 1...")
-            rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + f"-run-1.csv"
+        path_to_dog_brain_toolkit = (os.path.abspath(args.toolkit_dir) if args.toolkit_dir
+                                     else os.path.join(git_folder, 'dog_brain_toolkit'))
+    
+        sys.path.append(path_to_dog_brain_toolkit)
+        import utils
+        reload(utils)
+        import preprocess_functions
+        reload(preprocess_functions)
+        import rsa_utils
+        reload(rsa_utils)
+        # import utils_EmoB
+        # reload(utils_EmoB)
+
+        # Every step that combines images does so by array index, so all inputs must
+        # share one voxel grid. Enforce that unless the user explicitly opts out.
+        # Must come after reload(), which resets the module-level policy.
+        rsa_utils.set_space_check(strict=not args.allow_space_mismatch)
+
+        # mask_type is a bare stem everywhere: it names a mask file *and* prefixes the
+        # result filenames. Strip an extension a caller may have included, so the two
+        # uses cannot disagree (a mask read as "...B.nii.gz" but results written under
+        # the prefix "...B.nii.gz-" would land in a second, invisible set of files).
+        mask_type = rsa_utils.strip_nii_extension(mask_type)
+
+
+        project_dict = {
+            "Dataset": config["dataset"],
+            "Task": config["task"],
+            "Participants": config["participants"],
+            "Runs": config["runs"],
+            "Sessions": config["sessions"],
+            "Specie": config["specie"],
+            "Atlas_type": config["atlas_type"],
+            "Datafolder": datafolder,
+        }
+
+        # GLM parameters
+        radius_fwd = config["radius_fwd"]
+        threshold_fwd = config["threshold_fwd"]
+        print(f"Dataset: {dataset}, Task: {task}, Specie: {specie}, Model: {model}, RSA model: {rsa_model}, RSA method: {rsa_method} ")
+    
+        smooth = config["smooth"]
+        img_type = config["img_type"]
+        # if model_dict is in config, get it, otherwise set it to None
+        if "model_dict" in config:
+            model_dict = config["model_dict"]
+        else:
+            model_dict = None
+    
+        participants = config["participants"]
+        stim_types = config['stim_types']
+        #atlas_type = config["atlas_type"]
+    
+
+        # if rsa_model is not None, get rsa_model_path
+        if rsa_model is not None and model_specie is None:
+            rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + ".csv"
+            # check if model is available
             if not os.path.exists(rsa_model_path):
-                raise FileNotFoundError(f"RSA model file not found: {rsa_model_path}")
+                # the model might be run dependent
+                print(f"RSA model {rsa_model} not found in {rsa_model_path}, checking for run-dependent model, run 1...")
+                rsa_model_path = datafolder + os.sep + dataset + os.sep + 'rsa_models' + os.sep + rsa_model + f"-run-1.csv"
+                if not os.path.exists(rsa_model_path):
+                    raise FileNotFoundError(f"RSA model file not found: {rsa_model_path}")
+                else:
+                    print(f"Using run-dependent model: {rsa_model_path}")
+
+
+            # get categories from rsa_model definition
+            rsa_model_dict = rsa_utils.read_model_dict(rsa_model_path)
+            categories = rsa_model_dict['categories']
+
+
+        # list of missing files per subject/session/run
+        missing_per_run_list = []
+
+        if specie == 'D':
+            specie_label = 'Dog'
+            apply_coords_transform=False #assumes that atlas and everything is tiun the same space
+            design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_DHRF.fsf'
+            # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
+            atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, img_type + ".nii.gz")
+            atlas_for_labels = 'Czeibert' # takes for dogs: Czeibert, Johnson. For humans: AAL, Harvard
+            atlas_type = 'Nitzsche'  # for dogs only Nitzsche is used for masks
+            # if radius is None, use 3 as default for dogs
+            if radius is None:
+                radius = 3
+            # get label_dict and label_nii_data for dogs
+            # print elements before calling them for label_dict
+            # print(f"atlas_for_labels: {atlas_for_labels}")
+            # print(f"path_to_dog_brain_toolkit: {path_to_dog_brain_toolkit}")
+            # print 
+
+            label_dict = pd.read_csv(os.path.join(
+            path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"))
+
+            label_img = nib.load(os.path.join(
+            path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
+        ))
+            label_nii_data = label_img.get_fdata()
+            label_affine = label_img.affine
+
+        elif specie == 'H':
+            specie_label = 'Hum'
+            apply_coords_transform=True #assumes that atlas and results are in different spaces, applies coordinate transform to get correct labels in excel output
+            atlas_type = 'MNI'
+            # not sure where from
+            # design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
+            # From beta_H EmoB
+            design_template = os.path.join(datafolder, dataset, 'FSL_designs', 'H_basic.fsf')
+        
+            # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
+            atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
+        
+            participants = list(range(1, 41))
+        
+
+            # get label_nii_data and label_dict for humans. Use the toolkit's own
+            # AAL3 (Atlas/Hum/AAL3.nii.gz, 91x109x91 MNI 2mm grid) rather than
+            # {dataset}/ROI/AAL3.nii.gz: the latter is a copy resampled onto one
+            # participant's native-EPI grid (96x96x52, see the "Hard invariant: one
+            # voxel grid" note in CLAUDE.md) and no longer matches the corrected
+            # z-maps now that step 0.5 puts human results on the MNI template grid.
+            # extract_clusters_and_peaks maps peak mm coordinates through this
+            # affine into the atlas' own voxel space, so it must be the atlas'
+            # real affine -- not assumed equal to the results grid's.
+            label_img = nib.load(os.path.join(
+                path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL3.nii.gz'
+            ))
+            label_nii_data = label_img.get_fdata()
+            label_affine = label_img.affine
+            # get label_dict
+            # "P:\userdata\raulh87\github\dog_brain_toolkit\Atlas\Hum\AAL_dictionary.csv"
+            label_dict = pd.read_csv(os.path.join(
+                path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL_dictionary.csv'
+            ))
+            # for humans, if radius is None, use 4 as default
+            if radius is None:
+                radius = 4
+        
+        else:
+            raise ValueError("Specie must be 'D' for Dog or '`H' for Human")
+    
+        # This is the mask used for searchlight, determines which voxels are included
+        if specie == 'D':
+            print(f"specie is D, mask_type: {mask_type}")
+            if mask_type == 'cope13':
+                ## ----mask should match with the beta maps (GLM space) ---
+                mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
             else:
-                print(f"Using run-dependent model: {rsa_model_path}")
-
-
-        # get categories from rsa_model definition
-        rsa_model_dict = rsa_utils.read_model_dict(rsa_model_path)
-        categories = rsa_model_dict['categories']
-
-
-    # list of missing files per subject/session/run
-    missing_per_run_list = []
-
-    if specie == 'D':
-        specie_label = 'Dog'
-        apply_coords_transform=False #assumes that atlas and everything is tiun the same space
-        design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_DHRF.fsf'
-        # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
-        atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, img_type + ".nii.gz")
-        atlas_for_labels = 'Czeibert' # takes for dogs: Czeibert, Johnson. For humans: AAL, Harvard
-        atlas_type = 'Nitzsche'  # for dogs only Nitzsche is used for masks
-        # if radius is None, use 3 as default for dogs
-        if radius is None:
-            radius = 3
-        # get label_dict and label_nii_data for dogs
-        # print elements before calling them for label_dict
-        # print(f"atlas_for_labels: {atlas_for_labels}")
-        # print(f"path_to_dog_brain_toolkit: {path_to_dog_brain_toolkit}")
-        # print 
-
-        label_dict = pd.read_csv(os.path.join(
-        path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"))
-
-        label_img = nib.load(os.path.join(
-        path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
-    ))
-        label_nii_data = label_img.get_fdata()
-        label_affine = label_img.affine
-
-    elif specie == 'H':
-        specie_label = 'Hum'
-        apply_coords_transform=True #assumes that atlas and results are in different spaces, applies coordinate transform to get correct labels in excel output
-        atlas_type = 'MNI'
-        # not sure where from
-        # design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
-        # From beta_H EmoB
-        design_template = os.path.join(datafolder, dataset, 'FSL_designs', 'H_basic.fsf')
+                mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type,
+                                    rsa_utils.with_nii_extension(mask_type))
         
-        # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
-        atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
-        
-        participants = list(range(1, 41))
-        
-
-        # get label_nii_data and label_dict for humans. Use the toolkit's own
-        # AAL3 (Atlas/Hum/AAL3.nii.gz, 91x109x91 MNI 2mm grid) rather than
-        # {dataset}/ROI/AAL3.nii.gz: the latter is a copy resampled onto one
-        # participant's native-EPI grid (96x96x52, see the "Hard invariant: one
-        # voxel grid" note in CLAUDE.md) and no longer matches the corrected
-        # z-maps now that step 0.5 puts human results on the MNI template grid.
-        # extract_clusters_and_peaks maps peak mm coordinates through this
-        # affine into the atlas' own voxel space, so it must be the atlas'
-        # real affine -- not assumed equal to the results grid's.
-        label_img = nib.load(os.path.join(
-            path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL3.nii.gz'
-        ))
-        label_nii_data = label_img.get_fdata()
-        label_affine = label_img.affine
-        # get label_dict
-        # "P:\userdata\raulh87\github\dog_brain_toolkit\Atlas\Hum\AAL_dictionary.csv"
-        label_dict = pd.read_csv(os.path.join(
-            path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL_dictionary.csv'
-        ))
-        # for humans, if radius is None, use 4 as default
-        if radius is None:
-            radius = 4
-        
-    else:
-        raise ValueError("Specie must be 'D' for Dog or '`H' for Human")
+        elif specie == 'H':
+            print(f"specie is H, mask_type: {mask_type}")
+            if mask_type == 'cope13':
+                #print('getting cope 13')
+                # get mask from GLM results, cope13
+                # mask = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + 'initial' + os.sep + 'group' + os.sep + 'H-group_cope13.gfeat' + os.sep + 'cope1.feat' + os.sep + 'thresh_zstat1.nii.gz'
+                # mask = r"P:\userdata\raulh87\data\EmoB\ROI\H\cope13.nii.gz"
+                mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
+                #b_greyMatter2mmB
+            else:
+                #print('not getting cope 13')
+                # get path
+                mask = rsa_utils.roi_mask_path(datafolder, dataset, specie, mask_type)
+        print(f"Using mask: {mask}")
+        # if participants_forced is not empty, use only those participants
+        if len(participants_forced) > 0:
+            participants = participants_forced
     
-    # This is the mask used for searchlight, determines which voxels are included
-    if specie == 'D':
-        print(f"specie is D, mask_type: {mask_type}")
-        if mask_type == 'cope13':
-            ## ----mask should match with the beta maps (GLM space) ---
-            mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
-        else:
-            mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type,
-                                rsa_utils.with_nii_extension(mask_type))
-        
-    elif specie == 'H':
-        print(f"specie is H, mask_type: {mask_type}")
-        if mask_type == 'cope13':
-            #print('getting cope 13')
-            # get mask from GLM results, cope13
-            # mask = datafolder + os.sep + dataset + os.sep + 'results' + os.sep + 'GLM' + os.sep + 'initial' + os.sep + 'group' + os.sep + 'H-group_cope13.gfeat' + os.sep + 'cope1.feat' + os.sep + 'thresh_zstat1.nii.gz'
-            # mask = r"P:\userdata\raulh87\data\EmoB\ROI\H\cope13.nii.gz"
-            mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
-            #b_greyMatter2mmB
-        else:
-            #print('not getting cope 13')
-            # get path
-            mask = rsa_utils.roi_mask_path(datafolder, dataset, specie, mask_type)
-    print(f"Using mask: {mask}")
-    # if participants_forced is not empty, use only those participants
-    if len(participants_forced) > 0:
-        participants = participants_forced
-    
-    # print size of label_nii_data
-    print(f"label_nii_data shape: {label_nii_data.shape}")
+        # print size of label_nii_data
+        print(f"label_nii_data shape: {label_nii_data.shape}")
 
     for step in steps_to_run:
         if skip_if_done:
@@ -981,7 +1014,7 @@ def main():
             rsa_utils.calculate_cross_participant_similarity(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie, mask=mask, model = model, task=task, radius=radius, rsa_class=rsa_class, dis_method=dis_method, rsa_method=rsa_method,rsa_model=rsa_model, verbose=verbose)
             print("### Done computing cross-participant similarity ###")
             
-        if step == 11.1: # because I didn't wanted to start new numbers
+        if step == 11.1: # Group-level cross-participant similarity
             
             print("### Computing Group-average cross-participant similarity map ###")
             if args.shuffle_participants:
@@ -994,17 +1027,68 @@ def main():
             # if shuffle_participants is true, shuffle participants order
             
             rsa_utils.calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, session_and_run_all_dict, specie=specie, model=model,task=task, radius=radius, rsa_model=rsa_model, rsa_class=rsa_class,rsa_method=rsa_method,dis_method=dis_method, replace_file=True, verbose=verbose, min_percentage_available=min_percentage_available, mask_type=mask_type)
-        if step == 11.2: # Calculate leave one out cross-participant similarity, calculate the group average excluding one participant, and then calculate similarity with the left out participant, repeat for all participants
-            print("### Step 11.2: Calculating leave-one-out cross-participant similarity ###")
+        if step in (11.2, 11.4):
+            print(f"### Step {step}: Calculating {'permuted ' if step == 11.4 else ''}leave-one-out cross-participant similarity ###")
+            if args.shuffle_participants:
+                np.random.shuffle(participants)
             session_and_run_all_dict = {}
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             
-            rsa_utils.calculate_leave_one_out_cross_participant_similarity(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie, mask=mask, model = model, task=task, radius=radius, rsa_class=rsa_class, dis_method=dis_method, rsa_method=rsa_method,rsa_model=rsa_model, verbose=verbose)
+            rsa_utils.calculate_leave_one_out_cross_participant_similarity(
+                datafolder=datafolder, dataset=dataset,
+                session_and_run_all_dict=session_and_run_all_dict,
+                participants=participants, specie=specie, mask=mask, model=model,
+                task=task, radius=radius, rsa_class=rsa_class,
+                dis_method=dis_method, rsa_method=rsa_method,
+                verbose=verbose, mah_fold=mah_fold, mask_type=mask_type,
+                replace_file=replace_file, rnd=step == 11.4, reps=reps,
+                replace_rnd_files=replace_rnd_files)
             print("### Done computing leave-one-out cross-participant similarity ###")
+            _write_marker(job_marker_dir, step)
+
+        if step in (11.3, 11.5):
+            print(f"### Step {step}: Averaging {'permuted ' if step == 11.5 else ''}leave-one-out cross-participant similarity ###")
+            session_and_run_all_dict = {
+                sub_N: rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                for sub_N in participants
+            }
+            average = (rsa_utils.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd
+                       if step == 11.5 else rsa_utils.calculate_mean_leave_one_out_cross_participant_similarity_map)
+            options = (dict(reps=reps, reps_group=reps_group, replace_rnd_files=replace_rnd_files)
+                       if step == 11.5 else dict(replace_file=replace_file))
+            average(
+                datafolder=datafolder, dataset=dataset,
+                session_and_run_all_dict=session_and_run_all_dict,
+                participants=participants, specie=specie, mask=mask, model=model,
+                task=task, radius=radius, rsa_class=rsa_class,
+                dis_method=dis_method, rsa_method=rsa_method,
+                verbose=verbose, mah_fold=mah_fold, mask_type=mask_type,
+                **options,
+                min_percentage_available=min_percentage_available)
+            print("### Done averaging leave-one-out cross-participant similarity ###")
+            _write_marker(job_marker_dir, step)
                 
-        if step == 12: # Calculate similarity across all pairs in a model, save files as txt as            
+        if step in (11.6, 11.7, 11.8, 11.9, '11.10'):
+            print(f"### Step {step}: Leave-one-out inference ###")
+            result = rsa_utils.calculate_leave_one_out_inference(
+                step=str(step), datafolder=datafolder, dataset=dataset,
+                specie=specie, model=model, task=task, radius=radius,
+                rsa_class=rsa_class, dis_method=dis_method, rsa_method=rsa_method,
+                mah_fold=mah_fold, mask=mask, mask_type=mask_type,
+                reps_group=reps_group, min_percentage_available=min_percentage_available,
+                z_threshold=z_threshold, cluster_threshold=cluster_threshold,
+                verbose=verbose, min_dist_mm=min_dist_mm,
+                label_dict=label_dict, label_nii_data=label_nii_data,
+                label_affine=label_affine, apply_coords_transform=apply_coords_transform,
+                atlas_file=atlas_file, report_title=args.report_title,
+                atlas_name=atlas_for_labels if specie == 'D' else 'AAL3',
+            )
+            if result:
+                _write_marker(job_marker_dir, step)
+
+        if step == 12: # Calculate similarity across all pairs in a model, save files as txt
             #datafolder/dataset/results/RSA_sphere/model/{specie}-sub-{sub_N:02d}/ses-{session}_task-{task}_run-{run_N:02d}/r-{radius}_{dis_method}_{rsa_model}_voxel-{X}_{Y}_{Z}.txt
             print("### Step 12: DSM extraction: ###")
             # load roi_database
@@ -1013,8 +1097,26 @@ def main():
                 datafolder, dataset, 'ROI', 'roi_database.csv'
             )
             roi_database = pd.read_csv(roi_database_path)
+            total_database_rows = len(roi_database)
+            roi_database['_database_row'] = np.arange(1, total_database_rows + 1)
             # filter roi_database to include only rows with matching specie
             roi_database = roi_database[roi_database['specie'] == specie]
+            if args.shuffle_rois:
+                roi_database = roi_database.sample(frac=1, random_state=args.roi_seed)
+
+            # Use the same species-specific reference grid as map extraction.
+            # Convert world mm only when explicit voxel indices are absent.
+            roi_reference = nib.load(mask)
+            resolved_rois = []
+            for _, row in roi_database.iterrows():
+                try:
+                    voxel_coords, sampled_mm, coordinate_source = rsa_utils.resolve_roi_coordinates(row, roi_reference)
+                except ValueError as error:
+                    raise ValueError(
+                        f"roi_database row {row['_database_row']}/{total_database_rows} "
+                        f"({specie}, peak_id={row['peak_id']}): {error}"
+                    ) from error
+                resolved_rois.append((row, voxel_coords, sampled_mm, coordinate_source))
 
             # get session and run list for all participants and save in a dict
             session_and_run_all_dict = {}
@@ -1023,16 +1125,17 @@ def main():
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             # if peak_id is not provided, iterate over roi_database and calculate for each peak_id
             if peak_id is None:
-                for index, row in roi_database.iterrows():
-                    print(f"Calculating similarity for peak_id {row['peak_id']} at coordinates {row['voxel_coords']}...")
-                    voxel_coords = row['voxel_coords']
-                    # voxel_coors is a string in format like this: "(x, y, z)", convert it to a tuple of integers
-                    voxel_coords = voxel_coords.strip("()") # remove parentheses
-                    voxel_coords = voxel_coords.split(",") # split by comma
-                    voxel_coords = tuple(int(coord) for coord in voxel_coords) # convert to tuple of integers
-
-                    print(f"voxel_coords: {voxel_coords}")
-                    print(f"type of voxel_coords: {type(voxel_coords)}")
+                for roi_number, (row, voxel_coords, sampled_mm, coordinate_source) in enumerate(resolved_rois, start=1):
+                    print(
+                        f"[ROI {roi_number}/{len(roi_database)} for {specie}; "
+                        f"roi_database row {row['_database_row']}/{total_database_rows}] "
+                        f"Calculating similarity for peak_id {row['peak_id']} "
+                        f"at voxel coordinates {voxel_coords} (source: {coordinate_source})...",
+                        flush=True,
+                    )
+                    if coordinate_source == 'mm':
+                        print(f"Requested mm: {tuple(row[axis] for axis in ('x', 'y', 'z'))}", flush=True)
+                    print(f"Sampled voxel-center mm: {sampled_mm}; reference: {mask}", flush=True)
                     rsa_utils.calculate_similarity_across_all_pairs(datafolder, dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie,
                                                 mask=mask, model=model, task=task, radius=radius, dis_method=dis_method, 
                                                 rsa_model=rsa_model, voxel_coords=voxel_coords, config_path=config_path, verbose=True, shuffle_participants=True,
@@ -1174,6 +1277,46 @@ def main():
             )
             if result:
                 _write_marker(job_marker_dir, step)
+        elif step == 16.2:  # voxelwise cross-species similarity. Voxelwise source-participant vs target-species mean
+            print("### Step 16.2: Computing voxelwise cross-species similarity ###")
+            result = rsa_utils.calculate_voxelwise_cross_similarity(
+                datafolder=datafolder, dataset=dataset, model=model,
+                participants=participants_forced or None, specie=specie,
+                target_specie=args.target_specie, radius=radius,
+                target_radius=args.target_radius, rsa_class=rsa_class,
+                dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
+                mask_type=mask_type, target_mask_type=args.target_mask_type,
+                target_participants=args.target_participants,
+                dog_participants=args.dog_participants,
+                human_participants=args.human_participants,
+                dog_mask=args.dog_mask, human_mask=args.human_mask,
+                toolkit_dir=args.toolkit_dir, output_root=args.cross_species_output,
+                device=args.cross_species_device, source_batch=args.dog_batch,
+                target_batch=args.human_batch, verbose=verbose,
+            )
+            if result:
+                _write_marker(job_marker_dir, step)
+            print("### Done computing voxelwise cross-species similarity ###")
+        elif step == 16.3:  # voxelwise cross-species similarity. Group-level cross-species similarity
+            print("### Step 16.3: Computing group-level cross-species similarity ###")
+            result = rsa_utils.calculate_group_level_cross_similarity(
+                datafolder=datafolder, dataset=dataset, model=model,
+                participants=participants_forced or None, specie=specie,
+                target_specie=args.target_specie, radius=radius,
+                target_radius=args.target_radius, rsa_class=rsa_class,
+                dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
+                mask_type=mask_type, target_mask_type=args.target_mask_type,
+                target_participants=args.target_participants,
+                dog_participants=args.dog_participants,
+                human_participants=args.human_participants,
+                dog_mask=args.dog_mask, human_mask=args.human_mask,
+                toolkit_dir=args.toolkit_dir, output_root=args.cross_species_output,
+                device=args.cross_species_device, source_batch=args.dog_batch,
+                target_batch=args.human_batch, verbose=verbose,
+            )
+            if result:
+                _write_marker(job_marker_dir, step)
+            print("### Done computing group-level cross-species similarity ###")
     print("### All steps completed! ###")
         
 

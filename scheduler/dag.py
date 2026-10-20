@@ -16,6 +16,10 @@ STEP_LABELS = {
     8: "Cluster size distribution",
     9: "Cluster correction",
     10: "Create tables",
+    11.2: "Participant leave-one-out similarity",
+    11.3: "Group leave-one-out similarity",
+    11.4: "Permuted participant leave-one-out similarity",
+    11.5: "Permuted group leave-one-out similarity",
     15: "Multiple regression RSA",
 }
 
@@ -34,10 +38,21 @@ _STEP_DEPS = {
     8:  [7],
     9:  [7, 8],  # cluster correction needs real z-map AND cluster dist
     10: [9],
+    11.2: [1],
+    11.3: [11.2],
+    11.4: [1],
+    11.5: [11.4],
     15: [1],     # regresses the step-1 pairwise maps against the model design
 }
 
-# Steps 4.5, 7.6 and 15 hang off the main line rather than feeding it: nothing
+CLASS_STEPS = frozenset((11.2, 11.3, 11.4, 11.5))
+
+
+def _validate_class_step(step, rsa_class):
+    if step in CLASS_STEPS and not rsa_class:
+        raise ValueError(f"Step {step} requires rsa_class.")
+
+# Steps 4.5, 7.6, 11.2--11.5 and 15 hang off the main line rather than feeding it: nothing
 # in 5..10 lists them as a dependency, so a classic 2->10 graph is unchanged and
 # they are only scheduled when asked for by name.
 
@@ -70,7 +85,7 @@ def rsa_models_token(rsa_models_list):
     return f"list{len(names)}-{digest}"
 
 
-def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None, rsa_models_list=None, model_specie=None, radius=None):
+def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method="kendall", dis_method="mahalanobis", mah_fold="stim-wise", participant=None, regression_model=None, rsa_models_list=None, model_specie=None, radius=None, rsa_class=None):
     # A batch job (several target models, one shared load of the pairwise maps)
     # takes a digest token in the rsa_model slot instead of a model name.
     if rsa_models_list:
@@ -81,12 +96,17 @@ def make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps
             )
         rsa_model = rsa_models_token(rsa_models_list)
     elif rsa_model is None:
-        raise ValueError("A job id needs an rsa_model or a non-empty rsa_models_list.")
+        if rsa_class:
+            rsa_model = "class"
+        else:
+            raise ValueError("A job id needs an rsa_model, a non-empty rsa_models_list, or rsa_class.")
     job_id = (
         f"{dataset}__{model}__{rsa_model}__{specie}"
         f"__{step_token(step)}__zt{z_threshold}__r{reps}__rg{reps_group}"
         f"__rsa{rsa_method}__dis{dis_method}__mah{mah_fold}"
     )
+    if rsa_class:
+        job_id += f"__class{rsa_class}"
     if regression_model is not None:
         job_id += f"__reg{regression_model}"
     if model_specie is not None:
@@ -113,7 +133,8 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
                     verbose=True,
                     priority=DEFAULT_PRIORITY,
                     min_percentage_available=1.0,
-                    regression_model=None, radius=None):
+                    regression_model=None, radius=None, rsa_class=None,
+                    replace_file=False, mask_type=None):
     """
     Return job dicts in topological order (leaf steps first) for running
     target_step for the given specie.  Steps below start_step are never
@@ -123,6 +144,10 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
     the graph and decides the order ``run_jobs.py`` claims *pending* jobs. It
     does not reorder the graph itself: a step still waits for its deps whatever
     its priority.
+
+    Steps 11.2--11.5 require ``rsa_class`` and accept ``rsa_model=None``.
+    They form two branches: 1 -> 11.2 -> 11.3 and 1 -> 11.4 -> 11.5.
+    Set ``start_step=11.2`` when the step-1 pairwise maps already exist.
     """
     priority = normalize_priority(priority)
     # Collect all needed steps via backwards walk from target_step
@@ -140,6 +165,8 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
 
     # Drop steps below the floor; their dependents become roots (pending)
     needed = {s for s in needed if s >= start_step}
+    for step in needed:
+        _validate_class_step(step, rsa_class)
 
     # Build per-step dep lists restricted to needed steps
     adj = {}
@@ -167,15 +194,16 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
     for step in topo_order:
         dep_steps = adj[step]
         dep_ids = [
-            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model, radius=radius)
+            make_job_id(dataset, model, rsa_model, specie, d, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model, radius=radius, rsa_class=rsa_class)
             for d in dep_steps
         ]
-        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model, radius=radius)
+        job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold, reps, reps_group, rsa_method, dis_method, mah_fold, regression_model=regression_model, radius=radius, rsa_class=rsa_class)
         jobs.append({
             "job_id": job_id,
             "dataset": dataset,
             "model": model,
             "rsa_model": rsa_model,
+            "rsa_class": rsa_class,
             "regression_model": regression_model,
             "specie": specie,
             "step": step,
@@ -191,6 +219,8 @@ def build_job_graph(dataset, model, rsa_model, specie, target_step=10,
             "reps": reps,
             "reps_group": reps_group,
             "radius": radius,
+            "mask_type": mask_type,
+            "replace_file": replace_file,
             "replace_rnd_files": replace_rnd_files,
             "verbose": verbose,
             "created_at": None,
@@ -210,7 +240,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                      replace_file=False, replace_rnd_files=False,
                      verbose=True, priority=DEFAULT_PRIORITY,
                      min_percentage_available=1.0, regression_model=None,
-                     rsa_models_list=None, model_specie=None):
+                     rsa_models_list=None, model_specie=None, rsa_class=None):
     """Build a single, *independent* job dict (no dependencies, status=pending).
 
     Used by the dashboard's "schedule missing" / per-map buttons: the user has
@@ -233,7 +263,11 @@ def build_single_job(dataset, model, rsa_model, specie, step,
     each run's pairwise maps once and fits every target against that stack, so
     splitting them into one job per model would re-read the same maps N times).
     ``run_jobs.build_command`` forwards the list as ``--rsa_models_list``.
+
+    For steps 11.2--11.5, pass ``rsa_model=None`` and ``rsa_class``. The class
+    is stored in the job, included in its ID, and forwarded as ``--rsa_class``.
     """
+    _validate_class_step(step, rsa_class)
     rsa_models_list = list(rsa_models_list) if rsa_models_list else None
     job_id = make_job_id(dataset, model, rsa_model, specie, step, z_threshold,
                          reps, reps_group, rsa_method, dis_method, mah_fold,
@@ -241,7 +275,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
                          regression_model=regression_model,
                          rsa_models_list=rsa_models_list,
                          model_specie=model_specie,
-                         radius=radius)
+                         radius=radius, rsa_class=rsa_class)
     label = STEP_LABELS.get(step, f"Step {step}")
     if rsa_models_list is not None:
         label = f"{label} ({len(rsa_models_list)} models)"
@@ -252,6 +286,7 @@ def build_single_job(dataset, model, rsa_model, specie, step,
         "dataset": dataset,
         "model": model,
         "rsa_model": rsa_model,
+        "rsa_class": rsa_class,
         "rsa_models_list": rsa_models_list,
         "model_specie": model_specie,
         "regression_model": regression_model,
