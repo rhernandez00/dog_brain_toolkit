@@ -56,12 +56,20 @@ def _check_grid(image, reference, path):
         raise ValueError(f'Voxel grid mismatch against species mask: {path}')
 
 
+def default_radius(specie):
+    """Dataset defaults; the caller independently selects source and target."""
+    return {'D': 3, 'H': 4}[specie]
+
+
+def _mask_name(mask):
+    return Path(mask).name.removesuffix('.nii.gz').removesuffix('.nii')
+
+
 def discover_inputs(datafolder, dataset='EmoC', model='basic-block',
-                    rsa_class='all-mahalanobis', radius=3, *,
-                    dog_participants=None, human_participants=None,
-                    dog_mask=None, human_mask=None, toolkit_dir=None,
+                    rsa_class='all-mahalanobis', radius=None, *,
+                    participants=None, target_participants=None,
+                    mask=None, target_mask=None, toolkit_dir=None,
                     specie='D', target_specie='H', target_radius=None,
-                    source_participants=None, target_participants=None,
                     mask_type='b_GreyMatter2mmB', target_mask_type='b_GreyMatter2mmB'):
     """Resolve existing pooled step-1 maps, using each species' own config.
 
@@ -70,8 +78,8 @@ def discover_inputs(datafolder, dataset='EmoC', model='basic-block',
     """
     if specie not in ('D', 'H') or target_specie not in ('D', 'H') or specie == target_specie:
         raise ValueError('specie and target_specie must be different species (D or H).')
-    if target_radius is None:
-        target_radius = 4 if target_specie == 'H' else 3
+    radius = default_radius(specie) if radius is None else radius
+    target_radius = default_radius(target_specie) if target_radius is None else target_radius
     if any(not np.isfinite(r) or r <= 0 for r in (radius, target_radius)):
         raise ValueError('radius and target_radius must be positive.')
     # CLI and package builder parsers can produce int vs float values; identical
@@ -86,33 +94,29 @@ def discover_inputs(datafolder, dataset='EmoC', model='basic-block',
                   rsa_method='kendall', kendall_variant='b', class_csv=str(class_path.resolve()),
                   pairs=pairs, species={})
     toolkit = Path(toolkit_dir or Path(__file__).parent)
-    for species, selected, mask in [('D', dog_participants, dog_mask), ('H', human_participants, human_mask)]:
-        requested = source_participants if species == specie else target_participants
-        if requested is not None:
-            if selected is not None and list(selected) != list(requested):
-                raise ValueError(f'Conflicting participant selections for {species}.')
-            selected = requested
+    for species, selected, reference_mask in (
+            (specie, participants, mask), (target_specie, target_participants, target_mask)):
         species_radius = radius if species == specie else target_radius
         species_mask_type = mask_type if species == specie else target_mask_type
         species_mask_type = species_mask_type.removesuffix('.nii.gz').removesuffix('.nii')
         config_path = root / 'config_files' / f'{species}_{model}.yaml'
         with open(config_path, encoding='utf-8') as stream:
             config = yaml.safe_load(stream)
-        participants = list(config['participants'] if selected is None else selected)
-        if not participants or len(set(participants)) != len(participants):
+        selected_ids = list(config['participants'] if selected is None else selected)
+        if not selected_ids or len(set(selected_ids)) != len(selected_ids):
             raise ValueError(f'{species}: select a nonempty list of unique participants.')
-        unknown = set(participants) - set(config['participants'])
+        unknown = set(selected_ids) - set(config['participants'])
         if unknown:
             raise ValueError(f'{species}: participants absent from configuration: {sorted(unknown)}')
-        if mask is None:
-            mask = root / 'ROI' / species / f'{species_mask_type}.nii.gz'
-            if species == 'D' and not mask.exists():
-                mask = toolkit / 'Atlas' / 'Dog' / 'Nitzsche' / f'{species_mask_type}.nii.gz'
+        if reference_mask is None:
+            reference_mask = root / 'ROI' / species / f'{species_mask_type}.nii.gz'
+            if species == 'D' and not reference_mask.exists():
+                reference_mask = toolkit / 'Atlas' / 'Dog' / 'Nitzsche' / f'{species_mask_type}.nii.gz'
         else:
-            species_mask_type = Path(mask).name.removesuffix('.nii.gz').removesuffix('.nii')
-        reference, _ = _grid(mask)
+            species_mask_type = _mask_name(reference_mask)
+        reference, _ = _grid(reference_mask)
         entries = []
-        for participant in participants:
+        for participant in selected_ids:
             maps = []
             base = root / 'results' / 'RSA' / model / f'{species}-sub-{participant:02d}'
             for a, b in pairs:
@@ -123,7 +127,7 @@ def discover_inputs(datafolder, dataset='EmoC', model='basic-block',
                 _check_grid(nib.load(str(path)), reference, path)
                 maps.append(str(path.resolve()))
             entries.append(dict(participant=int(participant), maps=maps))
-        result['species'][species] = dict(config=str(config_path.resolve()), mask=str(Path(mask).resolve()),
+        result['species'][species] = dict(config=str(config_path.resolve()), mask=str(Path(reference_mask).resolve()),
                                           mask_type=species_mask_type, radius=species_radius,
                                           participants=entries)
     return result
@@ -135,7 +139,7 @@ def _resolve(root, path):
 
 def _all_files(manifest):
     yield 'class_csv', manifest['class_csv']
-    for species in ('D', 'H'):
+    for species in sorted(manifest['species']):
         entry = manifest['species'][species]
         yield f'{species}/config', entry['config']
         yield f'{species}/mask', entry['mask']
@@ -150,9 +154,9 @@ def input_identity(manifest, root='.'):
     settings = {key: manifest[key] for key in ('schema', 'dataset', 'model', 'rsa_class', 'radius',
                                                 'target_radius', 'specie', 'target_specie',
                                                 'dis_method', 'mah_fold', 'rsa_method', 'kendall_variant', 'pairs')}
-    settings['masks'] = {s: manifest['species'][s]['mask_type'] for s in ('D', 'H')}
+    settings['masks'] = {s: manifest['species'][s]['mask_type'] for s in sorted(manifest['species'])}
     settings['participants'] = {s: [p['participant'] for p in manifest['species'][s]['participants']]
-                                for s in ('D', 'H')}
+                                for s in sorted(manifest['species'])}
     identity = dict(version=VERSION, code_sha256=sha256_file(__file__), settings=settings, files=files)
     encoded = json.dumps(identity, sort_keys=True, separators=(',', ':'))
     return hashlib.sha256(encoded.encode()).hexdigest(), identity
@@ -221,14 +225,14 @@ def _signs(rdms):
     return signs, counts
 
 
-def kendall_block(dog, human, device='cpu'):
+def kendall_block(source, target, device='cpu'):
     """Exact sign-product numerator and tie-adjusted tau-b, stored as float32."""
-    dog = np.asarray(dog, dtype=np.float64)
-    human = np.asarray(human, dtype=np.float64)
-    if dog.ndim != 2 or human.ndim != 2 or dog.shape[1] != human.shape[1] or dog.shape[1] < 2:
+    source = np.asarray(source, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    if source.ndim != 2 or target.ndim != 2 or source.shape[1] != target.shape[1] or source.shape[1] < 2:
         raise ValueError('RDM arrays must be 2D with the same, at least two, pair columns.')
-    a, na = _signs(dog)
-    b, nb = _signs(human)
+    a, na = _signs(source)
+    b, nb = _signs(target)
     if device == 'cuda':
         import torch
         # Products and partial sums are small integers, exactly represented in
@@ -248,8 +252,8 @@ def kendall_block(dog, human, device='cpu'):
     denominator = np.sqrt(na.astype(np.float64)[:, None] * nb[None, :])
     with np.errstate(divide='ignore', invalid='ignore'):
         result = numerator / denominator
-    valid_a = np.isfinite(dog).all(axis=1) & (na > 0)
-    valid_b = np.isfinite(human).all(axis=1) & (nb > 0)
+    valid_a = np.isfinite(source).all(axis=1) & (na > 0)
+    valid_b = np.isfinite(target).all(axis=1) & (nb > 0)
     result[~valid_a, :] = np.nan
     result[:, ~valid_b] = np.nan
     return result.astype(np.float32)
@@ -266,8 +270,8 @@ def _save_species(handle, species, image, inside, rdms, valid, participants):
     group.attrs['header_class'] = type(image.header).__name__
 
 
-def _run_matrix(manifest, output, *, root='.', device='auto', dog_batch=128,
-                human_batch=4096, checkpoint_callback=None, target_data=None):
+def _run_matrix(manifest, output, *, root='.', device='auto', source_batch=128,
+                target_batch=4096, checkpoint_callback=None, target_data=None):
     """Write/resume an HDF5 file. Callback receives a CLOSED partial file.
 
     Each tile is flushed before its completion bit. Resume uses the original
@@ -275,7 +279,7 @@ def _run_matrix(manifest, output, *, root='.', device='auto', dog_batch=128,
     only when their content identity matches. A single writer is required.
     """
     import h5py
-    if dog_batch <= 0 or human_batch <= 0:
+    if source_batch <= 0 or target_batch <= 0:
         raise ValueError('Batch sizes must be positive.')
     if (manifest.get('schema') != SCHEMA or manifest.get('dis_method') != 'mahalanobis'
             or manifest.get('mah_fold') != 'stim-wise' or manifest.get('rsa_method') != 'kendall'
@@ -306,15 +310,15 @@ def _run_matrix(manifest, output, *, root='.', device='auto', dog_batch=128,
     if not partial.exists():
         groups = {source: group_rdms(manifest, source, root),
                   target: target_data if target_data is not None else group_rdms(manifest, target, root)}
-        nd, nh = (len(groups[s][2]) for s in (source, target))
-        print(f'[16.2] Matrix {nd:,} x {nh:,}; float32 uncompressed size {nd * nh * 4 / 2**30:.3f} GiB. '
+        n_source, n_target = (len(groups[s][2]) for s in (source, target))
+        print(f'[16.2] Matrix {n_source:,} x {n_target:,}; float32 uncompressed size {n_source * n_target * 4 / 2**30:.3f} GiB. '
               'Compression ratio depends on the data.', flush=True)
         # Initialize atomically: an interrupted initial load never masquerades as a checkpoint.
         initializing = Path(str(partial) + '.initializing')
         with h5py.File(initializing, 'w') as handle:
             handle.attrs.update(schema=SCHEMA, version=VERSION, signature=signature,
                                 identity=json.dumps(identity, sort_keys=True), complete=False,
-                                dog_batch=dog_batch, human_batch=human_batch, device=device,
+                                source_batch=source_batch, target_batch=target_batch, device=device,
                                 source_specie=source, target_specie=target, source_participant=source_ids[0],
                                 radius=manifest['radius'], target_radius=manifest['target_radius'],
                                 matrix_axes=f'{source} participant searchlight centres, {target} group searchlight centres')
@@ -324,34 +328,37 @@ def _run_matrix(manifest, output, *, root='.', device='auto', dog_batch=128,
                 _save_species(handle, species, image, inside, rdms, valid,
                               identity['settings']['participants'][species])
                 handle[species].attrs.update(reduction='participant' if species == source else 'equal-participant-mean',
-                                             radius=manifest['species'][species]['radius'])
-            handle.create_dataset('correlations', shape=(nd, nh), dtype='f4', fillvalue=np.nan,
-                                  chunks=(min(dog_batch, nd), min(human_batch, nh)),
+                                             radius=manifest['species'][species]['radius'],
+                                             mask_type=manifest['species'][species]['mask_type'])
+            handle.create_dataset('correlations', shape=(n_source, n_target), dtype='f4', fillvalue=np.nan,
+                                  chunks=(min(source_batch, n_source), min(target_batch, n_target)),
                                   compression='gzip', compression_opts=4, shuffle=True)
-            handle.create_dataset('completed_blocks', shape=((nd + dog_batch - 1) // dog_batch,
-                                                             (nh + human_batch - 1) // human_batch),
+            handle.create_dataset('completed_blocks', shape=((n_source + source_batch - 1) // source_batch,
+                                                             (n_target + target_batch - 1) // target_batch),
                                   dtype='bool', fillvalue=False)
         os.replace(initializing, partial)
         del groups
     with h5py.File(partial, 'r') as handle:
-        dog_batch, human_batch = int(handle.attrs['dog_batch']), int(handle.attrs['human_batch'])
-        nd, nh = handle['correlations'].shape
-    for di, start in enumerate(range(0, nd, dog_batch)):
-        # Close after each dog batch so callbacks can safely publish a checkpoint.
+        # Historical v2 files used species names for row/column tile sizes.
+        source_batch = int(handle.attrs.get('source_batch', handle.attrs.get('dog_batch', source_batch)))
+        target_batch = int(handle.attrs.get('target_batch', handle.attrs.get('human_batch', target_batch)))
+        n_source, n_target = handle['correlations'].shape
+    for row_index, start in enumerate(range(0, n_source, source_batch)):
+        # Close after each source batch so callbacks can safely publish a checkpoint.
         with h5py.File(partial, 'r+') as handle:
-            if handle['completed_blocks'][di, :].all():
+            if handle['completed_blocks'][row_index, :].all():
                 continue
-            dog = handle[f'{source}/group_rdms'][start:start + dog_batch]
-            for hi, hstart in enumerate(range(0, nh, human_batch)):
-                if handle['completed_blocks'][di, hi]:
+            source_rdms = handle[f'{source}/group_rdms'][start:start + source_batch]
+            for column_index, target_start in enumerate(range(0, n_target, target_batch)):
+                if handle['completed_blocks'][row_index, column_index]:
                     continue
-                human = handle[f'{target}/group_rdms'][hstart:hstart + human_batch]
-                values = kendall_block(dog, human, device=device)
-                handle['correlations'][start:start + len(dog), hstart:hstart + len(human)] = values
+                target_rdms = handle[f'{target}/group_rdms'][target_start:target_start + target_batch]
+                values = kendall_block(source_rdms, target_rdms, device=device)
+                handle['correlations'][start:start + len(source_rdms), target_start:target_start + len(target_rdms)] = values
                 handle.flush()
-                handle['completed_blocks'][di, hi] = True
+                handle['completed_blocks'][row_index, column_index] = True
                 handle.flush()
-            print(f'[16.2] {source}-sub-{source_ids[0]:02d} centres {min(start + dog_batch, nd):,}/{nd:,}', flush=True)
+            print(f'[16.2] {source}-sub-{source_ids[0]:02d} centres {min(start + source_batch, n_source):,}/{n_source:,}', flush=True)
         if checkpoint_callback:
             checkpoint_callback(partial)
     with h5py.File(partial, 'r+') as handle:
@@ -410,7 +417,7 @@ def run_analysis(manifest, output, **kwargs):
             print(json.dumps({key: manifest.get(key) for key in ('dataset', 'model', 'rsa_class', 'specie',
                               'target_specie', 'radius', 'target_radius')}, sort_keys=True), flush=True)
             print('Participants:', {s: [p['participant'] for p in manifest['species'][s]['participants']]
-                                     for s in ('D', 'H')}, flush=True)
+                                     for s in (manifest['specie'], manifest['target_specie'])}, flush=True)
             try:
                 return _run_matrix(manifest, output, **kwargs)
             except BaseException:
@@ -428,6 +435,175 @@ def run_comparisons(manifest, output_root, *, root='.', **kwargs):
     return outputs
 
 
+def group_cross_similarity(root, dataset, model, rsa_class, specie='D',
+                           target_specie='H', radius=None, target_radius=None,
+                           mask_type='b_GreyMatter2mmB', participants=None, *,
+                           target_participants=None, target_mask_type=None,
+                           mask=None, target_mask=None,
+                           source_batch=128, target_batch=4096, verbose=False):
+    """Stream equal-participant arithmetic means of step-16.2 matrices.
+
+    Axes, comparison pairs, target cohort and target RDMs must agree exactly.
+    NaNs propagate; no Fisher transform is applied to Kendall correlations.
+    The output retains geometry for CorrelationReader.target_map().
+    """
+    import h5py
+    if {specie, target_specie} != {'D', 'H'} or not rsa_class:
+        raise ValueError('Select different D/H species and an rsa_class.')
+    if source_batch <= 0 or target_batch <= 0:
+        raise ValueError('Batch sizes must be positive.')
+    radius = default_radius(specie) if radius is None else radius
+    target_radius = default_radius(target_specie) if target_radius is None else target_radius
+    mask_type = _mask_name(mask if mask is not None else mask_type)
+    if target_mask is not None:
+        target_mask_type = _mask_name(target_mask)
+    folder = Path(root) / dataset / 'results' / 'RSA_cross-specie' / model / f'class_{rsa_class}'
+    name = f'{mask_type}-r-{radius:g}_mahalanobis_kendall_vs_{target_specie}-r-{target_radius:g}.HDF5'
+    if participants is None:
+        participants = sorted(int(p.parent.name.split('-sub-')[1])
+                              for p in folder.glob(f'{specie}-sub-*/{name}'))
+    else:
+        participants = list(participants)
+    if not participants or len(set(participants)) != len(participants):
+        raise ValueError('Require a nonempty, unique source participant selection.')
+    paths = [folder / f'{specie}-sub-{p:02d}' / name for p in participants]
+    output = folder / f'{specie}-group' / name
+    output.parent.mkdir(parents=True, exist_ok=True)
+    partial = Path(str(output) + '.partial')
+    # Keep all handles open for tiled reads, never load an entire matrix.
+    with contextlib.ExitStack() as stack:
+        files = [stack.enter_context(CorrelationReader(p)).file for p in paths]
+        first = files[0]
+        shape = first['correlations'].shape
+        metadata = ['pairs'] + [f'{s}/{key}' for s in (specie, target_specie)
+                               for key in ('ijk', 'shape', 'affine')]
+        metadata += [f'{target_specie}/{key}' for key in ('participants', 'group_rdms')]
+        for participant, handle in zip(participants, files):
+            if (handle.attrs.get('source_specie') != specie
+                    or handle.attrs.get('target_specie') != target_specie
+                    or handle.attrs.get('source_participant') != participant
+                    or handle.attrs.get('radius') != radius
+                    or handle.attrs.get('target_radius') != target_radius
+                    or handle['correlations'].shape != shape):
+                raise ValueError(f'Incompatible step-16.2 settings: participant {participant}')
+            # Validate mask selection from saved metadata; original mask files
+            # need not be available when aggregating on Colab.
+            identity = json.loads(handle.attrs.get('identity', '{}'))
+            for species, expected_mask in ((specie, mask_type), (target_specie, target_mask_type)):
+                saved_mask = handle[species].attrs.get('mask_type')
+                if saved_mask is None:
+                    saved_mask = identity.get('settings', {}).get('masks', {}).get(species)
+                if expected_mask is not None and saved_mask != _mask_name(expected_mask):
+                    raise ValueError(f'Incompatible {species} mask selection: participant {participant}')
+            for key in metadata:
+                a, b = first[key][:], handle[key][:]
+                equal = (np.array_equal(a, b, equal_nan=True) if a.dtype.kind in 'fc'
+                         else np.array_equal(a, b))
+                if not equal:
+                    raise ValueError(f'Incompatible {key}: participant {participant}')
+            if target_participants is not None and set(handle[f'{target_specie}/participants'][:]) != set(target_participants):
+                raise ValueError('Target participant selection differs from step 16.2.')
+        with h5py.File(partial, 'w') as result:
+            result.attrs.update(dict(first.attrs))
+            for key in ('signature', 'identity', 'source_participant', 'dog_batch', 'human_batch'):
+                if key in result.attrs:
+                    del result.attrs[key]
+            result.attrs.update(complete=False, source_batch=source_batch, target_batch=target_batch,
+                                reduction='equal-participant-arithmetic-mean',
+                                nan_policy='propagate', input_files=json.dumps([str(p) for p in paths]))
+            first.copy('pairs', result)
+            for species in (specie, target_specie):
+                group = result.create_group(species)
+                group.attrs.update(dict(first[species].attrs))
+                for key in ('ijk', 'xyz_mm', 'shape', 'affine', 'nifti_header'):
+                    first.copy(f'{species}/{key}', group, name=key)
+                group.create_dataset('participants', data=participants if species == specie
+                                     else first[f'{species}/participants'][:])
+                if species == specie:
+                    group.attrs['reduction'] = 'equal-participant-mean-of-correlations'
+            matrix = result.create_dataset('correlations', shape=shape, dtype='f4',
+                        chunks=(min(source_batch, shape[0]), min(target_batch, shape[1])),
+                        compression='gzip', shuffle=True)
+            for i in range(0, shape[0], source_batch):
+                for j in range(0, shape[1], target_batch):
+                    index = (slice(i, i + source_batch), slice(j, j + target_batch))
+                    total = np.zeros(matrix[index].shape, dtype=np.float64)
+                    for handle in files:
+                        total += handle['correlations'][index]
+                    matrix[index] = total / len(files)
+                if verbose:
+                    print(f'[16.3] averaged {min(i + source_batch, shape[0])}/{shape[0]} source voxels', flush=True)
+            result.attrs['complete'] = True
+    os.replace(partial, output)
+    return output
+
+
+def summarize_group_cross_similarity(path, output_dir=None, *, source_batch=128,
+                                     target_batch=4096, verbose=False):
+    """Step 16.4: source-space threshold counts and mean correlations.
+
+    Twenty linearly spaced thresholds include the finite matrix minimum and
+    maximum. Counts use strict >, ignoring undefined correlations. Row means
+    use finite entries only, with NaN for rows without finite data. Outside
+    the saved source mask is NaN. Read the matrix in bounded tiles.
+    """
+    if source_batch <= 0 or target_batch <= 0:
+        raise ValueError('Batch sizes must be positive.')
+    path = Path(path)
+    output_dir = Path(output_dir) if output_dir is not None else path.parent.parent / 'mean'
+    with CorrelationReader(path) as reader:
+        handle = reader.file
+        if handle.attrs.get('reduction') != 'equal-participant-arithmetic-mean':
+            raise ValueError('Step 16.4 requires a step-16.3 group average.')
+        source = handle.attrs['source_specie']
+        target = handle.attrs['target_specie']
+        if source == target or {source, target} != {'D', 'H'}:
+            raise ValueError('Step 16.4 requires different source and target species (D or H).')
+        low, high = np.inf, -np.inf
+        for _, _, values in reader.iter_blocks(source_batch, target_batch):
+            finite = values[np.isfinite(values)]
+            if finite.size:
+                low = min(low, float(finite.min()))
+                high = max(high, float(finite.max()))
+        if not np.isfinite(low):
+            raise ValueError('Group matrix has no finite correlations.')
+        thresholds = np.linspace(low, high, 20)
+        n_source, n_target = handle['correlations'].shape
+        counts = np.zeros((20, n_source), dtype=np.int64)
+        totals = np.zeros(n_source, dtype=np.float64)
+        available = np.zeros(n_source, dtype=np.int64)
+        for rows, _, values in reader.iter_blocks(source_batch, target_batch):
+            values = values.astype(np.float64)
+            finite = np.isfinite(values)
+            totals[rows] += np.where(finite, values, 0).sum(axis=1, dtype=np.float64)
+            available[rows] += finite.sum(axis=1)
+            for index, threshold in enumerate(thresholds):
+                counts[index, rows] += (finite & (values > threshold)).sum(axis=1)
+        means = np.full(n_source, np.nan)
+        np.divide(totals, available, out=means, where=available > 0)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        stem = path.stem
+        mean_path = output_dir / f'{stem}_mean.nii.gz'
+        nib.save(reader.image(source, means), mean_path)
+        outputs = []
+        for index, threshold in enumerate(thresholds, start=1):
+            output = output_dir / f'{stem}_threshold-{index:02d}_count.nii.gz'
+            nib.save(reader.image(source, counts[index - 1]), output)
+            outputs.append(output)
+        provenance = dict(input_file=str(path), output_mean_file=str(mean_path),
+                          thresholds=thresholds.tolist(), correlation_min=low,
+                          correlation_max=high, comparison='strictly greater than',
+                          finite_target_counts=available.tolist(),
+                          source_specie=source, target_specie=target,
+                          number_target_voxels=n_target, nan_policy='ignore nonfinite correlations; empty row mean is NaN',
+                          output_count_files=[str(p) for p in outputs])
+        with (output_dir / f'{stem}_summary.json').open('w', encoding='utf-8') as stream:
+            json.dump(provenance, stream, indent=2)
+        if verbose:
+            print(f'[16.4] Saved 20 count maps and mean map to {output_dir}', flush=True)
+    return [mean_path, *outputs]
+
+
 class CorrelationReader:
     """Context-managed, lazy reader for a complete step-16.2 result."""
     def __init__(self, path):
@@ -443,14 +619,15 @@ class CorrelationReader:
     def __exit__(self, *exc):
         self.file.close()
 
-    def iter_blocks(self, dog_batch=128, human_batch=4096):
-        if dog_batch <= 0 or human_batch <= 0:
+    def iter_blocks(self, source_batch=128, target_batch=4096):
+        if source_batch <= 0 or target_batch <= 0:
             raise ValueError('Batch sizes must be positive.')
         matrix = self.file['correlations']
-        for d in range(0, matrix.shape[0], dog_batch):
-            for h in range(0, matrix.shape[1], human_batch):
-                ds, hs = slice(d, min(d + dog_batch, matrix.shape[0])), slice(h, min(h + human_batch, matrix.shape[1]))
-                yield ds, hs, matrix[ds, hs]
+        for row in range(0, matrix.shape[0], source_batch):
+            for column in range(0, matrix.shape[1], target_batch):
+                rows = slice(row, min(row + source_batch, matrix.shape[0]))
+                columns = slice(column, min(column + target_batch, matrix.shape[1]))
+                yield rows, columns, matrix[rows, columns]
 
     def image(self, species, values):
         """Reconstruct values at saved centres; outside-mask locations are NaN."""
@@ -489,19 +666,17 @@ class CorrelationReader:
 
 def add_arguments(parser):
     """Step-specific flags shared by the local pipeline and package builder."""
-    parser.add_argument('--dog_participants', nargs='+', type=int)
-    parser.add_argument('--human_participants', nargs='+', type=int)
-    parser.add_argument('--dog_mask', help='Dog reference mask NIfTI path')
-    parser.add_argument('--human_mask', help='Human reference mask NIfTI path')
+    parser.add_argument('--mask', help='Source reference mask NIfTI path')
+    parser.add_argument('--target_mask', help='Target reference mask NIfTI path')
     parser.add_argument('--target_specie', choices=['D', 'H'], default='H', help='Species whose participant dissimilarities are averaged')
     parser.add_argument('--target_radius', type=float, help='Target searchlight radius; defaults to H=4, D=3')
     parser.add_argument('--target_participants', nargs='+', type=int)
     parser.add_argument('--target_mask_type', default='b_GreyMatter2mmB')
     parser.add_argument('--cross_species_output', help='Output ROOT directory; dataset/results/RSA_cross-specie/... is created inside it')
     parser.add_argument('--cross_species_device', choices=['auto', 'cpu', 'cuda'], default='auto')
-    parser.add_argument('--source_batch', '--dog_batch', dest='dog_batch', type=int, default=128,
+    parser.add_argument('--source_batch', type=int, default=128,
                         help='Source mask centres per tile (also for H-to-D)')
-    parser.add_argument('--target_batch', '--human_batch', dest='human_batch', type=int, default=4096,
+    parser.add_argument('--target_batch', type=int, default=4096,
                         help='Target mask centres per tile (also for H-to-D)')
 
 
@@ -516,8 +691,7 @@ def run_from_pipeline(args):
         target_specie=args.target_specie, radius=args.radius, target_radius=args.target_radius,
         rsa_class=args.rsa_class, dis_method=args.dis_method, rsa_method=args.rsa_method,
         mah_fold=args.mah_fold, mask_type=args.mask_type, target_mask_type=args.target_mask_type,
-        target_participants=args.target_participants, dog_participants=args.dog_participants,
-        human_participants=args.human_participants, dog_mask=args.dog_mask,
-        human_mask=args.human_mask, toolkit_dir=args.toolkit_dir,
+        target_participants=args.target_participants, mask=args.mask,
+        target_mask=args.target_mask, toolkit_dir=args.toolkit_dir,
         output_root=args.cross_species_output, device=args.cross_species_device,
-        source_batch=args.dog_batch, target_batch=args.human_batch, verbose=args.verbose)
+        source_batch=args.source_batch, target_batch=args.target_batch, verbose=args.verbose)

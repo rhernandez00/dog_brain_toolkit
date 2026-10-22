@@ -379,7 +379,7 @@ def parse_arguments():
                               'deleting them once the participant has its z map. Step 5 is '
                               'the other reader of those maps, so pass this when step 5 has '
                               'not run yet for this model.'))
-    parser.add_argument('--participants_forced', type=int, nargs='+', default=[],
+    parser.add_argument('--participants', '--participants_forced', dest='participants_forced', type=int, nargs='+', default=[],
                         help='List of participants to include')
     parser.add_argument('--verbose', action='store_true',
                         help='Verbose output')
@@ -409,7 +409,7 @@ def parse_arguments():
 def main():
     args = parse_arguments()
     steps_to_run = args.steps_to_run
-    cross_species_only = bool(steps_to_run) and all(step == 16.2 for step in steps_to_run)
+    cross_species_only = bool(steps_to_run) and all(step in (16.2, 16.3, 16.4) for step in steps_to_run)
     model = args.model
     # mask_path = args.mask_path
     dis_method = args.dis_method
@@ -495,10 +495,10 @@ def main():
         # stim_types = config['stim_types']
     
 
-        path_to_dog_brain_toolkit = (os.path.abspath(args.toolkit_dir) if args.toolkit_dir
+        path_to_toolkit = (os.path.abspath(args.toolkit_dir) if args.toolkit_dir
                                      else os.path.join(git_folder, 'dog_brain_toolkit'))
     
-        sys.path.append(path_to_dog_brain_toolkit)
+        sys.path.append(path_to_toolkit)
         import utils
         reload(utils)
         import preprocess_functions
@@ -574,9 +574,9 @@ def main():
         if specie == 'D':
             specie_label = 'Dog'
             apply_coords_transform=False #assumes that atlas and everything is tiun the same space
-            design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_DHRF.fsf'
+            design_template = path_to_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_DHRF.fsf'
             # print(f"specie_label: {specie_label}, atlas_type: {atlas_type}, img_type: {img_type}")
-            atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type, img_type + ".nii.gz")
+            atlas_file = os.path.join(path_to_toolkit, 'Atlas', specie_label, atlas_type, img_type + ".nii.gz")
             atlas_for_labels = 'Czeibert' # takes for dogs: Czeibert, Johnson. For humans: AAL, Harvard
             atlas_type = 'Nitzsche'  # for dogs only Nitzsche is used for masks
             # if radius is None, use 3 as default for dogs
@@ -585,14 +585,14 @@ def main():
             # get label_dict and label_nii_data for dogs
             # print elements before calling them for label_dict
             # print(f"atlas_for_labels: {atlas_for_labels}")
-            # print(f"path_to_dog_brain_toolkit: {path_to_dog_brain_toolkit}")
+            # print(f"path_to_toolkit: {path_to_toolkit}")
             # print 
 
             label_dict = pd.read_csv(os.path.join(
-            path_to_dog_brain_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"))
+            path_to_toolkit, 'Atlas', 'Dog', f"{atlas_for_labels}_dictionary.csv"))
 
             label_img = nib.load(os.path.join(
-            path_to_dog_brain_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
+            path_to_toolkit, 'Atlas', 'Dog', 'Nitzsche', atlas_for_labels + "_labels2mm.nii.gz"
         ))
             label_nii_data = label_img.get_fdata()
             label_affine = label_img.affine
@@ -602,12 +602,12 @@ def main():
             apply_coords_transform=True #assumes that atlas and results are in different spaces, applies coordinate transform to get correct labels in excel output
             atlas_type = 'MNI'
             # not sure where from
-            # design_template = path_to_dog_brain_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
+            # design_template = path_to_toolkit + os.sep + 'FSL_designs' + os.sep + 'basic_H.fsf'
             # From beta_H EmoB
             design_template = os.path.join(datafolder, dataset, 'FSL_designs', 'H_basic.fsf')
         
             # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
-            atlas_file = os.path.join(path_to_dog_brain_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")     
+            atlas_file = os.path.join(path_to_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")
         
             participants = list(range(1, 41))
         
@@ -622,14 +622,14 @@ def main():
             # affine into the atlas' own voxel space, so it must be the atlas'
             # real affine -- not assumed equal to the results grid's.
             label_img = nib.load(os.path.join(
-                path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL3.nii.gz'
+                path_to_toolkit, 'Atlas', 'Hum', 'AAL3.nii.gz'
             ))
             label_nii_data = label_img.get_fdata()
             label_affine = label_img.affine
             # get label_dict
             # "P:\userdata\raulh87\github\dog_brain_toolkit\Atlas\Hum\AAL_dictionary.csv"
             label_dict = pd.read_csv(os.path.join(
-                path_to_dog_brain_toolkit, 'Atlas', 'Hum', 'AAL_dictionary.csv'
+                path_to_toolkit, 'Atlas', 'Hum', 'AAL_dictionary.csv'
             ))
             # for humans, if radius is None, use 4 as default
             if radius is None:
@@ -645,7 +645,7 @@ def main():
                 ## ----mask should match with the beta maps (GLM space) ---
                 mask = os.path.join(datafolder,dataset,'ROI',specie,'cope13.nii.gz')
             else:
-                mask = os.path.join(path_to_dog_brain_toolkit, 'Atlas', specie_label, atlas_type,
+                mask = os.path.join(path_to_toolkit, 'Atlas', specie_label, atlas_type,
                                     rsa_utils.with_nii_extension(mask_type))
         
         elif specie == 'H':
@@ -1287,16 +1287,26 @@ def main():
                 dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
                 mask_type=mask_type, target_mask_type=args.target_mask_type,
                 target_participants=args.target_participants,
-                dog_participants=args.dog_participants,
-                human_participants=args.human_participants,
-                dog_mask=args.dog_mask, human_mask=args.human_mask,
+                mask=args.mask, target_mask=args.target_mask,
                 toolkit_dir=args.toolkit_dir, output_root=args.cross_species_output,
-                device=args.cross_species_device, source_batch=args.dog_batch,
-                target_batch=args.human_batch, verbose=verbose,
+                device=args.cross_species_device, source_batch=args.source_batch,
+                target_batch=args.target_batch, verbose=verbose,
             )
             if result:
                 _write_marker(job_marker_dir, step)
             print("### Done computing voxelwise cross-species similarity ###")
+        elif step == 16.4:
+            print("### Step 16.4: Summarizing group cross-species similarity ###")
+            result = rsa_utils.calculate_group_level_cross_similarity_maps(
+                datafolder=datafolder, dataset=dataset, model=model,
+                specie=specie, target_specie=args.target_specie,
+                radius=radius, target_radius=args.target_radius,
+                rsa_class=rsa_class, mask_type=mask_type, mask=args.mask,
+                output_root=args.cross_species_output,
+                source_batch=args.source_batch, target_batch=args.target_batch,
+                verbose=verbose)
+            if result:
+                _write_marker(job_marker_dir, step)
         elif step == 16.3:  # voxelwise cross-species similarity. Group-level cross-species similarity
             print("### Step 16.3: Computing group-level cross-species similarity ###")
             result = rsa_utils.calculate_group_level_cross_similarity(
@@ -1307,12 +1317,10 @@ def main():
                 dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
                 mask_type=mask_type, target_mask_type=args.target_mask_type,
                 target_participants=args.target_participants,
-                dog_participants=args.dog_participants,
-                human_participants=args.human_participants,
-                dog_mask=args.dog_mask, human_mask=args.human_mask,
+                mask=args.mask, target_mask=args.target_mask,
                 toolkit_dir=args.toolkit_dir, output_root=args.cross_species_output,
-                device=args.cross_species_device, source_batch=args.dog_batch,
-                target_batch=args.human_batch, verbose=verbose,
+                device=args.cross_species_device, source_batch=args.source_batch,
+                target_batch=args.target_batch, verbose=verbose,
             )
             if result:
                 _write_marker(job_marker_dir, step)

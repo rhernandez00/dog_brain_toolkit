@@ -1,5 +1,54 @@
 # CPU Colab RSA
 
+## Automatic steps 16.3 and 16.4
+
+Open `rsa_steps16_3_16_4.ipynb` in Colab, choose a CPU runtime, and Run all.
+The notebook mounts Drive and automatically discovers complete participant HDF5
+files under `My Drive/rsa_colab/results_step16_2`. Dataset, model, class, species
+direction, radii, mask names and available participant IDs come from the files.
+It prints all detected analyses and runs each one by default. Incomplete files
+are reported and excluded. Conflicting target cohorts/masks stop discovery.
+
+Keep these companion modules beside the notebook in `My Drive/rsa_colab`:
+`cross_species_rsa.py` and `discover_cross_species_groups.py` (the latter comes
+from `tools/colab_gpu/`). The notebook installs NumPy, nibabel, PyYAML and h5py.
+No step-1 inputs, config files or GPU are needed. Group matrices and summary
+maps are written inside the existing `results_step16_2/<dataset>/results/`
+tree, under `<source>-group/` and `mean/` within each class folder.
+
+**Steps 16.3/16.4 support both directions.** Set `specie` to the source and
+`target_specie` to the target. Maps always use source geometry and summarize
+target voxels. All analysis controls use source/target naming; see
+`docs/source_target_audit.md` for the audit and API migration.
+
+**Step 16.4** is available in the final cell of `rsa_step16_3.ipynb`, using
+the saved group HDF5. Upload the updated `cross_species_rsa.py` before running.
+It saves 20 source-space NIfTI maps counting target voxels strictly above each
+threshold, and one source-space mean-correlation NIfTI. The thresholds are evenly
+spaced from the finite group minimum to maximum, including both endpoints;
+a constant matrix gives 20 identical thresholds. Nonfinite correlations are
+excluded; rows with no finite entries have zero counts and NaN means.
+The exact thresholds and filenames are recorded in a summary JSON.
+Outputs go to `EmoC/results/RSA_cross-specie/basic-block/class_all-mahalanobis/mean`
+under the selected data/output root. Locally run `searchlight.py --steps_to_run 16.4`
+with the same dataset, model, rsa_class, radius and target_radius as step 16.3.
+Filenames retain the mask, radii, distance and correlation method, ending in
+`_threshold-01_count.nii.gz` through `_threshold-20_count.nii.gz`, or `_mean.nii.gz`.
+
+For **step 16.3**, open `rsa_step16_3.ipynb` in a CPU Colab runtime and upload
+the current `cross_species_rsa.py` to **My Drive/rsa_colab**. It reads existing
+HDF5 files directly under `MyDrive/rsa_colab/results_step16_2/EmoC/results/RSA_cross-specie/...`.
+The defaults match the supplied radius-4 D-to-H example. Edit the participant
+list to require a specific cohort, or leave it `None` to use every matching file.
+It writes an equal-participant arithmetic mean at every source/target voxel pair
+under `D-group/`, alongside the participant folders. Undefined correlations
+propagate as NaN. Original step-1 data, masks, config files and a GPU are unnecessary.
+The resulting HDF5 retains both voxel grids and works with
+`cross_species_rsa.CorrelationReader.target_map()` to extract a target-space map
+for any saved source voxel. Local step 16.3 uses the same kernel through
+`rsa_utils.calculate_group_level_cross_similarity`; `--cross_species_output`
+selects the root containing the step-16.2 files and receives the group output.
+
 Open `rsa_cpu.ipynb` in Google Colab and choose a CPU runtime. The notebook
 mounts Google Drive at `/content/drive`, unpacks `toolkit_cpu.zip`, and writes
 the toolbox's standard nested results into

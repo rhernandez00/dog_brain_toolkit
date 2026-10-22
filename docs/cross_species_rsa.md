@@ -40,13 +40,13 @@ radii use D=3, H=4 according to each species' role. `--target_specie` defaults t
 H; specify `--specie D` for D-to-H. Reverse with `--specie H --target_specie D
 --radius 4 --target_radius 5`. Source and target must differ.
 
-`--participants_forced 1 3 4` selects source participants; `--target_participants
+`--participants 1 3 4` selects source participants; `--target_participants
 1 2 3` selects target participants. Otherwise each species' YAML supplies its
-cohort. `--dog_participants`/`--human_participants` remain supported; conflicting
-selections are rejected. `--mask_type` controls the source mask and output
+cohort. `--participants_forced` remains an alias for `--participants` for the
+surrounding pipeline. `--mask_type` controls the source mask and output
 prefix, while `--target_mask_type` controls the target mask. Both default to
 `b_GreyMatter2mmB`. Dataset ROI masks are preferred, with a dog Nitzsche atlas
-fallback. `--dog_mask`/`--human_mask` override species masks explicitly and their
+fallback. `--mask`/`--target_mask` override source/target masks explicitly and their
 filenames supply mask prefixes. Maps must match their own species mask's grid;
 the two species' grids may differ.
 
@@ -84,8 +84,7 @@ requires it. Sign-vector matrix multiplication uses float32 with TF32 disabled,
 then float64 normalization and float32 storage; sign numerators for 45 pairs
 are small exact integers. CPU uses the same formula with NumPy float64.
 
-`--source_batch` (128) and `--target_batch` (4096) bound tile memory. Old aliases
-`--dog_batch` and `--human_batch` mean source/target even for H-to-D. Notebook
+`--source_batch` (128) and `--target_batch` (4096) bound tile memory. Notebook
 settings are SOURCE_BATCH/TARGET_BATCH. No full matrix is allocated in RAM/GPU.
 
 Each matrix needs `4 * source_mask_voxels * target_mask_voxels` uncompressed
@@ -125,6 +124,38 @@ compatibility), with reduction='participant'; target reduction is
 radii, matrix orientation, settings, input/code hashes and completion status.
 `human_map` is an alias for D-to-H; `target_map` handles either direction.
 Logs record participants, settings, progress, resume/reuse and failures.
+
+## Source/target interface and group summaries
+
+The supported analysis arguments are `participants`, `target_participants`,
+`mask`, `target_mask`, `source_batch`, and `target_batch`. The same names apply
+to `rsa_utils`, input discovery, the package builder and the Colab runner.
+The former species-named participant, mask and batch arguments have been removed.
+Source always means `specie` (matrix rows); target always means `target_specie`
+(matrix columns). Swap the species and their selections to reverse direction.
+
+Run step 16.3 with the same dataset, model, class, mask names and radii as step
+16.2. It averages participant correlation matrices at each voxel pair, saving
+`<source>-group/<same filename>.HDF5`. With no source selection it uses all
+matching files; an explicit selection requires every requested file. Target
+cohort and mask selections are checked against the saved metadata. Mask override
+filenames supply the mask names; aggregation does not need the original masks.
+
+Step 16.4 reads that group file and saves 20 threshold-count maps and one mean
+map under the class folder's `mean/`. Each map has the **source** geometry and
+summarizes **target** voxels, for either direction. The summary JSON records
+`source_specie`, `target_specie`, and `number_target_voxels`. Thresholds span the
+finite matrix minimum and maximum; counts use `>` and means ignore nonfinite
+entries. A row with no finite data has zero counts and a NaN mean.
+
+Completed historical step-16.2/16.3 HDF5 files remain readable. New outputs
+write neutral batch metadata. Historical batch attribute names are read only
+for compatibility. Input/code signatures remain strict: rebuild step-16.2
+packages after updating runner code; old checkpoints are not silently resumed
+with different code. Existing completed files can be used directly by 16.3/16.4.
+
+See [the species-reference audit](source_target_audit.md) for locations and
+the remaining species-specific resource selections.
 
 ## Validation
 

@@ -21,4 +21,7 @@ CLAUDE.md
 !/tests/test_create_rsa_class.py
 !/tests/test_clean_group_results.py
 !/tests/test_cross_species_rsa.py
+!/tests/test_colab_cross_species_groups.py
 Atlas/Hum/~$AAL_dictionary.xlsx
+/.codex-tmp-aal
+/tests

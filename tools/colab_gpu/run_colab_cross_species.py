@@ -38,7 +38,7 @@ def extract_package(package, staging):
 
 
 def run_colab(package, output, staging='/content/cross_species_16_2', *,
-              device='auto', dog_batch=128, human_batch=4096, checkpoint_minutes=15):
+              device='auto', source_batch=128, target_batch=4096, checkpoint_minutes=15):
     """output is a root directory; publish one HDF5 + log per source participant.
 
     Closed progress snapshots use the final HDF5 name with complete=False,
@@ -91,7 +91,7 @@ def run_colab(package, output, staging='/content/cross_species_16_2', *,
 
         try:
             result = rsa.run_analysis(single, local, root=root, device=device,
-                                      dog_batch=dog_batch, human_batch=human_batch,
+                                      source_batch=source_batch, target_batch=target_batch,
                                       checkpoint_callback=checkpoint, target_data=target_data)
         except (Exception, KeyboardInterrupt):
             if local_checkpoint.exists():
@@ -115,8 +115,8 @@ def main():
     parser.add_argument('--output', required=True, help='Output root for dataset/results/RSA_cross-specie/...')
     parser.add_argument('--staging', default='/content/cross_species_16_2')
     parser.add_argument('--device', choices=['auto', 'cpu', 'cuda'], default='auto')
-    parser.add_argument('--source_batch', '--dog_batch', dest='dog_batch', type=int, default=128)
-    parser.add_argument('--target_batch', '--human_batch', dest='human_batch', type=int, default=4096)
+    parser.add_argument('--source_batch', type=int, default=128)
+    parser.add_argument('--target_batch', type=int, default=4096)
     parser.add_argument('--checkpoint_minutes', type=float, default=15)
     args = parser.parse_args()
     run_colab(**vars(args))

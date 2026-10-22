@@ -43,6 +43,16 @@ class KendallTests(unittest.TestCase):
             if cell['cell_type'] == 'code' and not source.startswith('%'):
                 compile(source, f'colab-cell-{index}', 'exec')
 
+    def test_role_named_cli_arguments(self):
+        import argparse
+        parser = argparse.ArgumentParser()
+        rsa.add_arguments(parser)
+        args = parser.parse_args(['--mask', 'source.nii.gz', '--target_mask', 'target.nii.gz',
+                                  '--target_participants', '2', '--source_batch', '3', '--target_batch', '7'])
+        self.assertEqual((args.mask, args.target_mask), ('source.nii.gz', 'target.nii.gz'))
+        self.assertEqual((args.source_batch, args.target_batch), (3, 7))
+        self.assertFalse(any(name.startswith(('dog_', 'human_')) for name in vars(args)))
+
     def test_reference_and_tiles(self):
         rng = np.random.default_rng(7)
         dog = rng.integers(-3, 4, (8, 9)).astype(float)
@@ -113,13 +123,62 @@ class WorkflowTests(unittest.TestCase):
         self.manifest = rsa.discover_inputs(self.base, rsa_class='subset', radius=5, target_radius=4)
         self.single = next(rsa.participant_manifests(self.manifest))[1]
 
+    def test_step16_3_mean_and_validation(self):
+        outputs = rsa.run_comparisons(self.manifest, self.base, device='cpu')
+        # Include an undefined entry to verify the stated NaN policy.
+        with h5py.File(outputs[0], 'r+') as handle:
+            handle['correlations'][0, 0] = np.nan
+            # Original step-16.2 v2 files had identity masks but no group-level
+            # mask_type attributes, and used the historical batch names.
+            for species in ('D', 'H'):
+                del handle[species].attrs['mask_type']
+            handle.attrs['dog_batch'] = handle.attrs.pop('source_batch')
+            handle.attrs['human_batch'] = handle.attrs.pop('target_batch')
+        output = rsa.group_cross_similarity(
+            self.base, 'EmoC', 'basic-block', 'subset', radius=5,
+            participants=[1, 2], source_batch=2, target_batch=2)
+        with h5py.File(outputs[0]) as a, h5py.File(outputs[1]) as b:
+            expected = (a['correlations'][:].astype(float) + b['correlations'][:]) / 2
+        with rsa.CorrelationReader(output) as reader:
+            np.testing.assert_allclose(reader.file['correlations'][:], expected, equal_nan=True)
+            self.assertNotIn('dog_batch', reader.file.attrs)
+            self.assertNotIn('human_batch', reader.file.attrs)
+            self.assertEqual(reader.file.attrs['source_batch'], 2)
+            image = reader.target_map(reader.file['D/ijk'][1])
+            coords = reader.file['H/ijk'][:]
+            np.testing.assert_allclose(image.get_fdata()[tuple(coords.T)], expected[1])
+        maps = rsa.summarize_group_cross_similarity(output, source_batch=2, target_batch=2)
+        self.assertEqual(len(maps), 21)
+        with rsa.CorrelationReader(output) as reader:
+            expected = reader.file['correlations'][:].astype(float)
+            coords = reader.file['D/ijk'][:]
+            outside = np.ones(tuple(reader.file['D/shape'][:]), dtype=bool)
+            outside[tuple(coords.T)] = False
+            mean_img = nib.load(maps[0])
+            np.testing.assert_allclose(mean_img.get_fdata()[tuple(coords.T)],
+                                       np.nanmean(expected, axis=1), atol=1e-7)
+            np.testing.assert_allclose(mean_img.affine, reader.file['D/affine'][:])
+            self.assertTrue(np.isnan(mean_img.get_fdata()[outside]).all())
+            thresholds = np.linspace(np.nanmin(expected), np.nanmax(expected), 20)
+            for threshold, map_path in zip(thresholds, maps[1:]):
+                actual = nib.load(map_path).get_fdata()[tuple(coords.T)]
+                np.testing.assert_array_equal(actual, (expected > threshold).sum(axis=1))
+            self.assertEqual(maps[0].parent.name, 'mean')
+        with self.assertRaises(FileNotFoundError):
+            rsa.group_cross_similarity(self.base, 'EmoC', 'basic-block', 'subset',
+                                       radius=5, participants=[1, 3])
+        with h5py.File(outputs[1], 'r+') as handle:
+            handle['H/affine'][0, 3] += 1
+        with self.assertRaisesRegex(ValueError, 'H/affine'):
+            rsa.group_cross_similarity(self.base, 'EmoC', 'basic-block', 'subset', radius=5)
+
     def test_group_weighting_and_roundtrip(self):
         for species in ('D', 'H'):
             _, _, values, _ = rsa.group_rdms(self.manifest, species)
             np.testing.assert_allclose(values, (self.values[species, 1] + self.values[species, 2]) / 2)
         first, second = self.base / 'first.h5', self.base / 'second.h5'
-        rsa.run_analysis(self.single, first, device='cpu', dog_batch=2, human_batch=3)
-        rsa.run_analysis(self.single, second, device='cpu', dog_batch=1, human_batch=1)
+        rsa.run_analysis(self.single, first, device='cpu', source_batch=2, target_batch=3)
+        rsa.run_analysis(self.single, second, device='cpu', source_batch=1, target_batch=1)
         with rsa.CorrelationReader(first) as reader, h5py.File(second) as other:
             matrix = reader.file['correlations'][:]
             # Only nonzero mask centres are allocated: full grids have 4 and 6 voxels.
@@ -154,6 +213,21 @@ class WorkflowTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'integer'):
                 reader.human_map([0.2, 0, 0])
 
+    def test_role_specific_radius_defaults(self):
+        # The fixture has H=4 and D=5: H's omitted source radius should resolve
+        # to 4, and an explicit target radius must remain independent.
+        manifest = rsa.discover_inputs(self.base, rsa_class='subset',
+            specie='H', target_specie='D', target_radius=5,
+            participants=[2], target_participants=[1])
+        self.assertEqual((manifest['radius'], manifest['target_radius']), (4, 5))
+        # Group-only steps need no data or config files when resolving names.
+        import rsa_utils
+        with mock.patch.object(rsa, 'summarize_group_cross_similarity', return_value=['saved']) as summary:
+            rsa_utils.calculate_group_level_cross_similarity_maps(self.base, 'EmoC',
+                specie='H', target_specie='D', rsa_class='subset')
+        self.assertEqual(summary.call_args.args[0].name,
+            'b_GreyMatter2mmB-r-4_mahalanobis_kendall_vs_D-r-3.HDF5')
+
     def test_rsa_utils_public_entry_point(self):
         import rsa_utils
         output_root = self.base / 'public-api'
@@ -181,7 +255,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertTrue(handle['completed_blocks'][0].all())
             raise InterruptedError('synthetic disconnect')
         with self.assertRaises(InterruptedError):
-            rsa.run_analysis(self.single, output, device='cpu', dog_batch=1, human_batch=2, checkpoint_callback=interrupt)
+            rsa.run_analysis(self.single, output, device='cpu', source_batch=1, target_batch=2, checkpoint_callback=interrupt)
         self.assertFalse(output.exists())
         with self.assertRaises(ValueError):
             rsa.CorrelationReader(str(output) + '.partial')
@@ -190,7 +264,12 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Incompatible'):
             rsa.run_analysis(self.single, output, device='cpu')
         self.csv.write_text(original_csv)
-        rsa.run_analysis(self.single, output, device='cpu', dog_batch=7, human_batch=9)
+        # Historical tile metadata used species names, even for reverse runs.
+        # Read it as row/column sizes while keeping all new interfaces neutral.
+        with h5py.File(str(output) + '.partial', 'r+') as handle:
+            handle.attrs['dog_batch'] = handle.attrs.pop('source_batch')
+            handle.attrs['human_batch'] = handle.attrs.pop('target_batch')
+        rsa.run_analysis(self.single, output, device='cpu', source_batch=7, target_batch=9)
         self.assertTrue(output.exists())
         self.assertFalse(Path(str(output) + '.partial').exists())
         # Reuse a complete file with matching inputs.
@@ -246,8 +325,8 @@ class WorkflowTests(unittest.TestCase):
                                   cwd=self.base, capture_output=True, text=True)
         self.assertEqual(isolated.returncode, 0, isolated.stdout + isolated.stderr)
         output = self.base / 'drive'
-        outputs = run_colab(package, output, self.base / 'colab', device='cpu', dog_batch=1,
-                            human_batch=2, checkpoint_minutes=0)
+        outputs = run_colab(package, output, self.base / 'colab', device='cpu', source_batch=1,
+                            target_batch=2, checkpoint_minutes=0)
         self.assertEqual(len(outputs), 2)
         self.assertEqual(sorted(p.suffix for p in output.rglob('*') if p.is_file()),
                          ['.HDF5', '.HDF5', '.log', '.log'])
@@ -285,7 +364,7 @@ class WorkflowTests(unittest.TestCase):
             self.assertIn('target_specie', path.with_suffix('.log').read_text())
         reverse = rsa.discover_inputs(self.base, rsa_class='subset', radius=4,
                                       specie='H', target_specie='D', target_radius=5,
-                                      source_participants=[2], target_participants=[1, 2])
+                                      participants=[2], target_participants=[1, 2])
         path = rsa.run_comparisons(reverse, self.base / 'reverse', device='cpu')[0]
         self.assertTrue(path.name.endswith('_vs_D-r-5.HDF5'))
         with rsa.CorrelationReader(path) as reader:
@@ -295,6 +374,65 @@ class WorkflowTests(unittest.TestCase):
             self.assertEqual(target_image.shape, (2, 2, 1))
             with self.assertRaisesRegex(ValueError, 'D-to-H'):
                 reader.human_map([0, 0, 0])
+
+    def test_source_target_selections_and_summaries_both_directions(self):
+        repo = Path(rsa.__file__).parent
+        for source, target, radius, target_radius in [('D', 'H', 5, 4), ('H', 'D', 4, 5)]:
+            with self.subTest(source=source):
+                source_mask = self.base / f'source_{source}.nii.gz'
+                target_mask = self.base / f'target_{target}.nii.gz'
+                nib.save(nib.load(self.dataset / f'ROI/{source}/b_GreyMatter2mmB.nii.gz'), source_mask)
+                nib.save(nib.load(self.dataset / f'ROI/{target}/b_GreyMatter2mmB.nii.gz'), target_mask)
+                root = self.base / f'roles_{source}'
+                command = [sys.executable, str(repo / 'searchlight.py'),
+                           '--steps_to_run', '16.2', '16.3', '16.4',
+                           '--datafolder', str(self.base), '--dataset', 'EmoC',
+                           '--rsa_class', 'subset', '--model', 'basic-block',
+                           '--specie', source, '--target_specie', target,
+                           '--radius', str(radius), '--target_radius', str(target_radius),
+                           '--participants', '2', '--target_participants', '1',
+                           '--mask', str(source_mask), '--target_mask', str(target_mask),
+                           '--source_batch', '2', '--target_batch', '3',
+                           '--cross_species_device', 'cpu', '--cross_species_output', str(root)]
+                process = subprocess.run(command, capture_output=True, text=True)
+                self.assertEqual(process.returncode, 0, process.stdout + process.stderr)
+                name = f'source_{source}-r-{radius}_mahalanobis_kendall_vs_{target}-r-{target_radius}.HDF5'
+                folder = root / 'EmoC/results/RSA_cross-specie/basic-block/class_subset'
+                with rsa.CorrelationReader(folder / f'{source}-sub-02' / name) as reader:
+                    self.assertEqual(reader.file[f'{source}/participants'][:].tolist(), [2])
+                    self.assertEqual(reader.file[f'{target}/participants'][:].tolist(), [1])
+                    self.assertEqual(reader.file.attrs['source_batch'], 2)
+                    self.assertEqual(reader.file.attrs['target_batch'], 3)
+                    expected = rsa.kendall_block(self.values[source, 2], self.values[target, 1])
+                    np.testing.assert_array_equal(reader.file['correlations'][:], expected)
+                group_path = folder / f'{source}-group' / name
+                with rsa.CorrelationReader(group_path) as reader:
+                    np.testing.assert_array_equal(reader.file['correlations'][:], expected)
+                    coords = reader.file[f'{source}/ijk'][:]
+                    shape = tuple(reader.file[f'{source}/shape'][:])
+                stem = Path(name).stem
+                maps = list((folder / 'mean').glob('*.nii.gz'))
+                self.assertEqual(len(maps), 21)
+                average = nib.load(folder / 'mean' / f'{stem}_mean.nii.gz')
+                self.assertEqual(average.shape, shape)
+                np.testing.assert_allclose(average.get_fdata()[tuple(coords.T)], expected.mean(axis=1), atol=1e-7)
+                metadata = json.loads((folder / 'mean' / f'{stem}_summary.json').read_text())
+                self.assertEqual(metadata['source_specie'], source)
+                self.assertEqual(metadata['target_specie'], target)
+                self.assertEqual(metadata['number_target_voxels'], expected.shape[1])
+                for index, threshold in enumerate(metadata['thresholds'], 1):
+                    counts = nib.load(folder / 'mean' / f'{stem}_threshold-{index:02d}_count.nii.gz')
+                    np.testing.assert_array_equal(counts.get_fdata()[tuple(coords.T)],
+                                                  (expected.astype(float) > threshold).sum(axis=1))
+                # Both mask and cohort mismatches must fail against saved metadata.
+                with self.assertRaisesRegex(ValueError, 'mask selection'):
+                    rsa.group_cross_similarity(root, 'EmoC', 'basic-block', 'subset',
+                        source, target, radius, target_radius, mask=source_mask,
+                        target_mask=self.base / 'wrong.nii.gz')
+                with self.assertRaisesRegex(ValueError, 'Target participant'):
+                    rsa.group_cross_similarity(root, 'EmoC', 'basic-block', 'subset',
+                        source, target, radius, target_radius, mask=source_mask,
+                        target_mask=target_mask, target_participants=[2])
 
     def test_colab_partial_snapshot_resume(self):
         package = create_package(self.single, self.base / 'single.zip')
@@ -310,7 +448,7 @@ class WorkflowTests(unittest.TestCase):
         with mock.patch.object(rsa, 'kendall_block', side_effect=interrupted_kernel):
             with self.assertRaises(InterruptedError):
                 run_colab(package, output, self.base / 'interrupted', device='cpu',
-                          dog_batch=1, human_batch=2, checkpoint_minutes=0)
+                          source_batch=1, target_batch=2, checkpoint_minutes=0)
         path = output / rsa.relative_output_path(self.single, 1)
         with h5py.File(path) as handle:
             self.assertFalse(handle.attrs['complete'])
@@ -328,7 +466,7 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'stim-wise'):
             rsa.run_analysis(bad, self.base / 'bad.h5')
         with self.assertRaisesRegex(ValueError, 'positive'):
-            rsa.run_analysis(self.manifest, self.base / 'bad.h5', dog_batch=0)
+            rsa.run_analysis(self.manifest, self.base / 'bad.h5', source_batch=0)
 
 
 if __name__ == '__main__':

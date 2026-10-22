@@ -2403,8 +2403,7 @@ def calculate_voxelwise_cross_similarity(
         rsa_class=None, dis_method='mahalanobis', rsa_method='kendall',
         rsa_model=None, verbose=False, *, target_specie='H', target_radius=None,
         target_participants=None, mask_type='b_GreyMatter2mmB',
-        target_mask_type='b_GreyMatter2mmB', dog_participants=None,
-        human_participants=None, dog_mask=None, human_mask=None,
+        target_mask_type='b_GreyMatter2mmB', target_mask=None,
         mah_fold='stim-wise', toolkit_dir=None, output_root=None,
         device='auto', source_batch=128, target_batch=4096):
     """Step 16.2: each source participant vs target-species mean RDMs.
@@ -2416,7 +2415,7 @@ def calculate_voxelwise_cross_similarity(
 
     ``radius`` and ``target_radius`` are independent. ``participants=None``
     reads the source cohort from its own config. ``mask`` overrides the source
-    mask; dog_mask/human_mask provide explicit species-specific overrides.
+    mask; ``target_mask`` overrides the target mask in either direction.
     Session/run, task and rsa_model arguments follow the surrounding pipeline
     interface but do not select these pooled Mahalanobis inputs.
 
@@ -2431,24 +2430,15 @@ def calculate_voxelwise_cross_similarity(
         raise ValueError('Step 16.2 requires rsa_class, e.g. all-mahalanobis.')
     if source_batch <= 0 or target_batch <= 0:
         raise ValueError('Source and target batch sizes must be positive.')
-    if mask is not None:
-        source_mask = dog_mask if specie == 'D' else human_mask
-        if source_mask is not None and os.path.abspath(source_mask) != os.path.abspath(mask):
-            raise ValueError('Conflicting source mask overrides.')
-        if specie == 'D':
-            dog_mask = mask
-        else:
-            human_mask = mask
     destination = datafolder if output_root is None else output_root
     if os.path.splitext(os.fspath(destination))[1].lower() in ('.h5', '.hdf5'):
         raise ValueError('Step 16.2 output_root must be a directory, not a matrix filename.')
     manifest = cross_rsa.discover_inputs(
         datafolder=datafolder, dataset=dataset, model=model, rsa_class=rsa_class,
-        radius=radius if radius is not None else (3 if specie == 'D' else 4),
+        radius=radius,
         specie=specie, target_specie=target_specie, target_radius=target_radius,
-        source_participants=participants, target_participants=target_participants,
-        dog_participants=dog_participants, human_participants=human_participants,
-        dog_mask=dog_mask, human_mask=human_mask, toolkit_dir=toolkit_dir,
+        participants=participants, target_participants=target_participants,
+        mask=mask, target_mask=target_mask, toolkit_dir=toolkit_dir,
         mask_type=mask_type, target_mask_type=target_mask_type)
     # Compute the target group once. The source RDMs are never group-averaged.
     target_data = cross_rsa.group_rdms(manifest, target_specie)
@@ -2457,8 +2447,57 @@ def calculate_voxelwise_cross_similarity(
         output = os.path.join(destination, cross_rsa.relative_output_path(manifest, participant))
         outputs.append(cross_rsa.run_analysis(
             single, output, target_data=target_data, device=device,
-            dog_batch=source_batch, human_batch=target_batch))
+            source_batch=source_batch, target_batch=target_batch))
     return outputs
+
+
+def calculate_group_level_cross_similarity_maps(
+        datafolder, dataset, model='basic-block', specie='D',
+        target_specie='H', radius=None, target_radius=None, rsa_class=None,
+        mask_type='b_GreyMatter2mmB', mask=None, output_root=None,
+        source_batch=128, target_batch=4096, verbose=False):
+    """Step 16.4: summarize the saved group matrix into source-space maps."""
+    from pathlib import Path
+    import cross_species_rsa as cross_rsa
+
+    radius = cross_rsa.default_radius(specie) if radius is None else radius
+    target_radius = cross_rsa.default_radius(target_specie) if target_radius is None else target_radius
+    mask_type = cross_rsa._mask_name(mask if mask is not None else mask_type)
+    root = Path(datafolder if output_root is None else output_root)
+    folder = root / dataset / 'results' / 'RSA_cross-specie' / model / f'class_{rsa_class}'
+    name = f'{mask_type}-r-{radius:g}_mahalanobis_kendall_vs_{target_specie}-r-{target_radius:g}.HDF5'
+    return cross_rsa.summarize_group_cross_similarity(
+        folder / f'{specie}-group' / name, folder / 'mean',
+        source_batch=source_batch, target_batch=target_batch, verbose=verbose)
+
+
+def calculate_group_level_cross_similarity(
+        datafolder, dataset, model='basic-block', participants=None, specie='D',
+        target_specie='H', radius=None, target_radius=None, rsa_class=None,
+        dis_method='mahalanobis', rsa_method='kendall', mah_fold='stim-wise',
+        mask_type='b_GreyMatter2mmB', target_mask_type='b_GreyMatter2mmB',
+        target_participants=None, mask=None, target_mask=None,
+        toolkit_dir=None, output_root=None,
+        device='auto', source_batch=128, target_batch=4096, verbose=False):
+    """Step 16.3: arithmetic mean at every source/target voxel pair.
+
+    Read only completed step-16.2 HDF5 files; no original maps or configs are
+    required. With no explicit cohort, use all matching source participants.
+    ``output_root`` selects the step-16.2 root and receives the group result.
+    Undefined correlations propagate as NaN (equal participant weighting).
+    Compatibility mask/device arguments do not reload masks or require a GPU.
+    """
+    import cross_species_rsa as cross_rsa
+
+    if dis_method != 'mahalanobis' or rsa_method != 'kendall' or mah_fold != 'stim-wise':
+        raise ValueError('Step 16.3 requires Mahalanobis stim-wise inputs and Kendall tau-b.')
+    return cross_rsa.group_cross_similarity(
+        datafolder if output_root is None else output_root, dataset, model,
+        rsa_class, specie, target_specie, radius, target_radius, mask_type,
+        participants,
+        target_participants=target_participants,
+        target_mask_type=target_mask_type, mask=mask, target_mask=target_mask, source_batch=source_batch,
+        target_batch=target_batch, verbose=verbose)
 
 
 def calculate_cross_participant_similarity(datafolder, dataset, session_and_run_all_dict, participants, specie, mask, model, task, radius, rsa_class, dis_method='mahalanobis', rsa_method='kendall',  mask_type='b_GreyMatter2mmB', verbose=False, shuffle_participants=True):

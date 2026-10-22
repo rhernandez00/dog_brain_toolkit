@@ -24,7 +24,7 @@ def create_package(manifest, output, root='.'):
         return name
 
     portable['class_csv'] = stage(manifest['class_csv'], 'inputs/class.csv')
-    for species in ('D', 'H'):
+    for species in portable['species']:
         entry = portable['species'][species]
         entry['mask'] = stage(entry['mask'], f'inputs/{species}/mask.nii.gz')
         entry['config'] = stage(entry['config'], f'inputs/{species}/config.yaml')
@@ -62,7 +62,7 @@ def main():
     parser.add_argument('--rsa_class', default='all-mahalanobis')
     parser.add_argument('--radius', type=float, default=None)
     parser.add_argument('--specie', choices=['D', 'H'], default='D')
-    parser.add_argument('--participants_forced', nargs='+', type=int, default=[])
+    parser.add_argument('--participants', '--participants_forced', dest='participants_forced', nargs='+', type=int, default=[])
     parser.add_argument('--mask_type', default='b_GreyMatter2mmB')
     parser.add_argument('--toolkit_dir', default=str(REPO))
     parser.add_argument('--out', required=True, help='Output ZIP path; notebook is copied alongside it')
@@ -70,12 +70,10 @@ def main():
     args = parser.parse_args()
     from scheduler.paths import get_paths
     manifest = rsa.discover_inputs(args.datafolder or get_paths()[0], args.dataset, args.model,
-                                  args.rsa_class, args.radius if args.radius is not None else (3 if args.specie == 'D' else 4),
-                                  dog_participants=args.dog_participants,
-                                  human_participants=args.human_participants, dog_mask=args.dog_mask,
-                                  human_mask=args.human_mask, toolkit_dir=args.toolkit_dir,
+                                  args.rsa_class, args.radius,
+                                  mask=args.mask, target_mask=args.target_mask, toolkit_dir=args.toolkit_dir,
                                   specie=args.specie, target_specie=args.target_specie,
-                                  target_radius=args.target_radius, source_participants=args.participants_forced or None,
+                                  target_radius=args.target_radius, participants=args.participants_forced or None,
                                   target_participants=args.target_participants,
                                   mask_type=args.mask_type, target_mask_type=args.target_mask_type)
     create_package(manifest, args.out)
