@@ -177,6 +177,8 @@ std across maps. Save as nifti.
 11.8 Estimate the cluster-size null distribution from the permuted z-maps.
 11.9 Apply maximum-cluster correction to the real leave-one-out z-map.
 11.10 (alias 11.101): Save CSV and publication reports, as in step 10.
+11.13 Calculate group-level difference between classes in cross-participant similarity
+
 
 
 12: DSM extraction: For each significant cluster, extract the similarity values
@@ -221,6 +223,7 @@ Input arguments:
 --rsa_model: RSA model to use
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
 --rsa_class: RSA class to use, used when comparing based on class pairs (e.g. all dog-dog pairs, all human-human pairs, all dog-human pairs)
+--target_class: Target class to compare against in cross-participant similarity difference calculation (used in step 11.13). The resulting maps will be rsa_class - target_class
 --regression_model: Regression model to use for multiple regression RSA (default: None)
 --rsa_models_list: Target RSA models for steps 15 through 15.10, space separated; defaults to [--rsa_model]
 --specie: 'D' for Dog, 'H' for Human (default: 'H')
@@ -248,7 +251,7 @@ Input arguments:
     them once the participant has its z map (default: False)
 --skip_if_done: from step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100% of the participants where available)
 
---participants_forced: List of participants to include (default: [])
+--participants_forced: List of participants to include (default: []); steps 11.2/11.4 select output participants only, retaining the full cohort as references
 --verbose: Verbose output (default: False)
 --wait_time: Wait time between steps in seconds (default: 300)
 --overwrite_movement: Overwrite existing movement files (default: False)
@@ -321,6 +324,8 @@ def parse_arguments():
                         help='Method to compare similarity maps with model')
     parser.add_argument('--rsa_class', type=str, default=None,
                         help='RSA class to use')
+    parser.add_argument('--target_class', type=str, default=None,
+                        help='Step 11.13: subtract this class from --rsa_class')
     parser.add_argument('--regression_model', type=str, default=None,
                         help='Regression model to use for multiple regression RSA')
     parser.add_argument('--rsa_models_list', type=str, nargs='+', default=None,
@@ -380,7 +385,8 @@ def parse_arguments():
                               'the other reader of those maps, so pass this when step 5 has '
                               'not run yet for this model.'))
     parser.add_argument('--participants', '--participants_forced', dest='participants_forced', type=int, nargs='+', default=[],
-                        help='List of participants to include')
+                        help='List of participants to include; for steps 11.2/11.4, select output '
+                             'participants while retaining the full cohort as references')
     parser.add_argument('--verbose', action='store_true',
                         help='Verbose output')
     parser.add_argument('--wait_time', type=int, default=3000,
@@ -422,7 +428,10 @@ def main():
         raise ValueError('--model_specie requires --rsa_model to name the model prefix.')
     rsa_method = args.rsa_method
     rsa_class = args.rsa_class
-    loo_steps = (11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, '11.10')
+    target_class = args.target_class
+    if 11.13 in steps_to_run and (not rsa_class or not target_class):
+        raise ValueError('Step 11.13 requires --rsa_class and --target_class.')
+    loo_steps = (11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, '11.10', 11.13)
     if any(step in loo_steps for step in steps_to_run) and not rsa_class:
         raise ValueError('Steps 11.2–11.10 require --rsa_class (cat1/cat2 comparison list).')
     if steps_to_run and all(step in loo_steps for step in steps_to_run):
@@ -609,7 +618,7 @@ def main():
             # "C:\github\dog_brain_toolkit\Atlas\Hum\MNI152_T1_2mm_brain.nii.gz"
             atlas_file = os.path.join(path_to_toolkit, 'Atlas', 'Hum', "MNI152_T1_2mm_brain.nii.gz")
         
-            participants = list(range(1, 41))
+            
         
 
             # get label_nii_data and label_dict for humans. Use the toolkit's own
@@ -662,6 +671,8 @@ def main():
                 # get path
                 mask = rsa_utils.roi_mask_path(datafolder, dataset, specie, mask_type)
         print(f"Using mask: {mask}")
+        # Keep the full cohort for leave-one-out references before selecting outputs.
+        loo_participants = list(participants)
         # if participants_forced is not empty, use only those participants
         if len(participants_forced) > 0:
             participants = participants_forced
@@ -1029,22 +1040,25 @@ def main():
             rsa_utils.calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, session_and_run_all_dict, specie=specie, model=model,task=task, radius=radius, rsa_model=rsa_model, rsa_class=rsa_class,rsa_method=rsa_method,dis_method=dis_method, replace_file=True, verbose=verbose, min_percentage_available=min_percentage_available, mask_type=mask_type)
         if step in (11.2, 11.4):
             print(f"### Step {step}: Calculating {'permuted ' if step == 11.4 else ''}leave-one-out cross-participant similarity ###")
+            analysis_participants = list(loo_participants)
             if args.shuffle_participants:
-                np.random.shuffle(participants)
+                np.random.shuffle(analysis_participants)
             session_and_run_all_dict = {}
-            for sub_N in participants:
+            for sub_N in analysis_participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 session_and_run_all_dict[sub_N] = session_and_run_dict
             
             rsa_utils.calculate_leave_one_out_cross_participant_similarity(
                 datafolder=datafolder, dataset=dataset,
                 session_and_run_all_dict=session_and_run_all_dict,
-                participants=participants, specie=specie, mask=mask, model=model,
+                participants=analysis_participants, specie=specie, mask=mask, model=model,
                 task=task, radius=radius, rsa_class=rsa_class,
                 dis_method=dis_method, rsa_method=rsa_method,
                 verbose=verbose, mah_fold=mah_fold, mask_type=mask_type,
-                replace_file=replace_file, rnd=step == 11.4, reps=reps,
-                replace_rnd_files=replace_rnd_files)
+                replace_file=replace_file,
+                target_participants=participants_forced or None,
+                **(dict(rnd=True, reps=reps, replace_rnd_files=replace_rnd_files)
+                   if step == 11.4 else {}))
             print("### Done computing leave-one-out cross-participant similarity ###")
             _write_marker(job_marker_dir, step)
 
@@ -1069,7 +1083,24 @@ def main():
                 min_percentage_available=min_percentage_available)
             print("### Done averaging leave-one-out cross-participant similarity ###")
             _write_marker(job_marker_dir, step)
-                
+        if step == 11.13:
+            print(f"### Step {step}: Calculate group-level difference between classes in cross-participant similarity ###")
+            result = rsa_utils.calculate_group_level_difference(
+                datafolder=datafolder, dataset=dataset,
+                participants=participants,
+                specie=specie, model=model, task=task, radius=radius,
+                rsa_class=rsa_class, target_class=target_class, dis_method=dis_method, rsa_method=rsa_method,
+                mah_fold=mah_fold, mask=mask, mask_type=mask_type,
+                reps_group=reps_group, min_percentage_available=min_percentage_available,
+                z_threshold=z_threshold, cluster_threshold=cluster_threshold,
+                verbose=verbose, min_dist_mm=min_dist_mm,
+                label_dict=label_dict, label_nii_data=label_nii_data,
+                label_affine=label_affine, apply_coords_transform=apply_coords_transform,
+                atlas_file=atlas_file, report_title=args.report_title,
+                atlas_name=atlas_for_labels if specie == 'D' else 'AAL3',
+            )
+            if result:
+                _write_marker(job_marker_dir, step)
         if step in (11.6, 11.7, 11.8, 11.9, '11.10'):
             print(f"### Step {step}: Leave-one-out inference ###")
             result = rsa_utils.calculate_leave_one_out_inference(

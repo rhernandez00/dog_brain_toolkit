@@ -210,6 +210,7 @@ upstream outputs already exist.
 | **11** | Cross-participant similarity | `calculate_cross_participant_similarity` | Out of scheduler scope. |
 | **11.2** | Participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` | Correlates each participant's pairwise maps with the average of all other participants. |
 | **11.3** | Average leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map` | Averages step 11.2 with equal participant weight; writes mean/std and JSON provenance. |
+| **11.13** | Paired class difference | `calculate_group_level_difference` | Subtracts `--target_class` from `--rsa_class` in each participant's step-11.2 maps, then averages participants equally. Writes mean/std and JSON under `class_<rsa_class>/leave-one-out/[run-wise/]class_<target_class>/mean/`. Requires complete maps for both classes; `--min_percentage_available` controls participant completeness. |
 | **11.4** | Permuted participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` (`rnd=True`) | Shuffles held-out participant category labels for each of `--reps` maps; reference participants stay fixed. |
 | **11.5** | Permuted group leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map_rnd` | Samples step 11.4 maps for `--reps_group` group mean/std maps. |
 | **11.6** | Leave-one-out voxelwise null | `calculate_leave_one_out_inference` | Population mean/std across step 11.5 group means. |

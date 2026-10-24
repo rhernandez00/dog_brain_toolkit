@@ -557,6 +557,119 @@ def _build_mahalanobis_model_vector(map_labels, model_labels, rsa_model_dict):
         raise ValueError("At least one map pair is required for model comparison.")
     return pairs, np.asarray(values, dtype=float)
 
+def calculate_group_level_difference(
+        datafolder, dataset, specie, model, task, radius, rsa_class, target_class,
+        dis_method, rsa_method, mah_fold, mask, mask_type, reps_group=None,
+        min_percentage_available=0, z_threshold=None, cluster_threshold=None,
+        verbose=False, min_dist_mm=None, label_dict=None, label_nii_data=None,
+        label_affine=None, apply_coords_transform=True, atlas_file=None,
+        report_title=None, atlas_name=None, *, participants=None,
+        session_and_run_all_dict=None):
+    """Step 11.13: mean of paired step-11.2 class differences.
+
+    Subtract target_class from rsa_class within each session/run, average
+    sessions within runs and runs within participants, then weight participants
+    equally. Only participants with every expected map in both classes enter
+    the group. Undefined in-mask values propagate; outside-mask values are zero.
+    Write mean, population std of participant differences, and JSON provenance;
+    return the mean filename. Legacy inference/report arguments are accepted
+    for compatibility but this step computes descriptive differences only.
+    """
+    if not rsa_class or not target_class:
+        raise ValueError('Step 11.13 requires rsa_class and target_class.')
+    if not 0 <= min_percentage_available <= 1:
+        raise ValueError('min_percentage_available must be between 0 and 1.')
+    if participants is None:
+        if session_and_run_all_dict is None:
+            session_and_run_all_dict = get_rsa_export_manifest(datafolder, dataset, specie)
+        participants = list(session_and_run_all_dict)
+    participants = list(participants)
+    if session_and_run_all_dict is None:
+        session_and_run_all_dict = ({} if dis_method == 'mahalanobis' else {
+            sub: get_session_and_run_dict(datafolder, dataset, specie, sub)
+            for sub in participants})
+    layout_args = (datafolder, dataset, session_and_run_all_dict, participants,
+                   specie, model, task, radius)
+    _, units, source_paths, _ = _loo_layout(
+        *layout_args, rsa_class, dis_method, rsa_method, None, mah_fold, mask_type)
+    _, _, target_paths, _ = _loo_layout(
+        *layout_args, target_class, dis_method, rsa_method, None, mah_fold, mask_type)
+    # Accept the documented class-first layout as well as the older layout
+    # returned by _loo_layout. Prefer documented paths when both are present.
+    for selection, paths in ((rsa_class, source_paths), (target_class, target_paths)):
+        class_root = os.path.join(datafolder, dataset, 'results', 'RSA_same', model,
+                                  f'class_{selection}', 'leave-one-out')
+        if dis_method == 'mahalanobis' and mah_fold != 'stim-wise':
+            class_root = os.path.join(class_root, mah_fold)
+        prefix = f'{mask_type}-' if mask_type else ''
+        filename = f'{prefix}r-{radius}_{dis_method}_{rsa_method}_task-{task}.nii.gz'
+        for key in paths:
+            sub, session, run = key
+            subject = f'{specie}-sub-{sub:02d}'
+            if run is not None:
+                subject += f'_ses-{session:02d}_task-{task}_run-{run:02d}'
+            candidate = os.path.join(class_root, subject, filename)
+            if os.path.isfile(candidate):
+                paths[key] = candidate
+    ref = nib.load(mask)
+    mask_data = ref.get_fdata()
+    inside = np.isfinite(mask_data) & (mask_data != 0)
+    if mask_data.ndim != 3 or not inside.any():
+        raise ValueError('The searchlight mask must be a nonempty 3D mask.')
+    differences, included, missing, inputs = [], [], [], []
+    for sub in participants:
+        entries = units[sub]
+        if not entries or any(
+                not os.path.isfile(paths[sub, session, run])
+                for session, run in entries for paths in (source_paths, target_paths)):
+            missing.append(sub)
+            continue
+        by_run = {}
+        for session, run in entries:
+            pair = [paths[sub, session, run] for paths in (source_paths, target_paths)]
+            images = [nib.load(path) for path in pair]
+            check_same_space(('searchlight mask', ref), list(zip(pair, images)),
+                             context='step 11.13')
+            if any(img.shape != ref.shape for img in images):
+                raise ValueError(f'Expected 3D similarity maps: {pair}')
+            difference = images[0].get_fdata()[inside] - images[1].get_fdata()[inside]
+            by_run.setdefault(run, []).append(difference)
+            inputs.append(dict(participant=sub, session=session, run=run,
+                               rsa_class_file=pair[0], target_class_file=pair[1]))
+        differences.append(np.mean([np.mean(maps, axis=0)
+                                    for maps in by_run.values()], axis=0))
+        included.append(sub)
+    if missing:
+        warnings.warn(f'Step 11.13: excluding participants with incomplete paired maps: {missing}.')
+    available = len(included) / len(participants)
+    if len(included) < 2 or available < min_percentage_available:
+        raise ValueError(f'Step 11.13: insufficient complete participants ({len(included)}/{len(participants)}).')
+    root = os.path.join(datafolder, dataset, 'results', 'RSA_same', model,
+                        f'class_{rsa_class}', 'leave-one-out')
+    if dis_method == 'mahalanobis' and mah_fold != 'stim-wise':
+        root = os.path.join(root, mah_fold)
+    prefix = f'{mask_type}-' if mask_type else ''
+    stem = os.path.join(root, f'class_{target_class}', 'mean',
+                        f'{prefix}{specie}-r-{radius}_{dis_method}_{rsa_method}_task-{task}')
+    mean_path, std_path = stem + '_mean.nii.gz', stem + '_std.nii.gz'
+    os.makedirs(os.path.dirname(stem), exist_ok=True)
+    for path, values in ((mean_path, np.mean(differences, axis=0)),
+                         (std_path, np.std(differences, axis=0))):
+        output = np.zeros(ref.shape, dtype=float)
+        output[inside] = values
+        nib.save(nib.Nifti1Image(output, ref.affine), path)
+    with open(stem + '_mean.json', 'w') as handle:
+        json.dump(dict(participants_requested=participants, participants_included=included,
+                       participants_missing=missing, perc_available=available,
+                       rsa_class=rsa_class, target_class=target_class,
+                       operation='rsa_class - target_class', input_files=inputs,
+                       dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
+                       weighting='sessions within run, runs within participant, then participants equally',
+                       output_mean_file=mean_path, output_std_file=std_path), handle, indent=2)
+    if verbose:
+        print(f'Saved group class difference: {mean_path}')
+    return mean_path
+
 
 def check_existing_similarity_maps(datafolder, dataset, session_and_run_dict, specie, sub_N, model, task, radius, dis_method, stim_types, categories, mah_fold=None, model_dict=None, verbose=False):
     '''
@@ -2192,7 +2305,7 @@ def calculate_cross_participant_similarity_map(meta_similarity_map1, meta_simila
 
 def _loo_layout(datafolder, dataset, session_and_run_all_dict, participants,
                 specie, model, task, radius, rsa_class, dis_method, rsa_method,
-                rsa_model, mah_fold, mask_type):
+                rsa_model, mah_fold, mask_type, rnd=False):
     """Shared step 11.2/11.3 paths; never read pairwise step-11 outputs."""
     participants = list(participants)
     if len(participants) < 2 or len(set(participants)) != len(participants):
@@ -2205,7 +2318,8 @@ def _loo_layout(datafolder, dataset, session_and_run_all_dict, participants,
         raise ValueError('rsa_method must be kendall, spearman, or pearson.')
     if rsa_class is None and rsa_model is None:
         raise ValueError('Steps 11.2/11.3 require rsa_class or rsa_model to select pairs.')
-    root = os.path.join(datafolder, dataset, 'results', 'RSA_same', model, 'leave-one-out')
+    root = os.path.join(datafolder, dataset, 'results',
+                        'RSA_same_rnd' if rnd else 'RSA_same', model, 'leave-one-out')
     if dis_method == 'mahalanobis' and mah_fold != 'stim-wise':
         root = os.path.join(root, mah_fold)
     selection = str(rsa_class if rsa_class is not None else rsa_model)
@@ -2232,7 +2346,8 @@ def calculate_leave_one_out_cross_participant_similarity(
         datafolder, dataset, session_and_run_all_dict, participants, specie, mask,
         model, task, radius, rsa_class=None, dis_method='mahalanobis',
         rsa_method='kendall', rsa_model=None, verbose=False, mah_fold='stim-wise',
-        mask_type=None, replace_file=False):
+        mask_type=None, replace_file=False, target_participants=None,
+        rnd=False, reps=100, replace_rnd_files=False):
     """Step 11.2: correlate each participant RDM with the mean of the others.
 
     Run-wise Mahalanobis inputs already pool runs: load once per participant.
@@ -2243,30 +2358,63 @@ def calculate_leave_one_out_cross_participant_similarity(
     Constant RDMs yield NaN inside the mask, zero is reserved for outside it.
     rsa_class selects by_class/class_<name>.csv; otherwise rsa_model selects
     the model's pairs (including run-dependent model CSVs).
+    participants is the full reference cohort. target_participants optionally
+    selects whose maps to write; each target is excluded from its peer mean.
+    Step 11.4 (rnd=True) permutes target category labels with fixed peers.
+    Existing outputs are reused unless replace_file (11.2) or
+    replace_rnd_files (11.4) is set. Only missing permutations are computed.
     """
     from scipy.stats import kendalltau, spearmanr, pearsonr
 
     participants, units, paths, _ = _loo_layout(
         datafolder, dataset, session_and_run_all_dict, participants, specie,
         model, task, radius, rsa_class, dis_method, rsa_method, rsa_model,
-        mah_fold, mask_type)
+        mah_fold, mask_type, rnd=rnd)
+    targets = participants if target_participants is None else list(target_participants)
+    if not targets or len(set(targets)) != len(targets):
+        raise ValueError('target_participants must contain unique participants and be nonempty.')
+    unknown = set(targets) - set(participants)
+    if unknown:
+        raise ValueError(f'Target participants are outside the reference cohort: {sorted(unknown)}')
+    paths = {key: path for key, path in paths.items() if key[0] in targets}
+    if verbose:
+        print(f'Leave-one-out output participants: {targets}; reference cohort: {participants}')
+    if rnd and reps < 1:
+        raise ValueError('reps must be at least 1.')
+    outputs_by_unit = {
+        key: ([(index, path[:-7] + f'_{index:04d}.nii.gz') for index in range(reps)]
+              if rnd else [(None, path)])
+        for key, path in paths.items()
+    }
+    overwrite = replace_rnd_files if rnd else replace_file
+
+    def missing_outputs(entries):
+        return [(index, path) for index, path in entries
+                if overwrite or not os.path.isfile(path)]
+
+    all_outputs = [path for entries in outputs_by_unit.values() for _, path in entries]
+    missing = sum(len(missing_outputs(entries)) for entries in outputs_by_unit.values())
+    if verbose:
+        print(f'Leave-one-out outputs: {missing} to compute; '
+              f'{len(all_outputs) - missing} existing files skipped.')
+    if all_outputs and not missing:
+        return all_outputs
     ref = nib.load(mask)
     mask_data = ref.get_fdata()
     inside = np.isfinite(mask_data) & (mask_data != 0)
     if mask_data.ndim != 3 or not inside.any():
         raise ValueError('The searchlight mask must be a nonempty 3D mask.')
     config_path = os.path.join(datafolder, dataset, 'config_files', f'{specie}_{model}.yaml')
-    runs = sorted({run for entries in units.values() for _, run in entries},
+    runs = sorted({run for sub in targets for _, run in units[sub]},
                   key=lambda run: -1 if run is None else run)
     if not runs:
         raise ValueError('No runs found for the selected participants.')
-    outputs = []
     correlate = {'kendall': kendalltau, 'spearman': spearmanr, 'pearson': pearsonr}[rsa_method]
     for run in runs:
-        pending = [key for key, path in paths.items() if key[2] == run
-                   and (replace_file or not os.path.exists(path))]
+        pending = {key: missing_outputs(entries) for key, entries in outputs_by_unit.items()
+                   if key[2] == run}
+        pending = {key: entries for key, entries in pending.items() if entries}
         if not pending:
-            outputs.extend(path for key, path in paths.items() if key[2] == run)
             continue
         if rsa_class is not None:
             table = pd.read_csv(os.path.join(datafolder, dataset, 'rsa_models',
@@ -2280,6 +2428,10 @@ def calculate_leave_one_out_cross_participant_similarity(
         if (len(pairs) < 2 or any(a == b for a, b in pairs)
                 or len({_canonical_pair(*pair) for pair in pairs}) != len(pairs)):
             raise ValueError('Cross-participant similarity requires at least two unique pairs.')
+        categories = sorted({category for pair in pairs for category in pair})
+        target_pairs = list(itertools.combinations(categories, 2)) if rnd else pairs
+        pair_indices = {_canonical_pair(*pair): index for index, pair in enumerate(target_pairs)}
+        selected = [pair_indices[_canonical_pair(*pair)] for pair in pairs]
         # Hold masked RDMs only, rather than a full 4D volume for every subject.
         rdms = {}
         means = {}
@@ -2290,8 +2442,10 @@ def calculate_leave_one_out_cross_participant_similarity(
                 continue
             total = np.zeros((int(inside.sum()), len(pairs)), dtype=float)
             for session, r in entries:
-                values = np.empty_like(total)
-                for index, (cat1, cat2) in enumerate(pairs):
+                # Permuted targets may need pairs outside a sparse class list.
+                load_pairs = target_pairs if (sub, session, r) in pending else pairs
+                values = np.empty((int(inside.sum()), len(load_pairs)), dtype=float)
+                for index, (cat1, cat2) in enumerate(load_pairs):
                     pair_map = load_pairwise_similarity_map(
                         datafolder, dataset, specie, sub,
                         None if session is None else f'{session:02d}', r, cat1, cat2,
@@ -2304,7 +2458,7 @@ def calculate_leave_one_out_cross_participant_similarity(
                     values[:, index] = pair_map[inside]
                 if not np.isfinite(values).all():
                     raise ValueError(f'Non-finite RDM inside mask for participant {sub}, session {session}, run {r}.')
-                total += values
+                total += values[:, selected] if (sub, session, r) in pending else values
                 # Only retain target sessions whose outputs need computing.
                 if (sub, session, r) in pending:
                     rdms[sub, session, r] = values
@@ -2315,20 +2469,34 @@ def calculate_leave_one_out_cross_participant_similarity(
         for key in pending:
             sub, session, r = key
             peer_mean = (total - means[sub]) / (len(means) - 1)
-            target = rdms[key]
-            result = np.full(len(target), np.nan)
-            for index, (a, b) in enumerate(zip(target, peer_mean)):
-                if np.ptp(a) > 0 and np.ptp(b) > 0:
-                    result[index] = correlate(a, b)[0]
-            output = np.zeros(ref.shape, dtype=float)
-            output[inside] = result
-            path = paths[key]
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            nib.save(nib.Nifti1Image(output, ref.affine), path)
-            if verbose:
-                print(f'Saved leave-one-out map: {path}')
-        outputs.extend(path for key, path in paths.items() if key[2] == run)
-    return outputs
+            entries = pending[key]
+            if rnd:
+                random.shuffle(entries)
+            for _, path in entries:
+                # Another worker may have finished this file during input loading.
+                if not overwrite and os.path.isfile(path):
+                    if verbose:
+                        print(f'Skipping existing leave-one-out map: {path}')
+                    continue
+                indices = selected
+                if rnd:
+                    labels = list(categories)
+                    random.shuffle(labels)
+                    mapping = dict(zip(categories, labels))
+                    indices = [pair_indices[_canonical_pair(mapping[a], mapping[b])]
+                               for a, b in pairs]
+                target = rdms[key][:, indices]
+                result = np.full(len(target), np.nan)
+                for index, (a, b) in enumerate(zip(target, peer_mean)):
+                    if np.ptp(a) > 0 and np.ptp(b) > 0:
+                        result[index] = correlate(a, b)[0]
+                output = np.zeros(ref.shape, dtype=float)
+                output[inside] = result
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                nib.save(nib.Nifti1Image(output, ref.affine), path)
+                if verbose:
+                    print(f'Saved leave-one-out map: {path}')
+    return all_outputs
 
 
 def calculate_mean_leave_one_out_cross_participant_similarity_map(
