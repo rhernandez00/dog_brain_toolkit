@@ -1,5 +1,11 @@
 # tools/
 
+Step **11.31**: [`create_stimulus_contribution_package.py`](create_stimulus_contribution_package.py)
+builds a GPU Colab support package or bundles the required pairwise
+step-1 maps. Open [`colab_gpu/colab_stimulus_contribution.ipynb`](colab_gpu/colab_stimulus_contribution.ipynb)
+to run leave-one-video-out participant similarity and group averaging. See
+[`../docs/stimulus_contribution_colab.md`](../docs/stimulus_contribution_colab.md).
+
 Standalone apps and one-off scripts built on top of the core `dog_brain_toolkit`
 pipeline (`rsa_utils.py`, `searchlight.py`, `scheduler/`, `rsa_model_builder.py`,
 `viz/`, etc.). Everything here is a *consumer* of the core toolkit — nothing in
@@ -20,6 +26,7 @@ Run every script with the full Anaconda interpreter path from the repo root
 
 | Tool | What it is |
 |---|---|
+| [`create_stimulus_contribution_package.py`](create_stimulus_contribution_package.py) | Builds step-11.31 GPU Colab packages for CSV-defined label omissions and cross-participant similarity. Supports Mahalanobis and correlation step-1 maps; see [instructions](../docs/stimulus_contribution_colab.md). |
 | [`dashboard.py`](dashboard.py) | Unified entry point — one Flask server (port 8050) that mounts the Brain Viewer, RSA Model Builder, Scheduler, and Planner sub-apps under one URL with a tabbed landing page. Useful for sharing everything through a single tunnel. |
 | [`pipeline_dashboard.py`](pipeline_dashboard.py) | Browser dashboard (Dash, port 8060) showing how far each RSA model has progressed through pipeline steps 0–10, by checking output files on disk. Editable run parameters, on-demand checks, per-parameter-set result cache. The **dis_method** (dropdown: pearson/kendall/euclidean/mahalanobis/correlation), **mah_fold**, and **rsa_model** menus are driven by the central `rsa_models/_models.csv` manifest — the rsa_model list shows **only** models in that manifest. The rsa_model list is filtered by the selected **dis_method**, and `mahalanobis` is the special case that also uses **mah_fold**: there the list narrows to that fold's models and the fold dropdown is enabled (offering only that method's folds); any other distance method greys mah_fold out and ignores it, since the fold decides nothing about which models exist. A fold name is not unique across methods — EmoC classifies its correlation models as `run-wise` and its mahalanobis ones as `stim-wise` — which is why filtering by fold alone used to mix the two methods together. The selected model's **why** note is shown. Reuses the probe logic in `pipeline_console.py`. Docs: [`../docs/pipeline_dashboard.md`](../docs/pipeline_dashboard.md). |
 | [`pipeline_console.py`](pipeline_console.py) | Terminal version of the same progress probe — read-only, interactive menu or a non-interactive `--report` mode for scripting. Docs: [`../docs/pipeline_console.md`](../docs/pipeline_console.md). |

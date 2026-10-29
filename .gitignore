@@ -25,3 +25,10 @@ CLAUDE.md
 Atlas/Hum/~$AAL_dictionary.xlsx
 /.codex-tmp-aal
 /tests
+!/tests/
+/tests/*
+!/tests/test_stimulus_contribution.py
+/docs
+/tests
+/tests
+/tests

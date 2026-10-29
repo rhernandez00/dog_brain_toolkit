@@ -168,6 +168,7 @@ std across maps. Save as nifti.
 11.1 Calculate Group-level cross-participant similarity: Average the similarity maps obtained in step 11 across participants to get a group-level representation.
 11.2 Calculate By-participant leave-one-out-cross-participant similarity: calculate the similarity maps of each participant with all other participants.
 11.3 Calculate average cross-participant similarity map: Average the similarity maps obtained in step 11.2 across participants to get an overall representation.
+11.31 Repeat participant leave-one-out similarity and group averaging after removing each individual video; save separate maps per run under leave-one-out/by_stim.
 11.4 Repeat 11.2 with --reps category-label permutations of the held-out participant;
     keep the other participants' reference RDMs fixed. Save under RSA_same_rnd.
 11.5 Make --reps_group group mean/std maps by sampling the step-11.4 permutations,
@@ -178,6 +179,13 @@ std across maps. Save as nifti.
 11.9 Apply maximum-cluster correction to the real leave-one-out z-map.
 11.10 (alias 11.101): Save CSV and publication reports, as in step 10.
 11.13 Calculate group-level difference between classes in cross-participant similarity
+11.15 Calculate permuted group-level class differences by independently sampling participant maps from each class.
+11.16 Estimate the voxelwise null distribution from step-11.15 group differences.
+11.17 Z-score the step-11.13 real difference and step-11.15 permutations.
+11.18 Estimate a two-sided cluster-size null from permuted difference z-maps,
+    using the maximum cluster extent across both signs per permutation.
+11.19 Apply two-sided maximum-cluster correction to the real difference z-map.
+11.20 Save CSV and publication reports for both signs of the corrected difference.
 
 
 
@@ -223,7 +231,7 @@ Input arguments:
 --rsa_model: RSA model to use
 --rsa_method: Method to compare similarity maps with model (default: 'kendall')
 --rsa_class: RSA class to use, used when comparing based on class pairs (e.g. all dog-dog pairs, all human-human pairs, all dog-human pairs)
---target_class: Target class to compare against in cross-participant similarity difference calculation (used in step 11.13). The resulting maps will be rsa_class - target_class
+--target_class: Target class for steps 11.13 and 11.15. The resulting maps will be rsa_class - target_class
 --regression_model: Regression model to use for multiple regression RSA (default: None)
 --rsa_models_list: Target RSA models for steps 15 through 15.10, space separated; defaults to [--rsa_model]
 --specie: 'D' for Dog, 'H' for Human (default: 'H')
@@ -263,7 +271,7 @@ def _parse_step(value):
     # Preserve report step IDs: floats would collapse .10 into .1.
     if value == '11.101':
         return '11.10'
-    return value if value in ('11.10', '15.10') else float(value)
+    return value if value in ('11.10', '11.20', '15.10') else float(value)
 
 
 def _resolve_export_coordinates(mask, coords=None, coords_mm=None):
@@ -325,7 +333,7 @@ def parse_arguments():
     parser.add_argument('--rsa_class', type=str, default=None,
                         help='RSA class to use')
     parser.add_argument('--target_class', type=str, default=None,
-                        help='Step 11.13: subtract this class from --rsa_class')
+                        help='Steps 11.13/11.15: subtract this class from --rsa_class')
     parser.add_argument('--regression_model', type=str, default=None,
                         help='Regression model to use for multiple regression RSA')
     parser.add_argument('--rsa_models_list', type=str, nargs='+', default=None,
@@ -360,13 +368,13 @@ def parse_arguments():
     parser.add_argument('--min_dist_mm', type=float, default=8.0,
                         help='Minimum distance between peaks in mm')
     parser.add_argument('--report_title', type=str, default=None,
-                        help='Human-readable title for step 10/11.10/15.10 publication reports')
+                        help='Human-readable title for step 10/11.10/11.20/15.10 publication reports')
     parser.add_argument('--atlas_type', type=str, default='Nitzsche',
                         help='Type of atlas to use in case of dogs')
     parser.add_argument('--replace_file', action='store_true',
                         help='Overwrite existing output files')
     parser.add_argument('--shuffle_participants', action='store_true',
-                        help='Shuffle participants order in permutations')
+                        help='Shuffle participants order in permutations; step 11.15 shuffles group output indices')
     parser.add_argument('--skip_if_done', action='store_true',
                         help='From step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100 percent of the participants where available)')
     parser.add_argument('--comparison_model', type=str, default=None,
@@ -429,9 +437,10 @@ def main():
     rsa_method = args.rsa_method
     rsa_class = args.rsa_class
     target_class = args.target_class
-    if 11.13 in steps_to_run and (not rsa_class or not target_class):
-        raise ValueError('Step 11.13 requires --rsa_class and --target_class.')
-    loo_steps = (11.2, 11.3, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, '11.10', 11.13)
+    difference_steps = (11.13, 11.15, 11.16, 11.17, 11.18, 11.19, '11.20')
+    if any(step in difference_steps for step in steps_to_run) and (not rsa_class or not target_class):
+        raise ValueError('Class-difference steps require --rsa_class and --target_class.')
+    loo_steps = (11.2, 11.3, 11.31, 11.4, 11.5, 11.6, 11.7, 11.8, 11.9, '11.10') + difference_steps
     if any(step in loo_steps for step in steps_to_run) and not rsa_class:
         raise ValueError('Steps 11.2–11.10 require --rsa_class (cat1/cat2 comparison list).')
     if steps_to_run and all(step in loo_steps for step in steps_to_run):
@@ -832,6 +841,9 @@ def main():
                 print(f"Finished sub-{sub_N:02d}...")
             print("#### Done computing pairwise similarity maps ####")
             _write_marker(job_marker_dir, 1)
+        if step == 'mask1': # Compute pairwise similarity between voxels of a roi:
+            print("### Step mask1: Computing pairwise similarity between voxels of a roi ###")
+
 
         if step == 2: # Compute similarity between pairwise similarity maps and a model by participant
             print("### Step 2: Computing similarity between pairwise similarity maps and a model ###")
@@ -850,6 +862,7 @@ def main():
                 print(f"Finished sub-{sub_N:02d}...")
             print(f"#### Done computing similarity between pairwise maps and model ####")
             _write_marker(job_marker_dir, 2)
+       
         if step == 3: # Calculate group model similarity map
             print("### Step 3: Computing group model similarity map ###")
             print(f"Using RSA model: {rsa_model}, RSA method: {rsa_method}")
@@ -1083,6 +1096,33 @@ def main():
                 min_percentage_available=min_percentage_available)
             print("### Done averaging leave-one-out cross-participant similarity ###")
             _write_marker(job_marker_dir, step)
+        if step == 11.31:
+            print(f"### Step {step}: Cross-participant similarity, contribution of each stimulus ###")
+            session_and_run_all_dict = {}
+            for sub_N in participants:
+                session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                session_and_run_all_dict[sub_N] = session_and_run_dict
+            
+            result = rsa_utils.calculate_cross_participant_similarity_contribution(datafolder=datafolder, dataset=dataset, session_and_run_all_dict=session_and_run_all_dict, participants=participants, specie=specie, mask=mask, model=model,
+                task=task, radius=radius, rsa_class=rsa_class,
+                dis_method=dis_method, rsa_method=rsa_method,
+                verbose=verbose, mah_fold=mah_fold, mask_type=mask_type,
+                replace_file=replace_file, min_percentage_available=min_percentage_available)
+            if result:
+                _write_marker(job_marker_dir, step)
+        if step == 11.15:
+            print(f'### Step {step}: Permuted group-level class differences ###')
+            result = rsa_utils.calculate_group_level_difference_rnd(
+                datafolder=datafolder, dataset=dataset, participants=participants,
+                specie=specie, model=model, task=task, radius=radius,
+                rsa_class=rsa_class, target_class=target_class,
+                dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
+                mask=mask, mask_type=mask_type, reps_group=reps_group,
+                min_percentage_available=min_percentage_available,
+                replace_rnd_files=replace_rnd_files, verbose=verbose,
+                shuffle_participants=args.shuffle_participants)
+            if result:
+                _write_marker(job_marker_dir, step)
         if step == 11.13:
             print(f"### Step {step}: Calculate group-level difference between classes in cross-participant similarity ###")
             result = rsa_utils.calculate_group_level_difference(
@@ -1101,10 +1141,11 @@ def main():
             )
             if result:
                 _write_marker(job_marker_dir, step)
-        if step in (11.6, 11.7, 11.8, 11.9, '11.10'):
+        if step in (11.6, 11.7, 11.8, 11.9, '11.10', 11.16, 11.17, 11.18, 11.19, '11.20'):
             print(f"### Step {step}: Leave-one-out inference ###")
             result = rsa_utils.calculate_leave_one_out_inference(
                 step=str(step), datafolder=datafolder, dataset=dataset,
+                target_class=target_class if step in difference_steps else None,
                 specie=specie, model=model, task=task, radius=radius,
                 rsa_class=rsa_class, dis_method=dis_method, rsa_method=rsa_method,
                 mah_fold=mah_fold, mask=mask, mask_type=mask_type,

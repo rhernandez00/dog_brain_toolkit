@@ -25,6 +25,7 @@ import preprocess_functions
 import itertools
 import socket
 from contextlib import ExitStack, contextmanager
+from functools import lru_cache
 
 
 # ---------------------------------------------------------------------------
@@ -617,13 +618,36 @@ def calculate_group_level_difference(
     if mask_data.ndim != 3 or not inside.any():
         raise ValueError('The searchlight mask must be a nonempty 3D mask.')
     differences, included, missing, inputs = [], [], [], []
+    available_files, missing_files = 0, 0
+    print('Step 11.13: input file availability:', flush=True)
     for sub in participants:
         entries = units[sub]
-        if not entries or any(
-                not os.path.isfile(paths[sub, session, run])
-                for session, run in entries for paths in (source_paths, target_paths)):
+        complete = bool(entries)
+        if not entries:
+            print(f'  {specie}-sub-{sub:02d}: MISSING session/run entries', flush=True)
+        for session, run in entries:
+            unit = f'{specie}-sub-{sub:02d}'
+            if run is not None:
+                unit += f' session={session:02d} run={run:02d}'
+            for role, selection, paths in (('rsa_class', rsa_class, source_paths),
+                                           ('target_class', target_class, target_paths)):
+                path = paths[sub, session, run]
+                exists = os.path.isfile(path)
+                available_files += int(exists)
+                missing_files += int(not exists)
+                complete = complete and exists
+                print(f"  {'AVAILABLE' if exists else 'MISSING'} {unit} "
+                      f'{role}={selection}: {path}', flush=True)
+        if not complete:
             missing.append(sub)
+    print(f'Step 11.13: {available_files} files available, {missing_files} files missing; '
+          f'{len(participants) - len(missing)}/{len(participants)} complete participants '
+          f'(required availability: {min_percentage_available:.1%}; minimum 2 participants).',
+          flush=True)
+    for sub in participants:
+        if sub in missing:
             continue
+        entries = units[sub]
         by_run = {}
         for session, run in entries:
             pair = [paths[sub, session, run] for paths in (source_paths, target_paths)]
@@ -669,6 +693,406 @@ def calculate_group_level_difference(
     if verbose:
         print(f'Saved group class difference: {mean_path}')
     return mean_path
+
+
+def calculate_group_level_difference_rnd(
+        datafolder, dataset, specie, model, task, radius, rsa_class, target_class,
+        dis_method, rsa_method, mah_fold, mask, mask_type, reps_group=1000,
+        min_percentage_available=0, verbose=False, *, participants=None,
+        session_and_run_all_dict=None, replace_rnd_files=False,
+        shuffle_participants=False):
+    """Step 11.15: sample independent class permutations within participants.
+
+    For every group repetition, choose one available numbered map per class
+    and participant/session/run, subtract target from source, average sessions
+    within runs, runs within participants, and participants equally. Sampling
+    is with replacement across repetitions; class permutation indices need not
+    match. Use a fixed cohort with at least one map in each expected input pool.
+    Write mean/std and the exact sampled paths in a JSON sidecar per repetition.
+    Complete outputs are reused unless replace_rnd_files is True.
+    shuffle_participants randomizes group output indices, preserving the cohort
+    order and the returned filename order.
+    """
+    if not rsa_class or not target_class:
+        raise ValueError('Step 11.15 requires rsa_class and target_class.')
+    if not isinstance(reps_group, int) or reps_group < 1:
+        raise ValueError('reps_group must be a positive integer.')
+    if not 0 <= min_percentage_available <= 1:
+        raise ValueError('min_percentage_available must be between 0 and 1.')
+    if participants is None:
+        if session_and_run_all_dict is None:
+            session_and_run_all_dict = get_rsa_export_manifest(datafolder, dataset, specie)
+        participants = list(session_and_run_all_dict)
+    participants = list(participants)
+    if session_and_run_all_dict is None:
+        session_and_run_all_dict = ({} if dis_method == 'mahalanobis' else {
+            sub: get_session_and_run_dict(datafolder, dataset, specie, sub)
+            for sub in participants})
+    args = (datafolder, dataset, session_and_run_all_dict, participants,
+            specie, model, task, radius)
+    _, units, source_paths, group = _loo_layout(
+        *args, rsa_class, dis_method, rsa_method, None, mah_fold, mask_type, rnd=True)
+    _, _, target_paths, _ = _loo_layout(
+        *args, target_class, dis_method, rsa_method, None, mah_fold, mask_type, rnd=True)
+    # A digit-only suffix excludes real maps, logs, temporary files and group maps.
+    pools = []
+    for paths in (source_paths, target_paths):
+        by_unit = {}
+        for key, path in paths.items():
+            stem = path[:-7]
+            by_unit[key] = sorted(
+                candidate for candidate in glob.glob(glob.escape(stem) + '_*.nii.gz')
+                if candidate[len(stem) + 1:-7].isdigit() and os.path.isfile(candidate))
+        pools.append(by_unit)
+    included = [sub for sub in participants if units[sub] and all(
+        pool[sub, session, run] for session, run in units[sub] for pool in pools)]
+    missing = [sub for sub in participants if sub not in included]
+    if missing:
+        warnings.warn(f'Step 11.15: excluding participants with incomplete permutation pools: {missing}.')
+    available = len(included) / len(participants)
+    if len(included) < 2 or available < min_percentage_available:
+        raise ValueError(f'Step 11.15: insufficient complete participants ({len(included)}/{len(participants)}).')
+    stem = os.path.join(os.path.dirname(group), f'class_{target_class}', 'mean',
+                        os.path.basename(group))
+    outputs = [stem + f'_mean_{index:05d}.nii.gz' for index in range(reps_group)]
+    ref = nib.load(mask)
+    mask_data = ref.get_fdata()
+    inside = np.isfinite(mask_data) & (mask_data != 0)
+    if mask_data.ndim != 3 or not inside.any():
+        raise ValueError('The searchlight mask must be a nonempty 3D mask.')
+    os.makedirs(os.path.dirname(stem), exist_ok=True)
+    group_indices = list(range(reps_group))
+    if shuffle_participants:
+        random.shuffle(group_indices)
+    for index in group_indices:
+        mean_path = outputs[index]
+        std_path = stem + f'_std_{index:05d}.nii.gz'
+        log_path = stem + f'_mean_{index:05d}.json'
+        if not replace_rnd_files and all(os.path.isfile(p) for p in (mean_path, std_path, log_path)):
+            with open(log_path) as handle:
+                previous = json.load(handle)
+            if previous.get('participants_requested') == participants and previous.get('participants_included') == included:
+                continue
+        differences, inputs = [], []
+        for sub in included:
+            by_run = {}
+            for session, run in units[sub]:
+                pair = [random.choice(pool[sub, session, run]) for pool in pools]
+                images = [nib.load(path) for path in pair]
+                check_same_space(('searchlight mask', ref), list(zip(pair, images)),
+                                 context='step 11.15')
+                if any(img.shape != ref.shape for img in images):
+                    raise ValueError(f'Expected 3D similarity maps: {pair}')
+                difference = images[0].get_fdata()[inside] - images[1].get_fdata()[inside]
+                by_run.setdefault(run, []).append(difference)
+                inputs.append(dict(participant=sub, session=session, run=run,
+                                   rsa_class_file=pair[0], target_class_file=pair[1]))
+            differences.append(np.mean([np.mean(maps, axis=0)
+                                        for maps in by_run.values()], axis=0))
+        for path, values in ((mean_path, np.mean(differences, axis=0)),
+                             (std_path, np.std(differences, axis=0))):
+            output = np.zeros(ref.shape, dtype=float)
+            output[inside] = values
+            nib.save(nib.Nifti1Image(output, ref.affine), path)
+        with open(log_path, 'w') as handle:
+            json.dump(dict(participants_requested=participants, participants_included=included,
+                           participants_missing=missing, perc_available=available,
+                           rsa_class=rsa_class, target_class=target_class,
+                           operation='rsa_class - target_class', input_files=inputs,
+                           group_permutation=index, dis_method=dis_method,
+                           rsa_method=rsa_method, mah_fold=mah_fold,
+                           sampling='independent uniform draws per class and participant/session/run, with replacement across group repetitions',
+                           weighting='sessions within run, runs within participant, then participants equally',
+                           output_mean_file=mean_path, output_std_file=std_path), handle, indent=2)
+        if verbose:
+            print(f'Saved group class difference permutation {index + 1}/{reps_group}: {mean_path}')
+    return outputs
+
+
+def _loo_group_path(datafolder, dataset, specie, model, task, radius, rsa_class,
+                    dis_method, rsa_method, mah_fold, mask_type, rnd=False,
+                    target_class=None):
+    """Group stem for class similarity or a source-minus-target contrast."""
+    selection = f'class_{str(rsa_class).removeprefix("class_")}'
+    root = os.path.join(datafolder, dataset, 'results',
+                        'RSA_same_rnd' if rnd else 'RSA_same', model,
+                        selection, 'leave-one-out')
+    if dis_method == 'mahalanobis' and mah_fold != 'stim-wise':
+        root = os.path.join(root, mah_fold)
+    if target_class is not None:
+        root = os.path.join(root, f'class_{str(target_class).removeprefix("class_")}')
+    prefix = f'{mask_type}-' if mask_type else ''
+    return os.path.join(root, f'{prefix}{specie}-r-{radius}_{dis_method}_{rsa_method}_task-{task}')
+
+
+def calculate_leave_one_out_inference(
+        step, datafolder, dataset, specie, model, task, radius, rsa_class,
+        dis_method, rsa_method, mah_fold, mask, mask_type=None, reps_group=1000,
+        min_percentage_available=1.0, z_threshold=3.1, cluster_threshold=0.05,
+        verbose=False, min_dist_mm=8.0, label_dict=None, label_nii_data=None,
+        label_affine=None, apply_coords_transform=False, atlas_file=None,
+        report_title=None, atlas_name=None, target_class=None):
+    """Positive-tail similarity and two-sided class-difference group inference.
+
+    The latter sequence uses the real class difference from 11.13 and group
+    permutations from 11.15. The population std across permutation means is
+    the voxelwise null scale. Use exactly the recorded null ensemble for all
+    later stages, with 26-neighbour clusters and empirical maximum-cluster
+    correction, as in steps 6--10. Exclude undefined voxels consistently from
+    the real map and the entire null. Rebuild derived outputs on invocation.
+    Class differences form clusters separately in both tails and use one
+    maximum extent across both signs per permutation; similarity stays one-sided.
+    """
+    step = str(step)
+    if step == '11.101':
+        step = '11.10'
+    difference_steps = {'11.16': '11.6', '11.17': '11.7', '11.18': '11.8',
+                        '11.19': '11.9', '11.20': '11.10'}
+    is_difference = step in difference_steps
+    tail = 'two-sided' if is_difference else 'positive'
+    stage = difference_steps.get(step, step)
+    if stage not in ('11.6', '11.7', '11.8', '11.9', '11.10'):
+        raise ValueError(f'Unknown leave-one-out inference step: {step}')
+    if not rsa_class or (is_difference and not target_class):
+        raise ValueError('Class-difference inference requires rsa_class and target_class.')
+    if not is_difference:
+        target_class = None
+    if not isinstance(reps_group, int) or reps_group < 2 or not 0 <= min_percentage_available <= 1:
+        raise ValueError('Need at least two group permutations and coverage in [0, 1].')
+    if not np.isfinite(z_threshold) or z_threshold <= 0 or not 0 < cluster_threshold < 1:
+        raise ValueError('Need a positive finite z threshold and cluster probability in (0, 1).')
+    path_args = dict(datafolder=datafolder, dataset=dataset, specie=specie, model=model,
+                     task=task, radius=radius, rsa_class=rsa_class, dis_method=dis_method,
+                     rsa_method=rsa_method, mah_fold=mah_fold, mask_type=mask_type,
+                     target_class=target_class)
+    real_group = _loo_group_path(**path_args)
+    rnd_group = _loo_group_path(**path_args, rnd=True)
+    real_root, rnd_root = os.path.dirname(real_group), os.path.dirname(rnd_group)
+    stem = os.path.basename(real_group)
+    real_mean = (os.path.join(real_root, 'mean', stem) if is_difference else real_group) + '_mean.nii.gz'
+    real_z = os.path.join(real_root, 'mean', stem + '_z.nii.gz')
+    null_mean = os.path.join(rnd_root, 'dist', stem + '_mean.nii.gz')
+    null_std = os.path.join(rnd_root, 'dist', stem + '_std.nii.gz')
+    null_valid = os.path.join(rnd_root, 'dist', stem + '_valid.nii.gz')
+    null_log = os.path.join(rnd_root, 'dist', stem + '_distribution.json')
+    z_log = os.path.join(real_root, 'dist', stem + '_z.json')
+    cluster_path = os.path.join(real_root, 'dist', stem + '_dist.npy')
+    corrected_stem = os.path.join(real_root, 'mean', stem + f'_zt{z_threshold}')
+    corrected = corrected_stem + '_corrected.nii.gz'
+    metadata = dict(rsa_class=rsa_class, target_class=target_class, task=task,
+                    specie=specie, model=model, radius=radius, mask_type=mask_type,
+                    dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
+                    receipt_version=2, reps_group=reps_group)
+    ref = nib.load(mask)
+    mask_data = ref.get_fdata()
+    inside = np.isfinite(mask_data) & (mask_data != 0)
+    if mask_data.ndim != 3 or not inside.any():
+        raise ValueError('The searchlight mask must be a nonempty 3D mask.')
+    # Masks may live in the repository on a different Windows drive from the
+    # dataset. Identify their analysis content rather than their mount location.
+    metadata['mask'] = dict(
+        shape=list(ref.shape),
+        affine=ref.affine.tolist(),
+        sha256=hashlib.sha256(np.asarray(mask_data, dtype='<f8').tobytes()).hexdigest())
+
+    def read_map(path):
+        img = nib.load(path)
+        check_same_space(('searchlight mask', ref), [(path, img)], context=f'step {step}')
+        if img.shape != ref.shape:
+            raise ValueError(f'Expected a 3D map: {path}')
+        return img.get_fdata()
+
+    def save_map(path, data):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        header = ref.header.copy()
+        header.set_data_dtype(np.float32)
+        nib.save(nib.Nifti1Image(np.where(inside, data, 0).astype(np.float32),
+                                ref.affine, header), path)
+
+    def write_json(path, details):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(details, handle, indent=2)
+
+    def portable_path(path):
+        return os.path.relpath(path, os.path.join(datafolder, dataset)).replace('\\', '/')
+
+    def local_path(path):
+        return os.path.normpath(os.path.join(datafolder, dataset, *path.split('/')))
+
+    def changed_parameters(record):
+        return [k for k, v in metadata.items() if record.get(k) != v]
+
+    def read_receipt(path):
+        with open(path, encoding='utf-8') as handle:
+            receipt = json.load(handle)
+        changed = changed_parameters(receipt)
+        if changed:
+            details = ', '.join(f'{k}: saved={receipt.get(k)!r}, current={metadata[k]!r}'
+                                for k in changed)
+            raise ValueError(f'Inference parameters changed ({details}); rerun step {"11.16" if is_difference else "11.6"}.')
+        files = receipt['file_list']
+        if len(files) < 2 or len(files) / reps_group < min_percentage_available:
+            raise ValueError('Null coverage is insufficient; rerun the distribution step.')
+        return receipt
+
+    if stage == '11.6':
+        expected = [os.path.join(rnd_root, 'mean', stem + f'_mean_{i:05d}.nii.gz')
+                    for i in range(reps_group)]
+        files = [p for p in expected if os.path.isfile(p)]
+        if len(files) < 2 or len(files) / reps_group < min_percentage_available:
+            print(f'Step {step}: insufficient group permutations ({len(files)}/{reps_group}).')
+            return False
+        # Streaming Welford moments; one invalid permutation excludes that voxel.
+        mean = np.zeros(ref.shape)
+        m2 = np.zeros(ref.shape)
+        valid = inside.copy()
+        for count, path in enumerate(files, 1):
+            values = read_map(path)
+            finite = np.isfinite(values)
+            valid &= finite
+            values = np.where(inside & finite, values, 0)
+            delta = values - mean
+            mean += delta / count
+            m2 += delta * (values - mean)
+        std = np.sqrt(np.maximum(m2 / len(files), 0))
+        save_map(null_mean, np.where(valid, mean, 0))
+        save_map(null_std, np.where(valid, std, 0))
+        save_map(null_valid, valid)
+        write_json(null_log, dict(metadata, file_list=[portable_path(p) for p in files], ddof=0,
+                                  input_stats=[dict(path=portable_path(p), size=os.stat(p).st_size,
+                                                    mtime_ns=os.stat(p).st_mtime_ns) for p in files],
+                                  perc_available=len(files) / reps_group,
+                                  n_excluded_nonfinite_voxels=int(np.count_nonzero(inside & ~valid))))
+        return True
+
+    receipt = read_receipt(null_log)
+    files = [local_path(p) for p in receipt['file_list']]
+    saved_stats = [dict(item, path=local_path(item['path']))
+                   for item in receipt.get('input_stats', [])]
+    if saved_stats != [dict(path=p, size=os.stat(p).st_size,
+                                          mtime_ns=os.stat(p).st_mtime_ns) for p in files]:
+        raise ValueError('Permutation inputs changed; rerun the distribution step.')
+    z_files = [os.path.join(rnd_root, 'mean', stem + f'_z_{os.path.basename(p)[-12:-7]}.nii.gz')
+               for p in files]
+    # A receipt hash prevents mixing cluster/z outputs from different ensembles.
+    distribution_id = hashlib.sha256(json.dumps(receipt, sort_keys=True).encode()).hexdigest()
+    if stage == '11.7':
+        mean, std = read_map(null_mean), read_map(null_std)
+        real = read_map(real_mean)
+        valid = (inside & (read_map(null_valid) != 0) & np.isfinite(real)
+                 & np.isfinite(mean) & np.isfinite(std) & (std > 1e-8))
+        for source, destination in [(real_mean, real_z)] + list(zip(files, z_files)):
+            data = real if source == real_mean else read_map(source)
+            if not np.all(np.isfinite(data[valid])):
+                raise ValueError('Permutation inputs changed; rerun the distribution step.')
+            z = np.zeros(ref.shape)
+            np.divide(data - mean, std, out=z, where=valid)
+            save_map(destination, z)
+        write_json(z_log, dict(metadata, file_list=[portable_path(p) for p in files],
+                               z_files=[portable_path(p) for p in z_files],
+                               distribution_id=distribution_id,
+                               real_mean_mtime_ns=os.stat(real_mean).st_mtime_ns,
+                               n_valid_voxels=int(valid.sum())))
+        return True
+
+    z_receipt = read_receipt(z_log)
+    if z_receipt.get('distribution_id') != distribution_id:
+        raise ValueError('Null ensemble changed; rerun the z-map step.')
+    if z_receipt.get('real_mean_mtime_ns') != os.stat(real_mean).st_mtime_ns:
+        raise ValueError('Real group map changed; rerun the z-map step.')
+    z_generation = hashlib.sha256(json.dumps(z_receipt, sort_keys=True).encode()).hexdigest()
+    if stage == '11.8':
+        sizes = []
+        for path in z_files:
+            data = read_map(path)
+            if not np.isfinite(data[inside]).all():
+                raise ValueError(f'Non-finite z map: {path}')
+            _, counts = _count_on_3d(np.where(inside, data, 0), z_threshold,
+                                     is_difference, connectivity=3)
+            if is_difference:
+                # One list per permutation: the downstream maximum spans both
+                # tails, while opposite-sign neighbours remain separate clusters.
+                counts = counts['positive'] + counts['negative']
+            sizes.append([int(size) for size in counts])
+        entry = dict(metadata, file_list=[portable_path(p) for p in z_files], cluster_sizes=sizes,
+                     number_of_images=len(sizes), connectivity=26, tail=tail,
+                     threshold_comparison='>', distribution_id=distribution_id,
+                     z_generation=z_generation)
+        os.makedirs(os.path.dirname(cluster_path), exist_ok=True)
+        previous = np.load(cluster_path, allow_pickle=True).item() if os.path.isfile(cluster_path) else {}
+        previous[f'z{z_threshold}'] = entry
+        np.save(cluster_path, previous)
+        minimum = get_minimal_cluster_size(cluster_path, z_threshold, cluster_threshold)
+        write_json(cluster_path[:-4] + f'_zt{z_threshold}.json', dict(
+            entry, z_threshold=z_threshold, cluster_threshold=cluster_threshold,
+            minimal_cluster_size=minimum))
+        return True
+
+    entry = np.load(cluster_path, allow_pickle=True).item()[f'z{z_threshold}']
+    if (changed_parameters(entry)
+            or entry.get('distribution_id') != distribution_id
+            or [local_path(p) for p in entry.get('file_list', [])] != z_files
+            or entry.get('z_generation') != z_generation
+            or entry.get('tail') != tail):
+        raise ValueError('Cluster null parameters changed; rerun the cluster distribution step.')
+    if stage == '11.9':
+        minimum = get_minimal_cluster_size(cluster_path, z_threshold, cluster_threshold)
+        z = read_map(real_z)
+        if not np.isfinite(z[inside]).all():
+            raise ValueError(f'Non-finite z map: {real_z}')
+        data = apply_cluster_size_threshold(np.where(inside & (z > z_threshold), z, 0),
+                                            minimum, connectivity=26)
+        if is_difference:
+            data -= apply_cluster_size_threshold(
+                np.where(inside & (z < -z_threshold), -z, 0), minimum, connectivity=26)
+        save_map(corrected, data)
+        structure = generate_binary_structure(3, 3)
+        _, n_clusters = label(data > 0, structure=structure)
+        if is_difference:
+            _, n_negative = label(data < 0, structure=structure)
+            n_clusters += n_negative
+        write_json(corrected[:-7] + '.json', dict(
+            metadata, z_threshold=z_threshold, cluster_threshold=cluster_threshold,
+            forced_minimal_cluster_size=None, z_generation=z_generation,
+            minimal_cluster_size=minimum, connectivity=26, tail=tail,
+            threshold_comparison='>', distribution_id=distribution_id,
+            n_clusters=int(n_clusters), n_voxels=int(np.count_nonzero(data)),
+            empty=bool(n_clusters == 0), cluster_distribution=portable_path(cluster_path)))
+        return True
+
+    with open(corrected[:-7] + '.json', encoding='utf-8') as handle:
+        correction = json.load(handle)
+    if (changed_parameters(correction)
+            or correction.get('cluster_threshold') != cluster_threshold
+            or correction.get('distribution_id') != distribution_id
+            or correction.get('z_generation') != z_generation
+            or correction.get('tail') != tail):
+        raise ValueError('Correction parameters changed; rerun the cluster correction step.')
+    read_map(corrected)
+    results = extract_clusters_and_peaks(
+        corrected, stat_thresh=None, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3,
+        label_dict=label_dict, label_nii_data=label_nii_data, label_affine=label_affine,
+        two_sided=is_difference)
+    out_path = corrected_stem + '.csv'
+    if results:
+        clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform,
+                          atlas_file=atlas_file, mask=mask)
+    else:
+        write_empty_cluster_table(out_path)
+    from publication_report import export_publication_report, mirror_results, DRIVE_RESULTS_ROOT
+    contrast = f'{rsa_class} - {target_class}' if is_difference else rsa_class
+    publications = export_publication_report(
+        out_path, corrected, dataset=dataset, specie=specie, rsa_model=contrast,
+        group_metadata_path=real_mean[:-7] + '.json', report_title=report_title,
+        atlas_name=atlas_name, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3)
+    relative_root = os.path.relpath(real_root, os.path.join(datafolder, dataset, 'results'))
+    mirror_folder = os.path.join(DRIVE_RESULTS_ROOT, dataset, 'current-results', relative_root, 'mean')
+    paths = [corrected, corrected[:-7] + '.json', real_z, out_path] + list(publications)
+    mirror_results([(p, os.path.join(mirror_folder, os.path.basename(p))) for p in paths])
+    if verbose:
+        print(f'Step {step}: reports written beside {out_path}')
+    return True
 
 
 def check_existing_similarity_maps(datafolder, dataset, session_and_run_dict, specie, sub_N, model, task, radius, dis_method, stim_types, categories, mah_fold=None, model_dict=None, verbose=False):
@@ -2306,7 +2730,7 @@ def calculate_cross_participant_similarity_map(meta_similarity_map1, meta_simila
 def _loo_layout(datafolder, dataset, session_and_run_all_dict, participants,
                 specie, model, task, radius, rsa_class, dis_method, rsa_method,
                 rsa_model, mah_fold, mask_type, rnd=False):
-    """Shared step 11.2/11.3 paths; never read pairwise step-11 outputs."""
+    """Shared leave-one-out paths for writers, readers, and resume checks."""
     participants = list(participants)
     if len(participants) < 2 or len(set(participants)) != len(participants):
         raise ValueError('Leave-one-out similarity requires at least two unique participants.')
@@ -2318,13 +2742,17 @@ def _loo_layout(datafolder, dataset, session_and_run_all_dict, participants,
         raise ValueError('rsa_method must be kendall, spearman, or pearson.')
     if rsa_class is None and rsa_model is None:
         raise ValueError('Steps 11.2/11.3 require rsa_class or rsa_model to select pairs.')
+    selection = (f'class_{str(rsa_class).removeprefix("class_")}'
+                 if rsa_class is not None else str(rsa_model))
     root = os.path.join(datafolder, dataset, 'results',
-                        'RSA_same_rnd' if rnd else 'RSA_same', model, 'leave-one-out')
+                        'RSA_same_rnd' if rnd else 'RSA_same', model,
+                        selection, 'leave-one-out')
     if dis_method == 'mahalanobis' and mah_fold != 'stim-wise':
         root = os.path.join(root, mah_fold)
-    selection = str(rsa_class if rsa_class is not None else rsa_model)
     prefix = f'{mask_type}-' if mask_type else ''
     stem = f'{prefix}r-{radius}_{dis_method}_{rsa_method}'
+    if not rnd:
+        stem += f'_task-{task}'
     units = {}
     paths = {}
     for sub in participants:
@@ -2336,9 +2764,9 @@ def _loo_layout(datafolder, dataset, session_and_run_all_dict, participants,
             subject = f'{specie}-sub-{sub:02d}'
             if run is not None:
                 subject += f'_ses-{session:02d}_task-{task}_run-{run:02d}'
-            paths[sub, session, run] = os.path.join(root, subject, selection, stem + '.nii.gz')
-    group_stem = f'{prefix}{specie}-r-{radius}_{dis_method}_{rsa_method}'
-    group = os.path.join(root, selection, group_stem)
+            paths[sub, session, run] = os.path.join(root, subject, stem + '.nii.gz')
+    group_stem = f'{prefix}{specie}-r-{radius}_{dis_method}_{rsa_method}_task-{task}'
+    group = os.path.join(root, group_stem)
     return participants, units, paths, group
 
 
@@ -2418,7 +2846,7 @@ def calculate_leave_one_out_cross_participant_similarity(
             continue
         if rsa_class is not None:
             table = pd.read_csv(os.path.join(datafolder, dataset, 'rsa_models',
-                                            'by_class', f'class_{rsa_class}.csv'))
+                                            'by_class', f'class_{str(rsa_class).removeprefix("class_")}.csv'))
             pairs = list(table[['cat1', 'cat2']].itertuples(index=False, name=None))
         else:
             template = os.path.join(datafolder, dataset, 'rsa_models', f'{rsa_model}.csv')
@@ -2499,6 +2927,52 @@ def calculate_leave_one_out_cross_participant_similarity(
     return all_outputs
 
 
+def calculate_cross_participant_similarity_contribution(
+        datafolder, dataset, session_and_run_all_dict=None, participants=None,
+        specie='H', mask=None, model='basic-block', task=None, radius=4,
+        rsa_class=None, dis_method='mahalanobis', rsa_method='kendall',
+        verbose=False, mah_fold='stim-wise', mask_type=None,
+        replace_file=False, min_percentage_available=0,
+        session_and_run_dict=None, device='cpu', voxel_batch=128,
+        comparison_batch=4096, work_root=None):
+    """Step 11.31: rerun 11.2/11.3 after excluding each class-CSV label.
+
+    Remove every class-CSV pair containing the omitted label from both target
+    and reference RDMs. Correlate each session with the equally weighted mean
+    of OTHER participants (same run), average sessions within participant, then
+    participants equally. Save runs separately under leave-one-out/by_stim.
+    Maps contain the remaining similarity, not a subtraction from the full map.
+    Possible omissions are the union of cat1/cat2 values, without expanding
+    categories or generating comparisons from the GLM stimulus configuration.
+    Pooled Mahalanobis is processed once, as in 11.2/11.3; correlation and
+    stim-wise-all-runs Mahalanobis retain their per-run units.
+    """
+    import stimulus_contribution as contribution
+    if not rsa_class:
+        raise ValueError('Step 11.31 requires rsa_class (cat1/cat2 comparison list).')
+    units = session_and_run_all_dict if session_and_run_all_dict is not None else session_and_run_dict
+    if units is None:
+        raise ValueError('Provide session_and_run_all_dict.')
+    participants = list(units) if participants is None else list(participants)
+    class_name = str(rsa_class).removeprefix('class_')
+    pairs = contribution.read_pairs(os.path.join(datafolder, dataset, 'rsa_models', 'by_class', f'class_{class_name}.csv'))
+    manifest = dict(dataset=dataset, model=model, task=task or dataset, specie=specie,
+                    radius=radius, rsa_class=class_name, dis_method=dis_method,
+                    rsa_method=rsa_method, mah_fold=mah_fold, mask=str(mask),
+                    mask_type=mask_type, participants=participants,
+                    runs_by_sub={str(s): [dict(session=int(e['session']), run_N=int(e['run_N']))
+                                          for e in units[s]] for s in participants},
+                    pairs=pairs,
+                    min_percentage_available=min_percentage_available)
+    # Scratch remains local rather than filling the research share with caches.
+    import tempfile
+    with tempfile.TemporaryDirectory(dir=work_root, prefix='rsa-11-31-') as scratch:
+        return contribution.run(manifest, [datafolder], datafolder, scratch,
+                                device=device, voxel_batch=voxel_batch,
+                                comparison_batch=comparison_batch,
+                                replace_file=replace_file, verbose=verbose)
+
+
 def calculate_mean_leave_one_out_cross_participant_similarity_map(
         datafolder, dataset, session_and_run_all_dict, participants, specie, mask,
         model, task, radius, rsa_class=None, dis_method='mahalanobis',
@@ -2563,6 +3037,170 @@ def calculate_mean_leave_one_out_cross_participant_similarity_map(
     if verbose:
         print(f'Saved average leave-one-out map: {mean_path}')
     return mean_path, std_path
+
+
+def calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(
+        datafolder, dataset, session_and_run_all_dict, participants, specie, mask,
+        model, task, radius, rsa_class=None, dis_method='mahalanobis',
+        rsa_method='kendall', rsa_model=None, verbose=False, mah_fold='stim-wise',
+        mask_type=None, reps=100, reps_group=1000, replace_rnd_files=False,
+        min_percentage_available=0):
+    """Step 11.5: independently sample step-11.4 maps for each group draw.
+
+    Every included participant must have at least one numbered permutation in
+    every expected session/run. Average sessions within runs, runs within each
+    participant, then participants equally. Write group mean, population std,
+    and the exact sampled file paths. Complete draws are reused on restart.
+    """
+    if not isinstance(reps, int) or reps < 1:
+        raise ValueError('reps must be a positive integer.')
+    if not isinstance(reps_group, int) or reps_group < 1:
+        raise ValueError('reps_group must be a positive integer.')
+    if not 0 <= min_percentage_available <= 1:
+        raise ValueError('min_percentage_available must be between 0 and 1.')
+    participants, units, paths, group = _loo_layout(
+        datafolder, dataset, session_and_run_all_dict, participants, specie,
+        model, task, radius, rsa_class, dis_method, rsa_method, rsa_model,
+        mah_fold, mask_type, rnd=True)
+    if verbose:
+        print(f'Step 11.5 input inventory: dataset={dataset}, task={task}, specie={specie}, '
+              f'model={model}, class={rsa_class}, radius={radius}, '
+              f'dis_method={dis_method}, rsa_method={rsa_method}, mah_fold={mah_fold}, '
+              f'mask_type={mask_type}')
+        print(f'  Step 11.4 input root: {os.path.dirname(group)}')
+        print(f'  Mask: {mask}')
+        print(f'  Expected permutation indices: 0..{reps - 1} (--reps {reps})')
+        print(f'  Group output directory: {os.path.join(os.path.dirname(group), "mean")} '
+              f'({reps_group} draws)')
+    pools = {}
+    for key, path in paths.items():
+        expected = [path[:-7] + f'_{index:04d}.nii.gz' for index in range(reps)]
+        pools[key] = [candidate for candidate in expected if os.path.isfile(candidate)]
+        if verbose:
+            sub, session, run = key
+            directory = os.path.dirname(path)
+            print(f'  {specie}-sub-{sub:02d}, session={session}, run={run}: '
+                  f'{len(pools[key])}/{reps} permutation files found')
+            print(f'    Directory: {directory} '
+                  f'({"accessible" if os.path.isdir(directory) else "missing or inaccessible"})')
+            print(f'    Expected first file: {expected[0]}')
+            if reps > 1:
+                print(f'    Expected last file: {expected[-1]}')
+            found = set(pools[key])
+            for candidate in pools[key][:3]:
+                print(f'    Found: {candidate}')
+            absent = [candidate for candidate in expected if candidate not in found]
+            for candidate in absent[:3]:
+                print(f'    Missing: {candidate}')
+            if len(absent) > 3:
+                print(f'    ... {len(absent) - 3} more expected files missing')
+            if not pools[key]:
+                # Diagnostic only: never silently select another mask/task/fold.
+                nearby = list(itertools.islice(glob.iglob(
+                    os.path.join(glob.escape(directory), '*.nii.gz')), 5))
+                for candidate in nearby:
+                    print(f'    Nearby file with a different name/index: {candidate}')
+                if not nearby:
+                    print('    No NIfTI files visible in the expected directory.')
+    if verbose:
+        for sub in participants:
+            if not units[sub]:
+                print(f'  {specie}-sub-{sub:02d}: no expected session/run units; cannot contribute.')
+    included = [sub for sub in participants if units[sub] and all(
+        pools[sub, session, run] for session, run in units[sub])]
+    missing = [sub for sub in participants if sub not in included]
+    if missing:
+        warnings.warn(f'Step 11.5: excluding participants with incomplete permutation pools: {missing}.')
+    available = len(included) / len(participants)
+    if len(included) < 2 or available < min_percentage_available:
+        example = next((path[:-7] + '_0000.nii.gz' for key, path in paths.items()
+                        if not pools[key]), None)
+        raise ValueError(f'Step 11.5: insufficient complete participants ({len(included)}/{len(participants)}). '
+                         'No usable step-11.4 pool exists for every required unit of the excluded participants. '
+                         'Check the step-11.4 class, radius, mask, task, folding and --reps range; '
+                         'run with --verbose to see the expected paths. '
+                         + (f'Example missing file: {example}. ' if example else '')
+                         + 'Run step 11.4 with matching settings if these outputs have not been generated.')
+    stem = os.path.join(os.path.dirname(group), 'mean', os.path.basename(group))
+    outputs = [(stem + f'_mean_{index:05d}.nii.gz',
+                stem + f'_std_{index:05d}.nii.gz',
+                stem + f'_mean_{index:05d}.json') for index in range(reps_group)]
+
+    def completed(entry):
+        if replace_rnd_files or not all(os.path.isfile(path) for path in entry):
+            return False
+        try:
+            with open(entry[2]) as handle:
+                previous = json.load(handle)
+        except (OSError, ValueError):
+            return False
+        return (sorted(previous.get('participants_requested', [])) == sorted(participants)
+                and sorted(previous.get('participants_included', included)) == sorted(included)
+                and previous.get('reps') == reps
+                and previous.get('perc_available', 0) >= min_percentage_available)
+
+    pending = [entry for entry in outputs if not completed(entry)]
+    if verbose:
+        print(f'Step 11.5: {len(included)}/{len(participants)} participants, '
+              f'{sum(len(pool) for pool in pools.values())} available permutation maps; '
+              f'{len(outputs) - len(pending)} group draws reused, {len(pending)} to compute.')
+    if not pending:
+        return [(mean, std) for mean, std, _ in outputs]
+    random.shuffle(pending)
+    ref = None
+    for entry in pending:
+        mean_path, std_path, log_path = entry
+        # Recheck after inventory: another worker may have completed this draw.
+        if completed(entry):
+            if verbose:
+                print(f'Skipping existing group permutation: {mean_path}')
+            continue
+        if ref is None:
+            if verbose:
+                print(f'Step 11.5: loading mask: {mask}')
+            ref = nib.load(mask)
+            mask_data = ref.get_fdata()
+            inside = np.isfinite(mask_data) & (mask_data != 0)
+            if mask_data.ndim != 3 or not inside.any():
+                raise ValueError('The searchlight mask must be a nonempty 3D mask.')
+        participant_maps, inputs = [], []
+        if verbose:
+            print(f'Step 11.5: computing group draw {int(mean_path[-12:-7]) + 1}/{reps_group}: {mean_path}')
+        for sub in included:
+            by_run = {}
+            for session, run in units[sub]:
+                path = random.choice(pools[sub, session, run])
+                if verbose:
+                    print(f'Step 11.5: loading {specie}-sub-{sub:02d}, session={session}, run={run} '
+                          f'(sampled from {len(pools[sub, session, run])} files): {path}')
+                img = nib.load(path)
+                check_same_space(('searchlight mask', ref), [(path, img)], context='step 11.5')
+                if img.shape != ref.shape:
+                    raise ValueError(f'Expected a 3D similarity map: {path}')
+                by_run.setdefault(run, []).append(img.get_fdata()[inside])
+                inputs.append(path)
+            participant_maps.append(np.mean([np.mean(maps, axis=0)
+                                             for maps in by_run.values()], axis=0))
+        if completed(entry):
+            continue
+        os.makedirs(os.path.dirname(stem), exist_ok=True)
+        for path, values in ((mean_path, np.mean(participant_maps, axis=0)),
+                             (std_path, np.std(participant_maps, axis=0))):
+            output = np.zeros(ref.shape, dtype=float)
+            output[inside] = values
+            nib.save(nib.Nifti1Image(output, ref.affine), path)
+        with open(log_path, 'w') as handle:
+            json.dump(dict(participants_requested=participants, participants_included=included,
+                           participants_missing=missing, perc_available=available,
+                           reps=reps, group_permutation=int(mean_path[-12:-7]),
+                           input_files=inputs, dis_method=dis_method, mah_fold=mah_fold,
+                           rsa_method=rsa_method, rsa_class=rsa_class, rsa_model=rsa_model,
+                           weighting='sessions within run, runs within participant, then participants equally',
+                           sampling='independent uniform draws per participant/session/run, with replacement across group repetitions',
+                           output_mean_file=mean_path, output_std_file=std_path), handle, indent=2)
+        if verbose:
+            print(f'Saved group permutation mean/std: {mean_path}')
+    return [(mean, std) for mean, std, _ in outputs]
 
 
 def calculate_voxelwise_cross_similarity(
@@ -8774,7 +9412,9 @@ def extract_clusters_and_peaks(
     label_dict=None,
     label_nii_data=None,
     label_affine=None,
+    two_sided=False,
 ):
+    """Extract sign-separated clusters; negative peaks are local minima."""
     img = nib.load(nifti_path)
     stat = img.get_fdata()
     affine = img.affine
@@ -8790,6 +9430,11 @@ def extract_clusters_and_peaks(
     # connected components (26-connectivity)
     struct = generate_binary_structure(3, 3)
     labeled, n_clu = label(mask, structure=struct)
+    if two_sided:
+        negative = np.isfinite(stat) & (stat < (-stat_thresh if stat_thresh is not None else 0))
+        negative_labels, n_negative = label(negative, structure=struct)
+        labeled[negative] = negative_labels[negative] + n_clu
+        n_clu += n_negative
 
     # An empty (all-zero) map is a valid cluster-corrected result â€” nothing was
     # significant. Return before touching the atlas: with no peaks to label there
@@ -8836,14 +9481,16 @@ def extract_clusters_and_peaks(
     results = []
     for c in range(1, n_clu + 1):
         cluster_mask = labeled == c
+        sign = -1 if stat[cluster_mask][0] < 0 else 1
         # cluster peak set
         peaks = pick_subpeaks(
             affine=affine,
-            stat=stat,
+            stat=stat if sign > 0 else -stat,
             cluster_mask=cluster_mask,
             min_dist_mm=min_dist_mm,
             max_peaks=max_peaks_per_cluster
         )
+        peaks = [(z * sign, ijk, xyz) for z, ijk, xyz in peaks]
         # peaks must be a list of (z, (i,j,k), (x,y,z))
         print("this the print for peaks")
         print(peaks)
@@ -8880,7 +9527,7 @@ def extract_clusters_and_peaks(
 
         # gather cluster-level descriptors
         cluster_size = int(cluster_mask.sum())
-        cluster_max = max(peaks, key=lambda t: t[0]) if peaks else None
+        cluster_max = max(peaks, key=lambda t: abs(t[0])) if peaks else None
         results.append({
             "cluster_id": c,
             "size_vox": cluster_size,
@@ -8894,11 +9541,86 @@ def extract_clusters_and_peaks(
 # ``write_empty_cluster_table`` writes exactly this header with no rows, so a
 # "nothing was significant" table is read by pandas like any other table (0 rows)
 # instead of being a different shape.
+FUNCTIONAL_NETWORKS = {
+    0: 'Unassigned', 1: 'Visual', 2: 'Somatomotor',
+    3: 'Dorsal Attention', 4: 'Ventral Attention / Salience',
+    5: 'Limbic', 6: 'Frontoparietal Control', 7: 'Default Mode',
+}
+
+
+@lru_cache(maxsize=1)
+def _load_functional_atlas():
+    """Cache Yeo's liberal cortical seven-network MNI152 volume and inverse affine.
+
+    IDs/colors follow the official Yeo2011 ColorLUT and Figure 7 of the paper:
+    https://surfer.nmr.mgh.harvard.edu/fswiki/CorticalParcellation_Yeo2011
+    """
+    from nilearn.datasets import fetch_atlas_yeo_2011
+    import inspect
+
+    # Older Nilearn returns all four atlases; newer versions select one atlas.
+    parameters = inspect.signature(fetch_atlas_yeo_2011).parameters
+    kwargs = ({'n_networks': 7, 'thickness': 'thick'}
+              if 'n_networks' in parameters else {})
+    atlas = fetch_atlas_yeo_2011(**kwargs)
+    source = atlas['thick_7'] if 'thick_7' in atlas else atlas['maps']
+    image = (source if hasattr(source, 'get_fdata') else nib.load(source))
+    data = image.get_fdata()
+    if data.ndim == 4 and data.shape[3] == 1:
+        data = data[..., 0]
+    if data.ndim != 3:
+        raise ValueError('Expected a three-dimensional Yeo seven-network atlas.')
+    return data, np.linalg.inv(image.affine)
+
+
+@lru_cache(maxsize=1)
+def _load_dog_network_dictionary():
+    """Read the Czeibert CSV once for callers without a supplied dictionary."""
+    return pd.read_csv(os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), 'Atlas', 'Dog',
+        'Czeibert_dictionary.csv'), usecols=['Region', 'network'])
+
+
+def _dog_region_network(region, label_dict=None):
+    """Use the same region selected by anatomical labeling, including fallback."""
+    if region is None or pd.isna(region):
+        return 'Unassigned'
+    dictionary = label_dict
+    if dictionary is None or 'network' not in dictionary.columns:
+        dictionary = _load_dog_network_dictionary()
+    matches = dictionary.loc[dictionary['Region'] == region, 'network'].dropna()
+    labels = [str(value).strip() for value in matches if str(value).strip()]
+    return labels[0] if labels else 'Unassigned'
+
+
+def get_functional_network(x, y, z, specie, region=None, label_dict=None):
+    """Label one MNI152 world-mm subpeak (nearest atlas voxel center).
+
+    No resampling or nonlinear transformation is needed for MNI152 inputs.
+    Background, nonfinite coordinates and coordinates outside the atlas are
+    unassigned. Dogs use the reported anatomical region and Czeibert dictionary;
+    coordinates alone cannot identify a dog region. Dogs never load Nilearn.
+    """
+    if specie == 'D':
+        return _dog_region_network(region, label_dict)
+    if specie != 'H':
+        raise ValueError(f'Unsupported species: {specie!r}')
+    xyz = np.asarray([x, y, z], dtype=float)
+    if not np.isfinite(xyz).all():
+        return 'Unassigned'
+    data, inverse_affine = _load_functional_atlas()
+    voxel = np.rint(nib.affines.apply_affine(inverse_affine, xyz))
+    if np.any(voxel < 0) or np.any(voxel >= data.shape):
+        return 'Unassigned'
+    value = data[tuple(voxel.astype(int))]
+    return FUNCTIONAL_NETWORKS.get(value, 'Unassigned')
+
+
 CLUSTER_TABLE_INDEX = ['cluster_id', 'subpeak_id']
 CLUSTER_TABLE_COLUMNS = [
     'cluster_size_vox', 'subpeak_Z',
     'subpeak_x_vox', 'subpeak_y_vox', 'subpeak_z_vox',
-    'subpeak_x_mm', 'subpeak_y_mm', 'subpeak_z_mm', 'region',
+    'subpeak_x_mm', 'subpeak_y_mm', 'subpeak_z_mm', 'region', 'network',
 ]
 
 
@@ -8915,7 +9637,7 @@ def write_empty_cluster_table(out_path):
     return df
 
 
-def clusters_to_table(results, out_path, apply_coords_transform=False, atlas_file=None, mask=None):
+def clusters_to_table(results, out_path, apply_coords_transform=False, atlas_file=None, mask=None, specie='D', label_dict=None):
     """
     Build a hierarchical (cluster -> subpeak) table from `results`
     and save it as a CSV file (no Excel/openpyxl dependency, which is missing on
@@ -8967,14 +9689,16 @@ def clusters_to_table(results, out_path, apply_coords_transform=False, atlas_fil
                 'subpeak_x_mm': x_mm,
                 'subpeak_y_mm': y_mm,
                 'subpeak_z_mm': z_mm,
-                'region': region
+                'region': region,
+                'network': get_functional_network(
+                    x_mm, y_mm, z_mm, specie, region=region, label_dict=label_dict)
 
             })
             # print each element in rows
             # for key, value in rows[-1].items():
             #     print(f"{key}: {value}")
 
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=CLUSTER_TABLE_INDEX + CLUSTER_TABLE_COLUMNS)
     print(f"DataFrame created with {len(df)} rows.")
     print(df.head())
     # Make it hierarchical: first cluster, then subpeak
@@ -9038,7 +9762,17 @@ def create_tables(datafolder, dataset, specie, model, rsa_model, radius,
         print(f"No clusters found in {res_image}. "
               f"Empty table (header only, 0 clusters) written to: {out_path}")
     else:
-        clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask)
+        if specie == 'H':
+            image = nib.load(res_image)
+            _, sform_code = image.get_sform(coded=True)
+            _, qform_code = image.get_qform(coded=True)
+            if 4 not in (int(sform_code), int(qform_code)):
+                warnings.warn(
+                    'Human network lookup assumes MNI152 world-mm coordinates; '
+                    'the statistical map header does not confirm MNI152 space. '
+                    'Verify template provenance before interpreting network labels.',
+                    UserWarning, stacklevel=2)
+        clusters_to_table(results, out_path, apply_coords_transform=apply_coords_transform, atlas_file=atlas_file, mask=mask, specie=specie, label_dict=label_dict)
         print(f"Files written in: {out_path}")
 
     publication_paths = export_publication_report(

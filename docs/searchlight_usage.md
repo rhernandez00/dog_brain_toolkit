@@ -211,6 +211,7 @@ upstream outputs already exist.
 | **11.2** | Participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` | Correlates each participant's pairwise maps with the average of all other participants. |
 | **11.3** | Average leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map` | Averages step 11.2 with equal participant weight; writes mean/std and JSON provenance. |
 | **11.13** | Paired class difference | `calculate_group_level_difference` | Subtracts `--target_class` from `--rsa_class` in each participant's step-11.2 maps, then averages participants equally. Writes mean/std and JSON under `class_<rsa_class>/leave-one-out/[run-wise/]class_<target_class>/mean/`. Requires complete maps for both classes; `--min_percentage_available` controls participant completeness. |
+| **11.15** | Permuted paired class difference | `calculate_group_level_difference_rnd` | Independently samples one available participant permutation per class from `RSA_same_rnd` (step 11.4), subtracts target from source within participant, and averages participants equally. Repeats `--reps_group` times; writes mean/std and sampled-file JSON under the step-11.13 hierarchy in `RSA_same_rnd`, with five-digit group indices. Reuses complete outputs unless `--replace_rnd_files` is set. `--shuffle_participants` randomizes the order of group permutation output indices for concurrent instances, preserving participant order and existing completeness checks. |
 | **11.4** | Permuted participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` (`rnd=True`) | Shuffles held-out participant category labels for each of `--reps` maps; reference participants stay fixed. |
 | **11.5** | Permuted group leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map_rnd` | Samples step 11.4 maps for `--reps_group` group mean/std maps. |
 | **11.6** | Leave-one-out voxelwise null | `calculate_leave_one_out_inference` | Population mean/std across step 11.5 group means. |
@@ -218,6 +219,11 @@ upstream outputs already exist.
 | **11.8** | Leave-one-out cluster null | `calculate_leave_one_out_inference` | Positive-tail, 26-neighbour cluster sizes from permuted z-maps. |
 | **11.9** | Leave-one-out cluster correction | `calculate_leave_one_out_inference` | Applies the empirical maximum-cluster cutoff to the real z-map. |
 | **11.10 / 11.101** | Leave-one-out reports | `calculate_leave_one_out_inference` | CSV and publication reports, including empty results. |
+| **11.16** | Class-difference voxelwise null | `calculate_leave_one_out_inference` | Population mean/std across step-11.15 group difference means. |
+| **11.17** | Class-difference z-maps | `calculate_leave_one_out_inference` | Z-scores the real 11.13 difference and permuted 11.15 differences using 11.16. |
+| **11.18** | Class-difference cluster null | `calculate_leave_one_out_inference` | Separate positive and negative 26-neighbour clusters; one maximum across both signs per recorded permutation. |
+| **11.19** | Class-difference correction | `calculate_leave_one_out_inference` | Applies the combined two-sided maximum-cluster cutoff, preserving signed z values. |
+| **11.20** | Class-difference reports | `calculate_leave_one_out_inference` | CSV, Word where supported, LaTeX, Results text and provenance for both directions, including empty results. |
 | **12** | DSM extraction | `calculate_similarity_across_all_pairs` | Per significant cluster; uses `roi_database.csv`. |
 | **13** | Movement (`.par`) parameters | `calculate_movement_parameters` + `preprocess_functions.fwd` | Runs mcflirt to derive framewise displacement. |
 | **15** | Multiple regression RSA | `calculate_multiple_regression_rsa` | Target model coefficient controlling for `--regression_model`; needs step 1. |
@@ -230,7 +236,57 @@ upstream outputs already exist.
 | **15.9** | Corrected regression z-map | `calculate_regression_inference` | Uses `--z_threshold` and `--cluster_threshold`; writes a correction JSON sidecar. |
 | **15.10** | Regression publication reports | `calculate_regression_inference` | CSV, Word, LaTeX, Results text and provenance; valid empty reports if no clusters survive. |
 
+### Class-difference inference (11.16 through 11.20)
+
+Inference receipts use schema version 2 with dataset-relative input/output paths
+and forward slashes, so the same dataset can be mounted on Linux or Windows.
+Masks are identified by voxel-content hash, shape, and affine rather than a path;
+repository atlas masks can live on a separate drive from the dataset. Absolute-path
+receipts from earlier versions are not supported: rebuild steps 11.16 through
+11.20 (or 11.6 through 11.10 for similarity). Input size and modification-time
+checks still apply; copying data must preserve timestamps to reuse receipts.
+
+Run step 11.13 for the observed `rsa_class - target_class` difference and step
+11.15 for its group permutations first, using the same participants and analysis
+parameters. The inference sequence requires both class arguments and uses
+`--reps_group`, `--min_percentage_available`, `--z_threshold` and
+`--cluster_threshold`, as in the existing inference steps:
+
+```powershell
+& "C:\ProgramData\anaconda3\python.exe" searchlight.py `
+  --dataset EmoC --model basic-block --specie H --radius 4 `
+  --rsa_class all-mahalanobis --target_class dog `
+  --dis_method mahalanobis --rsa_method kendall --mah_fold stim-wise `
+  --steps_to_run 11.16 11.17 11.18 11.19 11.20 --reps_group 1000
+```
+
+Outputs stay under `class_<rsa_class>/leave-one-out/[run-wise/]class_<target_class>/`:
+null moments and their input receipt in `RSA_same_rnd/.../dist/`, permutation
+z-maps in `RSA_same_rnd/.../mean/`, cluster nulls in `RSA_same/.../dist/`, and real
+z-maps, corrected maps and reports in `RSA_same/.../mean/`. The standard deviation
+is across permutation **means**, rather than the within-group standard deviation
+files. Class-difference inference tests both tails of `rsa_class - target_class`:
+clusters form separately at `z > z_threshold` and `z < -z_threshold` (default
+`+3.1` and `-3.1`), using 26-neighbour connectivity. Opposite-sign clusters are
+never merged. Each permutation contributes its largest cluster across both
+signs to the extent cutoff, controlling the search across both tails together.
+Corrected maps retain signed z values, and reports include negative minima as
+well as positive maxima. Signs describe deviations from the voxelwise
+permutation mean, which need not be exactly zero. Steps 11.8--11.10 remain
+positive-tail similarity inference. After updating, rerun steps 11.18--11.20;
+legacy positive-only cluster nulls and correction receipts are rejected.
+Undefined voxels and zero null variance yield zero in both real and permuted
+z-maps. At least two available group permutations are required. Later steps use
+the recorded ensemble, reject changed inputs or parameters, and ignore unrelated
+leftover permutation files. Pass report step `11.20` literally; the parser keeps
+it distinct from participant step `11.2`.
+
 ### Leave-one-out cross-participant similarity (11.2 and 11.3)
+
+Step **11.31** repeats participant leave-one-out similarity and equal participant
+averaging after excluding each unique `cat1`/`cat2` label in the selected class
+CSV from both target and peer RDMs. It supports Mahalanobis and correlation,
+preserving pooled or per-run input units. See [the Colab notebook and packager instructions](stimulus_contribution_colab.md).
 
 Create a class containing every available comparison from a GLM config with
 `rsa_utils.create_rsa_class(config_path, rsa_class, dis_method, mah_fold='stim-wise')`.
@@ -342,7 +398,7 @@ method and folding in the paths:
 ```text
 results/RSA_same_rnd/<model>/class_<rsa_class>/leave-one-out/[run-wise/]
   <specie>-sub-NN[_ses-SS_task-TASK_run-RR]/
-    <mask_type>-r-R_<dis_method>_<rsa_method>_task-TASK_0000.nii.gz
+    <mask_type>-r-R_<dis_method>_<rsa_method>_0000.nii.gz
   mean/
     <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_mean_00000.nii.gz
     <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_std_00000.nii.gz

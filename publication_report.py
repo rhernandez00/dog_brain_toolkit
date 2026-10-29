@@ -88,8 +88,18 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
     frame = frame.sort_values(["cluster_id", "subpeak_id"])
     image = nib.load(corrected_map)
     data = image.get_fdata()
+    warnings = []
+    map_stem = corrected_map.name.removesuffix(".nii.gz")
+    correction_path = corrected_map.with_name(map_stem + ".json")
+    correction = _metadata(correction_path, warnings)
+    two_sided = correction.get("tail") == "two-sided"
     from scipy.ndimage import label
     labelled, n_clusters = label(np.isfinite(data) & (data > 0), np.ones((3, 3, 3)))
+    if two_sided:
+        negative = np.isfinite(data) & (data < 0)
+        negative_labels, n_negative = label(negative, np.ones((3, 3, 3)))
+        labelled[negative] = negative_labels[negative] + n_clusters
+        n_clusters += n_negative
     sizes = np.bincount(labelled.ravel())[1:]
     clusters = []
     for cid, group in frame.groupby("cluster_id", sort=True):
@@ -111,20 +121,18 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
                 raise ValueError("CSV peak coordinates/statistics do not match corrected map")
             peaks.append(dict(subpeak_id=int(row.subpeak_id), z=float(row.subpeak_Z),
                               xyz_mm=xyz, region=_region(row.region), raw_region=str(row.region)))
-        peaks.sort(key=lambda p: (-p["z"], p["subpeak_id"]))
-        if not np.isclose(peaks[0]["z"], data[labelled == cid].max(), rtol=1e-5):
-            raise ValueError("CSV does not include the cluster maximum")
+        peaks.sort(key=lambda p: (-abs(p["z"]), p["subpeak_id"]))
+        values = data[labelled == cid]
+        extreme = values.min() if values[0] < 0 else values.max()
+        if not np.isclose(peaks[0]["z"], extreme, rtol=1e-5):
+            raise ValueError("CSV does not include the cluster maximum or minimum")
         clusters.append(dict(cluster_id=cid, size_vox=size, peaks=peaks))
     if len(clusters) != n_clusters:
         raise ValueError("CSV and corrected map have different cluster counts")
 
-    warnings = []
-    map_stem = corrected_map.name.removesuffix(".nii.gz")
-    correction_path = corrected_map.with_name(map_stem + ".json")
     group_stem = re.sub(r"_zt[^_]+_corrected$", "_mean", map_stem)
     group_path = (Path(group_metadata_path) if group_metadata_path is not None
                   else corrected_map.with_name(group_stem + ".json"))
-    correction = _metadata(correction_path, warnings)
     group_metadata = _metadata(group_path, warnings)
     n_voxels = int(sum(c["size_vox"] for c in clusters))
     # Refuse contradictory receipts instead of writing a polished false report.
@@ -171,15 +179,17 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
         raise ValueError("Invalid saved z threshold")
     if minimum is not None and (minimum < 1 or int(minimum) != minimum):
         raise ValueError("Invalid saved cluster extent threshold")
-    if clusters and threshold is not None and np.any(data[labelled > 0] < threshold - 1e-6):
+    magnitudes = np.abs(data[labelled > 0]) if two_sided else data[labelled > 0]
+    if clusters and threshold is not None and np.any(magnitudes < threshold - 1e-6):
         raise ValueError("Corrected image contains voxels below saved threshold")
-    if clusters and threshold is not None and comparison == ">" and np.any(data[labelled > 0] <= threshold):
+    if clusters and threshold is not None and comparison == ">" and np.any(magnitudes <= threshold):
         raise ValueError("Corrected image violates the strict saved threshold")
     if clusters and minimum is not None and np.any(sizes < minimum):
         raise ValueError("Corrected image contains clusters below saved extent threshold")
     threshold_text = ""
+    threshold_stat = "|Z|" if two_sided else "Z"
     if threshold is not None and minimum is not None:
-        threshold_text = (f" at a cluster-forming threshold of Z {threshold_symbol} {_number(threshold)}"
+        threshold_text = (f" at a cluster-forming threshold of {threshold_stat} {threshold_symbol} {_number(threshold)}"
                           f" and a minimum cluster extent of {minimum} voxels")
     else:
         warnings.append("Correction thresholds incomplete; omitted from Results prose.")
@@ -202,8 +212,9 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
         # named regions. Peak IDs tie the narrative back to the raw CSV.
         for cluster in clusters:
             peak = cluster["peaks"][0]
+            extremum = "minimum" if peak["z"] < 0 else "maximum"
             paragraph = (f"Cluster {cluster['cluster_id']} comprised {cluster['size_vox']} voxels. "
-                         f"Its maximum (peak {peak['subpeak_id']}) was at {describe_peak(peak)}.")
+                         f"Its {extremum} (peak {peak['subpeak_id']}) was at {describe_peak(peak)}.")
             for peak in cluster["peaks"][1:]:
                 paragraph += f" Secondary peak {peak['subpeak_id']} was at {describe_peak(peak)}."
             text += "\n\n" + paragraph
@@ -220,7 +231,12 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
         notes[3] = ("Z denotes the group target regression coefficient standardized against its permutation null, "
                     "not the coefficient itself or a regression t statistic. Inference tests the positive tail.")
     if threshold_text:
-        notes.append(f"Cluster-forming threshold: Z {threshold_symbol} {_number(threshold)}; minimum extent: {minimum} voxels.")
+        notes.append(f"Cluster-forming threshold: {threshold_stat} {threshold_symbol} {_number(threshold)}; minimum extent: {minimum} voxels.")
+    if two_sided:
+        notes[3] = ("Z denotes the group class difference standardized against its voxelwise permutation null. "
+                    "Positive and negative Z indicate differences above and below that null baseline.")
+        notes.append("Two-sided inference uses separate positive and negative clusters and the maximum "
+                     "cluster extent across both tails per permutation.")
     alpha = correction.get("cluster_threshold")
     if alpha is not None:
         if not 0 < alpha < 1:

@@ -25,6 +25,10 @@ class LeaveOneOutPermutationTests(unittest.TestCase):
             rsa.calculate_leave_one_out_cross_participant_similarity(**self.kw, rnd=True, reps=3)
         written = [Path(call.args[1]).name[-11:-7] for call in save.call_args_list]
         self.assertEqual(written, ['0002', '0001', '0000'] * 3)
+        first_path = Path(save.call_args_list[0].args[1])
+        self.assertEqual(first_path.parent, self.root / (
+            'EmoB/results/RSA_same_rnd/basic/class_all/leave-one-out/run-wise/H-sub-01'))
+        self.assertEqual(first_path.name, 'mask-r-3_mahalanobis_kendall_0002.nii.gz')
         with patch.object(rsa.random, 'shuffle', side_effect=lambda items: items.reverse()), \
                 patch.object(rsa.nib, 'save', wraps=nib.save) as save:
             rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(
@@ -100,7 +104,7 @@ class LeaveOneOutPermutationTests(unittest.TestCase):
         rsa.calculate_leave_one_out_cross_participant_similarity(**self.kw, rnd=True, reps=2)
         _, units, paths, _ = rsa._loo_layout(
             str(self.root), 'EmoB', self.units, [1, 2, 3], 'H', 'basic', 'EmoB', 3,
-            'all', 'correlation', 'kendall', 'run-wise', 'mask', rnd=True)
+            'all', 'correlation', 'kendall', None, 'run-wise', 'mask', rnd=True)
         expected = []
         for sub in self.vectors:
             by_run = {}
@@ -142,3 +146,39 @@ class LeaveOneOutPermutationTests(unittest.TestCase):
         with self.assertWarns(UserWarning), self.assertRaises(rsa.SpaceMismatchError):
             rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(
                 **self.kw, reps=1, reps_group=1, replace_rnd_files=True)
+
+    def test_group_complete_draws_skip_inputs_and_partial_draws_resume(self):
+        self.make_inputs('mahalanobis')
+        rsa.calculate_leave_one_out_cross_participant_similarity(**self.kw, rnd=True, reps=2)
+        kwargs = dict(self.kw, reps=2, reps_group=3)
+        outputs = rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(**kwargs)
+        expected_root = (self.root / 'EmoB/results/RSA_same_rnd/basic/class_all'
+                         / 'leave-one-out/run-wise/mean')
+        self.assertEqual(Path(outputs[0][0]), expected_root / 'mask-H-r-3_mahalanobis_kendall_task-EmoB_mean_00000.nii.gz')
+        before = {path: Path(path).stat().st_mtime_ns for pair in outputs for path in pair}
+        with patch.object(rsa.nib, 'load', side_effect=AssertionError('must skip completed draws')), \
+                patch.object(rsa.random, 'shuffle', side_effect=AssertionError('must not randomize completed draws')):
+            self.assertEqual(outputs, rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(**kwargs))
+        Path(outputs[1][1]).unlink()
+        with patch.object(rsa.nib, 'save', wraps=nib.save) as save:
+            self.assertEqual(outputs, rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(**kwargs))
+        self.assertEqual({call.args[1] for call in save.call_args_list}, set(outputs[1]))
+        for pair in (outputs[0], outputs[2]):
+            for path in pair:
+                self.assertEqual(Path(path).stat().st_mtime_ns, before[path])
+        with patch.object(rsa.nib, 'save', wraps=nib.save) as save:
+            rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(**kwargs, replace_rnd_files=True)
+        self.assertEqual(save.call_count, 6)
+
+    def test_group_requires_permutations_and_valid_counts(self):
+        with patch('builtins.print') as output, self.assertWarnsRegex(UserWarning, 'incomplete'), \
+                self.assertRaisesRegex(ValueError, 'Run step 11.4'):
+            rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(
+                **self.kw, reps=1, reps_group=1, verbose=True)
+        printed = '\n'.join(str(call.args[0]) for call in output.call_args_list)
+        self.assertIn('Expected first file:', printed)
+        self.assertIn('mask-r-3_mahalanobis_kendall_0000.nii.gz', printed)
+        self.assertIn('0/1 permutation files found', printed)
+        for options in (dict(reps=0), dict(reps_group=0), dict(min_percentage_available=2)):
+            with self.assertRaises(ValueError):
+                rsa.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd(**self.kw, **options)

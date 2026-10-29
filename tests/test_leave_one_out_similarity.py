@@ -73,6 +73,32 @@ class LeaveOneOutTests(unittest.TestCase):
             np.testing.assert_allclose(nib.load(mean).get_fdata().ravel(), [np.mean(expected), 0.])
             np.testing.assert_allclose(nib.load(std).get_fdata().ravel(), [np.std(expected), 0.])
 
+    def test_correct_class_task_paths_are_reused_for_observed_and_permuted_maps(self):
+        kwargs = dict(self.kw, dataset='EmoC', task='EmoC', model='basic-block',
+                      specie='D', radius=4, rsa_class='all-mahalanobis',
+                      dis_method='mahalanobis', mah_fold='stim-wise',
+                      mask_type='b_GreyMatter2mmB', target_participants=[1])
+        stem = 'b_GreyMatter2mmB-r-4_mahalanobis_kendall_task-EmoC'
+        for rnd in (False, True):
+            for fold in ('stim-wise', 'run-wise'):
+                root = (self.root / 'EmoC/results' / ('RSA_same_rnd' if rnd else 'RSA_same')
+                        / 'basic-block/class_all-mahalanobis/leave-one-out')
+                if fold == 'run-wise':
+                    root /= fold
+                permutation_stem = stem.removesuffix('_task-EmoC')
+                names = [f'{permutation_stem}_{i:04d}.nii.gz' for i in range(2)] if rnd else [stem + '.nii.gz']
+                expected = [str(root / 'D-sub-01' / name) for name in names]
+                for path in expected:
+                    self.save(Path(path), [1, 0])
+                with patch.object(rsa.nib, 'load', side_effect=AssertionError('must reuse existing maps')):
+                    actual = rsa.calculate_leave_one_out_cross_participant_similarity(
+                        **dict(kwargs, mah_fold=fold), rnd=rnd, reps=2)
+                self.assertEqual(actual, expected)
+                # A pre-prefixed class must resolve to the same output directory.
+                with patch.object(rsa.nib, 'load', side_effect=AssertionError('must reuse existing maps')):
+                    self.assertEqual(actual, rsa.calculate_leave_one_out_cross_participant_similarity(
+                        **dict(kwargs, mah_fold=fold, rsa_class='class_all-mahalanobis'), rnd=rnd, reps=2))
+
     def test_correlation_equal_reference_weight_and_group_weight(self):
         self.make_inputs('correlation')
         self.kw['rsa_method'] = 'pearson'
