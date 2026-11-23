@@ -181,7 +181,7 @@ def _write_csv_log(path, columns, rows, log):
     path.parent.mkdir(parents=True, exist_ok=True)
     staged = []
     try:
-        for destination in (path.with_suffix('.log'), path):
+        for destination in (path, path.with_suffix('.log')):
             with NamedTemporaryFile(mode='w', dir=path.parent, encoding='utf-8', newline='',
                                     delete=False) as stream:
                 staged.append((Path(stream.name), destination))
@@ -190,8 +190,9 @@ def _write_csv_log(path, columns, rows, log):
                     writer.writerow(columns)
                     writer.writerows(rows)
                 else:
-                    stream.write('\n'.join(log) + '\n')
-        for temporary, destination in staged:
+                    csv_hash = hashlib.sha256(staged[0][0].read_bytes()).hexdigest()
+                    stream.write('\n'.join([*log, f'CSV SHA-256: {csv_hash}']) + '\n')
+        for temporary, destination in reversed(staged):
             temporary.replace(destination)
     finally:
         for temporary, _ in staged:
@@ -418,7 +419,9 @@ def _cached_result(path, settings):
     log_path = path.with_suffix('.log')
     if not path.is_file() or not log_path.is_file():
         return False
-    return set(settings).issubset(log_path.read_text(encoding='utf-8').splitlines())
+    csv_hash = hashlib.sha256(path.read_bytes()).hexdigest()
+    return set([*settings, f'CSV SHA-256: {csv_hash}']).issubset(
+        log_path.read_text(encoding='utf-8').splitlines())
 
 
 def _model_output_paths(root, model_name, subject, entry, args, stem):
