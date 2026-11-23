@@ -1084,6 +1084,7 @@ def calculate_leave_one_out_inference(
     contrast = f'{rsa_class} - {target_class}' if is_difference else rsa_class
     publications = export_publication_report(
         out_path, corrected, dataset=dataset, specie=specie, rsa_model=contrast,
+        rsa_class=rsa_class, target_class=target_class,
         group_metadata_path=real_mean[:-7] + '.json', report_title=report_title,
         atlas_name=atlas_name, min_dist_mm=min_dist_mm, max_peaks_per_cluster=3)
     relative_root = os.path.relpath(real_root, os.path.join(datafolder, dataset, 'results'))
@@ -2727,47 +2728,7 @@ def calculate_cross_participant_similarity_map(meta_similarity_map1, meta_simila
                 cross_participant_similarity_map[x, y, z] = val
     return cross_participant_similarity_map
 
-def _loo_layout(datafolder, dataset, session_and_run_all_dict, participants,
-                specie, model, task, radius, rsa_class, dis_method, rsa_method,
-                rsa_model, mah_fold, mask_type, rnd=False):
-    """Shared leave-one-out paths for writers, readers, and resume checks."""
-    participants = list(participants)
-    if len(participants) < 2 or len(set(participants)) != len(participants):
-        raise ValueError('Leave-one-out similarity requires at least two unique participants.')
-    if dis_method not in ('mahalanobis', 'correlation'):
-        raise ValueError('Steps 11.2/11.3 support mahalanobis and correlation.')
-    if dis_method == 'mahalanobis' and mah_fold not in ('stim-wise', 'run-wise'):
-        raise ValueError('Steps 11.2/11.3 support Mahalanobis stim-wise and run-wise.')
-    if rsa_method not in ('kendall', 'spearman', 'pearson'):
-        raise ValueError('rsa_method must be kendall, spearman, or pearson.')
-    if rsa_class is None and rsa_model is None:
-        raise ValueError('Steps 11.2/11.3 require rsa_class or rsa_model to select pairs.')
-    selection = (f'class_{str(rsa_class).removeprefix("class_")}'
-                 if rsa_class is not None else str(rsa_model))
-    root = os.path.join(datafolder, dataset, 'results',
-                        'RSA_same_rnd' if rnd else 'RSA_same', model,
-                        selection, 'leave-one-out')
-    if dis_method == 'mahalanobis' and mah_fold != 'stim-wise':
-        root = os.path.join(root, mah_fold)
-    prefix = f'{mask_type}-' if mask_type else ''
-    stem = f'{prefix}r-{radius}_{dis_method}_{rsa_method}'
-    if not rnd:
-        stem += f'_task-{task}'
-    units = {}
-    paths = {}
-    for sub in participants:
-        entries = ([(None, None)] if dis_method == 'mahalanobis' else
-                   sorted({(int(e['session']), int(e['run_N']))
-                           for e in session_and_run_all_dict[sub]}))
-        units[sub] = entries
-        for session, run in entries:
-            subject = f'{specie}-sub-{sub:02d}'
-            if run is not None:
-                subject += f'_ses-{session:02d}_task-{task}_run-{run:02d}'
-            paths[sub, session, run] = os.path.join(root, subject, stem + '.nii.gz')
-    group_stem = f'{prefix}{specie}-r-{radius}_{dis_method}_{rsa_method}_task-{task}'
-    group = os.path.join(root, group_stem)
-    return participants, units, paths, group
+from loo_joint import loo_layout as _loo_layout
 
 
 def calculate_leave_one_out_cross_participant_similarity(
@@ -2775,7 +2736,9 @@ def calculate_leave_one_out_cross_participant_similarity(
         model, task, radius, rsa_class=None, dis_method='mahalanobis',
         rsa_method='kendall', rsa_model=None, verbose=False, mah_fold='stim-wise',
         mask_type=None, replace_file=False, target_participants=None,
-        rnd=False, reps=100, replace_rnd_files=False):
+        rnd=False, reps=100, replace_rnd_files=False,
+        leave_one_stimulus_out=False, stim_types=None, model_dict=None,
+        min_percentage_available=1.0):
     """Step 11.2: correlate each participant RDM with the mean of the others.
 
     Run-wise Mahalanobis inputs already pool runs: load once per participant.
@@ -2791,8 +2754,25 @@ def calculate_leave_one_out_cross_participant_similarity(
     Step 11.4 (rnd=True) permutes target category labels with fixed peers.
     Existing outputs are reused unless replace_file (11.2) or
     replace_rnd_files (11.4) is set. Only missing permutations are computed.
+    leave_one_stimulus_out selects step-1 beta-omission maps instead and writes
+    the participant-averaged similarity per omitted stimulus/run under by_stim.
     """
     from scipy.stats import kendalltau, spearmanr, pearsonr
+    from stimulus_contribution import finite_divide, finite_totals
+
+    if leave_one_stimulus_out:
+        if rnd:
+            raise ValueError('Leave-one-stimulus-out inputs are supported for step 11.2, not permutations.')
+        from leave_one_stimulus_out import calculate_omission_cross_participant_similarity
+        return calculate_omission_cross_participant_similarity(
+            datafolder=datafolder, dataset=dataset,
+            session_and_run_all_dict=session_and_run_all_dict,
+            participants=participants, specie=specie, mask=mask, model=model,
+            task=task, radius=radius, rsa_class=rsa_class,
+            dis_method=dis_method, rsa_method=rsa_method, mah_fold=mah_fold,
+            mask_type=mask_type, replace_file=replace_file, verbose=verbose,
+            target_participants=target_participants, stim_types=stim_types,
+            model_dict=model_dict, min_percentage_available=min_percentage_available)
 
     participants, units, paths, _ = _loo_layout(
         datafolder, dataset, session_and_run_all_dict, participants, specie,
@@ -2847,6 +2827,8 @@ def calculate_leave_one_out_cross_participant_similarity(
         if rsa_class is not None:
             table = pd.read_csv(os.path.join(datafolder, dataset, 'rsa_models',
                                             'by_class', f'class_{str(rsa_class).removeprefix("class_")}.csv'))
+            if not {'cat1', 'cat2'} <= set(table.columns):
+                raise ValueError('Class CSV requires cat1 and cat2 columns.')
             pairs = list(table[['cat1', 'cat2']].itertuples(index=False, name=None))
         else:
             template = os.path.join(datafolder, dataset, 'rsa_models', f'{rsa_model}.csv')
@@ -2869,6 +2851,7 @@ def calculate_leave_one_out_cross_participant_similarity(
                 warnings.warn(f'Run {run}: excluding {specie}-sub-{sub:02d} (no session for this run).')
                 continue
             total = np.zeros((int(inside.sum()), len(pairs)), dtype=float)
+            count = np.zeros_like(total, dtype=np.int64)
             for session, r in entries:
                 # Permuted targets may need pairs outside a sparse class list.
                 load_pairs = target_pairs if (sub, session, r) in pending else pairs
@@ -2884,19 +2867,22 @@ def calculate_leave_one_out_cross_participant_similarity(
                         raise FileNotFoundError(
                             f'Missing pair {cat1}/{cat2} for {specie}-sub-{sub:02d}, session {session}, run {r}.')
                     values[:, index] = pair_map[inside]
-                if not np.isfinite(values).all():
-                    raise ValueError(f'Non-finite RDM inside mask for participant {sub}, session {session}, run {r}.')
-                total += values[:, selected] if (sub, session, r) in pending else values
+                values[~np.isfinite(values)] = np.nan
+                used = values[:, selected] if (sub, session, r) in pending else values
+                valid = np.isfinite(used)
+                total += np.where(valid, used, 0.0)
+                count += valid
                 # Only retain target sessions whose outputs need computing.
                 if (sub, session, r) in pending:
                     rdms[sub, session, r] = values
-            means[sub] = total / len(entries)
+            means[sub] = finite_divide(total, count)
         if len(means) < 2:
             raise ValueError(f'Run {run}: at least two participants with data are required.')
-        total = sum(means.values())
+        total, counts = finite_totals(means.values())
         for key in pending:
             sub, session, r = key
-            peer_mean = (total - means[sub]) / (len(means) - 1)
+            own_valid = np.isfinite(means[sub])
+            peer_mean = finite_divide(total - np.where(own_valid, means[sub], 0.0), counts - own_valid)
             entries = pending[key]
             if rnd:
                 random.shuffle(entries)
@@ -2916,7 +2902,9 @@ def calculate_leave_one_out_cross_participant_similarity(
                 target = rdms[key][:, indices]
                 result = np.full(len(target), np.nan)
                 for index, (a, b) in enumerate(zip(target, peer_mean)):
-                    if np.ptp(a) > 0 and np.ptp(b) > 0:
+                    valid = np.isfinite(a) & np.isfinite(b)
+                    a, b = a[valid], b[valid]
+                    if len(a) >= 2 and np.ptp(a) > 0 and np.ptp(b) > 0:
                         result[index] = correlate(a, b)[0]
                 output = np.zeros(ref.shape, dtype=float)
                 output[inside] = result
@@ -2934,13 +2922,15 @@ def calculate_cross_participant_similarity_contribution(
         verbose=False, mah_fold='stim-wise', mask_type=None,
         replace_file=False, min_percentage_available=0,
         session_and_run_dict=None, device='cpu', voxel_batch=128,
-        comparison_batch=4096, work_root=None):
+        comparison_batch=4096, work_root=None, save_participant_maps=False):
     """Step 11.31: rerun 11.2/11.3 after excluding each class-CSV label.
 
     Remove every class-CSV pair containing the omitted label from both target
     and reference RDMs. Correlate each session with the equally weighted mean
     of OTHER participants (same run), average sessions within participant, then
     participants equally. Save runs separately under leave-one-out/by_stim.
+    Set save_participant_maps to also save session-averaged participant maps
+    for every omission and run, in by_stim/<run-or-pooled>/<specie>-sub-XX/.
     Maps contain the remaining similarity, not a subtraction from the full map.
     Possible omissions are the union of cat1/cat2 values, without expanding
     categories or generating comparisons from the GLM stimulus configuration.
@@ -2970,7 +2960,8 @@ def calculate_cross_participant_similarity_contribution(
         return contribution.run(manifest, [datafolder], datafolder, scratch,
                                 device=device, voxel_batch=voxel_batch,
                                 comparison_batch=comparison_batch,
-                                replace_file=replace_file, verbose=verbose)
+                                replace_file=replace_file, verbose=verbose,
+                                save_participant_maps=save_participant_maps)
 
 
 def calculate_mean_leave_one_out_cross_participant_similarity_map(
@@ -2982,10 +2973,11 @@ def calculate_mean_leave_one_out_cross_participant_similarity_map(
 
     A participant contributes only if all their expected step-11.2 maps exist.
     Missing participants are reported and subject to min_percentage_available
-    (a fraction in [0, 1]). Undefined in-mask correlations propagate as NaN.
+    (a fraction in [0, 1]). Non-finite values are ignored; voxels with no observations remain NaN.
     Write the arithmetic mean, population std across participants, and JSON
     provenance beside the group maps.
     """
+    from stimulus_contribution import finite_mean, finite_std, MISSING_DATA_POLICY
     participants, units, paths, group = _loo_layout(
         datafolder, dataset, session_and_run_all_dict, participants, specie,
         model, task, radius, rsa_class, dis_method, rsa_method, rsa_model,
@@ -2997,14 +2989,25 @@ def calculate_mean_leave_one_out_cross_participant_similarity_map(
     if not replace_file and all(os.path.exists(p) for p in (mean_path, std_path, log_path)):
         with open(log_path) as handle:
             previous = json.load(handle)
-        if (previous.get('participants_requested') == participants
+        if (previous.get('missing_data_policy') == MISSING_DATA_POLICY
+                and previous.get('participants_requested') == participants
                 and previous.get('perc_available', 0) >= min_percentage_available):
+            if verbose:
+                print(f'Step 11.3: reusing existing average leave-one-out map: {mean_path}', flush=True)
+                print(f'Step 11.3: existing standard deviation: {std_path}', flush=True)
+                print('Use --replace_file to recompute these outputs.', flush=True)
             return mean_path, std_path
+    if verbose:
+        print(f'Step 11.3: averaging step-11.2 maps for {len(participants)} participants.', flush=True)
     ref = nib.load(mask)
     participant_maps, included, missing, inputs = [], [], [], []
     for sub in participants:
         entries = units[sub]
+        if verbose:
+            print(f'Step 11.3: participant {sub}, {len(entries)} expected session/run maps.', flush=True)
         if not entries or any(not os.path.exists(paths[sub, s, r]) for s, r in entries):
+            if verbose:
+                print(f'Step 11.3: excluding participant {sub}; missing step-11.2 maps.', flush=True)
             missing.append(sub)
             continue
         by_run = {}
@@ -3016,7 +3019,7 @@ def calculate_mean_leave_one_out_cross_participant_similarity_map(
                 raise ValueError(f'Expected a 3D similarity map: {path}')
             by_run.setdefault(run, []).append(img.get_fdata())
             inputs.append(path)
-        participant_maps.append(np.mean([np.mean(maps, axis=0)
+        participant_maps.append(finite_mean([finite_mean(maps, axis=0)
                                          for maps in by_run.values()], axis=0))
         included.append(sub)
     if missing:
@@ -3025,17 +3028,19 @@ def calculate_mean_leave_one_out_cross_participant_similarity_map(
     if len(included) < 2 or available < min_percentage_available:
         raise ValueError(f'Step 11.3: insufficient complete participants ({len(included)}/{len(participants)}).')
     os.makedirs(os.path.dirname(mean_path), exist_ok=True)
-    nib.save(nib.Nifti1Image(np.mean(participant_maps, axis=0), ref.affine), mean_path)
-    nib.save(nib.Nifti1Image(np.std(participant_maps, axis=0), ref.affine), std_path)
+    nib.save(nib.Nifti1Image(finite_mean(participant_maps, axis=0), ref.affine), mean_path)
+    nib.save(nib.Nifti1Image(finite_std(participant_maps, axis=0), ref.affine), std_path)
     with open(log_path, 'w') as handle:
-        json.dump(dict(participants_requested=participants, participants_included=included,
+        json.dump(dict(missing_data_policy=MISSING_DATA_POLICY, participants_requested=participants, participants_included=included,
                        participants_missing=missing, perc_available=available,
                        input_files=inputs, dis_method=dis_method, mah_fold=mah_fold,
                        rsa_method=rsa_method, rsa_class=rsa_class, rsa_model=rsa_model,
                        weighting='sessions within run, runs within participant, then participants equally',
                        output_mean_file=mean_path, output_std_file=std_path), handle, indent=2)
     if verbose:
-        print(f'Saved average leave-one-out map: {mean_path}')
+        print(f'Saved average leave-one-out map ({len(included)}/{len(participants)} participants): {mean_path}', flush=True)
+        print(f'Saved standard deviation: {std_path}', flush=True)
+        print(f'Saved provenance: {log_path}', flush=True)
     return mean_path, std_path
 
 
@@ -5878,7 +5883,8 @@ def similarity_searchlight(map_1, map_2, mask, radius, dis_method):
     return similarity_map
 
 
-def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return_rdm=True):
+def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return_rdm=True,
+              allow_missing=False):
     """
     Cross-validated Mahalanobis (crossnobis) distances for RSA.
 
@@ -5902,6 +5908,10 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
     return_rdm : bool, optional
         If True return a (n_conditions x n_conditions) symmetric RDM.
         If False return the condensed upper-triangular vector.
+    allow_missing : bool, optional
+        For beta omissions, allow absent condition/partition cells. Estimate
+        covariance from observed cells and each distance from partitions that
+        contain both conditions. Fewer than two paired partitions yields NaN.
 
     Returns
     -------
@@ -5930,21 +5940,33 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
     conds = np.unique(labels)
     runs = np.unique(partitions)
     C, M, P = len(conds), len(runs), Y.shape[1]
-    if M < 2:
+    if M < 2 and not allow_missing:
         raise ValueError("Need at least 2 partitions for cross-validation.")
+    if M < 2:
+        D = np.full((C, C), np.nan)
+        np.fill_diagonal(D, 0)
+        return D if return_rdm else D[np.triu_indices(C, 1)]
 
     # --- per-run condition means: U[run, cond, feat] ---
     U = np.zeros((M, C, P), float)
+    present = np.zeros((M, C), dtype=bool)
     for mi, m in enumerate(runs):
         for ci, c in enumerate(conds):
             idx = (partitions == m) & (labels == c)
             if not np.any(idx):
+                if allow_missing:
+                    continue
                 raise ValueError(f"No observations for condition {c} in partition {m}.")
             U[mi, ci] = Y[idx].mean(axis=0)
+            present[mi, ci] = True
 
     # --- estimate noise covariance if not given (pooled run-residuals across conditions) ---
     if sigma is None:
-        R = (U - U.mean(axis=0, keepdims=True)).reshape(M*C, P)  # samples x features
+        if allow_missing:
+            condition_means = U.sum(axis=0) / present.sum(axis=0)[:, None]
+            R = (U - condition_means)[present]
+        else:
+            R = (U - U.mean(axis=0, keepdims=True)).reshape(M*C, P)  # samples x features
         if shrinkage == 'ledoitwolf':
             try:
                 from sklearn.covariance import LedoitWolf
@@ -5984,6 +6006,13 @@ def crossnobis(Y, labels, partitions, sigma=None, shrinkage='ledoitwolf', return
     for i in range(C):
         for j in range(i + 1, C):
             Delta = Z[:, i, :] - Z[:, j, :]         # shape: (M, P)
+            if allow_missing:
+                Delta = Delta[present[:, i] & present[:, j]]
+                paired_runs = len(Delta)
+                if paired_runs < 2:
+                    D[i, j] = D[j, i] = np.nan
+                    continue
+                denom = paired_runs * (paired_runs - 1)
             s = Delta.sum(axis=0)                   # sum over runs
             # sum_{mâ‰ n} Î”_mÂ·Î”_n = ||âˆ‘Î”_m||^2 âˆ’ âˆ‘||Î”_m||^2
             sum_off = float(np.dot(s, s) - np.einsum('mp,mp->', Delta, Delta))

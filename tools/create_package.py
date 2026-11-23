@@ -7,6 +7,12 @@ it, runs steps 1/2/4 on the GPU (see ``tools/colab_gpu/gpu_rsa.py``), and emits 
 result ``.zip`` per finished part; ``tools/unpack_results.py`` merges those back
 onto the pipeline data disk.
 
+``--leave_one_stimulus_out --rsa_class all`` instead bundles the aligned betas,
+class-pair CSV and a dedicated notebook for omission steps 1 and 11.2. No RSA
+model selection is needed. Supply several subject numbers or --all-participants
+and upload all of the species' packages into one Drive folder. The notebook is
+also copied beside the ZIPs. See docs/colab_stimulus_omission.md.
+
 Usage (from the repo root, with the full Anaconda interpreter -- see CLAUDE.md):
 
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\create_package.py D 1 \\
@@ -46,6 +52,7 @@ import argparse
 import datetime
 import json
 import os
+import shutil
 import sys
 import zipfile
 
@@ -331,15 +338,25 @@ def validate_step1_reuse(found, mask_src, cutoff, context=""):
 def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model,
                   radius, dis_method, mah_fold, rsa_method, reps, mask_type, out_dir,
                   verbose=True, allow_space_mismatch=False, no_reuse_step1=False,
-                  reuse_stale_step1=False):
+                  reuse_stale_step1=False, leave_one_stimulus_out=False,
+                  rsa_class='all', datafolder=None):
     if specie not in ("D", "H"):
         raise ValueError("specie must be 'D' or 'H'")
     if dis_method not in ("mahalanobis", "correlation"):
         raise ValueError("dis_method must be 'mahalanobis' or 'correlation'")
     if dis_method == "mahalanobis" and mah_fold != "stim-wise":
         raise ValueError("Only mah_fold='stim-wise' is supported for mahalanobis packages.")
+    if leave_one_stimulus_out:
+        if dis_method != 'mahalanobis' or mah_fold != 'stim-wise':
+            raise ValueError('Beta-omission Colab packages require mahalanobis with stim-wise folding.')
+        if rsa_method not in ('kendall', 'pearson', 'spearman'):
+            raise ValueError('Beta-omission similarity requires kendall, pearson, or spearman.')
+        if models or all_flag or all_stim_wise:
+            raise ValueError('Beta-omission steps use --rsa_class; omit --models/--all/--all-stim-wise.')
+    elif rsa_method == 'spearman':
+        raise ValueError('The ordinary GPU model-comparison workflow does not support spearman.')
 
-    datafolder, _git, _py = get_paths()
+    datafolder = datafolder or get_paths()[0]
     if radius is None:
         radius = 3 if specie == "D" else 4
 
@@ -363,9 +380,22 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
 
     # runs first: a run-dependent model has to be resolved against this
     # participant's run numbers, and every one of them must have a matrix.
-    model_list, model_csv_srcs, run_dep_models = resolve_models(
-        datafolder, dataset, models, all_flag, all_stim_wise, dis_method,
-        [int(e["run_N"]) for e in runs])
+    if leave_one_stimulus_out:
+        from leave_one_stimulus_out import _read_pairs, _resolve_stimwise_pairs
+        rsa_class = str(rsa_class).removeprefix('class_')
+        class_src = os.path.join(datafolder, dataset, 'rsa_models', 'by_class', f'class_{rsa_class}.csv')
+        source_class_pairs = _read_pairs(class_src)
+        comparison_pairs = [list(pair) for pair in _resolve_stimwise_pairs(
+            source_class_pairs, stim_types, dataset)]
+        if len(comparison_pairs) < 2:
+            raise ValueError('Step 11.2 needs at least two distinct between-category comparisons after resolving the class CSV.')
+        class_arc = f'data/{dataset}/rsa_models/by_class/class_{rsa_class}.csv'
+        class_source_arc = f'source/class_{rsa_class}.csv'
+        model_list, model_csv_srcs, run_dep_models = [], [], []
+    else:
+        model_list, model_csv_srcs, run_dep_models = resolve_models(
+            datafolder, dataset, models, all_flag, all_stim_wise, dis_method,
+            [int(e["run_N"]) for e in runs])
 
     mask_src = os.path.join(datafolder, dataset, "ROI", specie, f"{mask_type}.nii.gz")
     if not os.path.exists(mask_src):
@@ -403,7 +433,9 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
     # Bundling step-1 maps makes Colab skip step 1, so these maps -- not the
     # verified betas above -- become the input to every model. They therefore get
     # the same scrutiny before they are allowed in.
-    if no_reuse_step1:
+    if leave_one_stimulus_out:
+        existing_step1, step1_reason = None, 'beta omissions are recomputed from aligned betas; ordinary step-1 maps are not omission maps'
+    elif no_reuse_step1:
         existing_step1, step1_reason = None, "disabled with --no_reuse_step1"
     else:
         if dis_method == "correlation":
@@ -453,13 +485,22 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
         # would build here and then fail there
         "allow_space_mismatch": bool(allow_space_mismatch),
     }
+    if leave_one_stimulus_out:
+        manifest.update(package_kind='beta-omission', omission_version=1,
+                        leave_one_stimulus_out=True, steps=[1, 11.2],
+                        rsa_class=rsa_class, class_csv=class_arc,
+                        comparison_pairs=comparison_pairs, source_class_csv=class_source_arc,
+                        source_class_pair_count=len(source_class_pairs),
+                        participants=[int(sub) for sub in cfg['participants']])
 
     os.makedirs(out_dir, exist_ok=True)
-    zip_name = f"pkg_{specie}-sub-{sub_N:02d}_{dataset}_{model}_{dis_method}.zip"
+    suffix = f'_leave-one-stimulus-out_class-{rsa_class}' if leave_one_stimulus_out else ''
+    zip_name = f"pkg_{specie}-sub-{sub_N:02d}_{dataset}_{model}_{dis_method}{suffix}.zip"
     zip_path = os.path.join(out_dir, zip_name)
 
     n_betas = 0
-    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
+    partial_path = zip_path + '.part'
+    with zipfile.ZipFile(partial_path, "w", zipfile.ZIP_STORED, allowZip64=True) as zf:
         # betas (step-0.5 aligned maps, one per stimulus per run)
         for rel, src in beta_srcs:
             zf.write(src, arcname=rel)
@@ -469,6 +510,11 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
         # model CSVs (one per model; one per run for a run-dependent model)
         for arc, src in model_csv_srcs:
             zf.write(src, arcname=arc)
+        if leave_one_stimulus_out:
+            # Keep the workstation CSV intact; bundle a category-level view
+            # for step 11.2 alongside the original class selection.
+            zf.writestr(class_arc, pd.DataFrame(comparison_pairs, columns=['cat1', 'cat2']).to_csv(index=False))
+            zf.write(class_src, arcname=class_source_arc)
         # config
         zf.write(cfg_path, arcname=f"data/{dataset}/config_files/{specie}_{model}.yaml")
         # bundled step-1 maps (if already computed) -- arcnames come from the helper
@@ -477,11 +523,26 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
                 zf.write(src, arcname=arc)
         # code + notebook
         zf.write(os.path.join(COLAB_DIR, "gpu_rsa.py"), arcname="code/gpu_rsa.py")
-        zf.write(os.path.join(COLAB_DIR, "run_colab.py"), arcname="code/run_colab.py")
-        zf.write(os.path.join(COLAB_DIR, "colab_rsa.ipynb"), arcname="colab_rsa.ipynb")
+        if leave_one_stimulus_out:
+            for name in ('gpu_stimulus_omission.py', 'run_colab_stimulus_omission.py',
+                         'supervise_stimulus_omission.py', 'launch_stimulus_omission.py'):
+                zf.write(os.path.join(COLAB_DIR, name), arcname=f'code/{name}')
+            zf.write(os.path.join(REPO, 'stimulus_contribution.py'), arcname='code/stimulus_contribution.py')
+            notebook = 'colab_leave_one_stimulus_out.ipynb'
+            zf.write(os.path.join(COLAB_DIR, notebook), arcname=notebook)
+        else:
+            zf.write(os.path.join(COLAB_DIR, "run_colab.py"), arcname="code/run_colab.py")
+            zf.write(os.path.join(COLAB_DIR, "colab_rsa.ipynb"), arcname="colab_rsa.ipynb")
         # manifest + readme
         zf.writestr("manifest.json", json.dumps(manifest, indent=2))
         zf.writestr("README.txt", _package_readme(manifest, zip_name))
+    os.replace(partial_path, zip_path)
+
+    if leave_one_stimulus_out:
+        notebook_src = os.path.join(COLAB_DIR, notebook)
+        notebook_out = os.path.join(out_dir, notebook)
+        if os.path.abspath(notebook_src) != os.path.abspath(notebook_out):
+            shutil.copyfile(notebook_src, notebook_out)
 
     if verbose:
         size_mb = os.path.getsize(zip_path) / 1e6
@@ -490,6 +551,10 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
               f"{rsa_method}  reps={reps}")
         print(f"  runs={len(runs)}  betas={n_betas}  models={len(model_list)}  "
               f"pairs={len(pairs)}  step1_done={step1_done}  size={size_mb:.1f} MB")
+        if leave_one_stimulus_out:
+            print(f'  GLM-derived categories={len(categories)}; step-1 pairs={len(pairs)}; '
+                  f'step-11.2 comparisons={len(comparison_pairs)} '
+                  f'(from {len(source_class_pairs)} source class pairs)')
         if run_dep_models:
             print(f"  run-dependent models ({len(run_dep_models)}): "
                   f"{', '.join(run_dep_models)} -- one matrix per run")
@@ -497,6 +562,18 @@ def build_package(specie, sub_N, models, all_flag, all_stim_wise, dataset, model
 
 
 def _package_readme(m, zip_name):
+    if m.get('leave_one_stimulus_out'):
+        return (
+            f'Beta-omission package: {zip_name}\n'
+            'Runs steps 1 and 11.2 with leave-one-stimulus-out beta maps.\n'
+            f"Reference cohort: {m['participants']}\n"
+            '1. Build one package for every participant in the reference cohort.\n'
+            '2. Upload these packages into one Google Drive folder.\n'
+            '3. Open colab_leave_one_stimulus_out.ipynb and set PACKAGES_DIR and OUT_DIR.\n'
+            '4. Run all cells. Each completed omission is checkpointed to a result ZIP.\n'
+            '5. Merge result ZIPs with tools/unpack_results.py.\n'
+            'Only aligned betas are reused; ordinary step-1 maps are not omission maps.\n'
+        )
     return (
         f"Colab RSA package: {zip_name}\n"
         f"{m['specie']}-sub-{m['sub_N']:02d}  {m['dataset']}/{m['model']}  "
@@ -519,9 +596,14 @@ def _package_readme(m, zip_name):
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Build a Colab GPU package for RSA steps 1/2/4.")
+    ap = argparse.ArgumentParser(description="Build Colab packages for RSA steps 1/2/4 or beta-omission steps 1/11.2.")
     ap.add_argument("specie", choices=["D", "H"], help="'D' (dog) or 'H' (human)")
-    ap.add_argument("sub_N", type=int, help="Subject number, e.g. 40")
+    ap.add_argument("sub_N", type=int, nargs='*', help="Subject number(s), e.g. 1 2 3")
+    ap.add_argument('--all-participants', action='store_true', help='Build packages for every configured participant')
+    ap.add_argument('--leave_one_stimulus_out', action='store_true', help='Package aligned betas and class pairs for omission steps 1 and 11.2')
+    ap.add_argument('--rsa_class', default='all', help='Beta-omission class CSV name (default all)')
+    ap.add_argument('--datafolder', default=None, help='Override the dataset parent directory')
+    ap.add_argument("--loo-group", action="store_true", help="Package both stimulus classes for joint cohort permutations")
     ap.add_argument("--models", nargs="*", default=[],
                     help=("Explicit RSA model names (CSV stems). A name with no "
                           "{name}.csv is looked up as a run-dependent model, "
@@ -537,7 +619,7 @@ def parse_args():
     ap.add_argument("--model", default="basic-block", help="GLM model")
     ap.add_argument("--radius", type=int, default=None, help="Searchlight radius (default 3 D / 4 H)")
     ap.add_argument("--mah_fold", default="stim-wise")
-    ap.add_argument("--rsa_method", default="kendall", choices=["kendall", "pearson", "correlation"])
+    ap.add_argument("--rsa_method", default="kendall", choices=["kendall", "pearson", "spearman", "correlation"])
     ap.add_argument("--reps", type=int, default=100, help="Permutations for step 4")
     ap.add_argument("--mask_type", default="b_GreyMatter2mmB")
     ap.add_argument("--out", default=DEFAULT_OUT, help="Output folder for the .zip")
@@ -560,11 +642,29 @@ def parse_args():
 
 def main():
     a = parse_args()
-    build_package(a.specie, a.sub_N, a.models, a.all_flag, a.all_stim_wise, a.dataset,
-                  a.model, a.radius, a.dis_method, a.mah_fold, a.rsa_method, a.reps,
-                  a.mask_type, a.out, allow_space_mismatch=a.allow_space_mismatch,
-                  no_reuse_step1=a.no_reuse_step1,
-                  reuse_stale_step1=a.reuse_stale_step1)
+    if a.all_participants:
+        if a.sub_N:
+            raise ValueError('Choose subject numbers or --all-participants, not both.')
+        cfg = os.path.join(a.datafolder or get_paths()[0], a.dataset, 'config_files', f'{a.specie}_{a.model}.yaml')
+        with open(cfg) as stream:
+            subjects = yaml.safe_load(stream)['participants']
+    else:
+        subjects = a.sub_N
+    if not subjects or len(set(subjects)) != len(subjects):
+        raise ValueError('Provide unique subject numbers or --all-participants.')
+    if a.loo_group:
+        if a.leave_one_stimulus_out:
+            raise ValueError('Select one package mode.')
+        from loo_package import build
+        build(a, a.datafolder or get_paths()[0], subjects)
+        return
+    for sub in subjects:
+        build_package(a.specie, int(sub), a.models, a.all_flag, a.all_stim_wise, a.dataset,
+                      a.model, a.radius, a.dis_method, a.mah_fold, a.rsa_method, a.reps,
+                      a.mask_type, a.out, allow_space_mismatch=a.allow_space_mismatch,
+                      no_reuse_step1=a.no_reuse_step1, reuse_stale_step1=a.reuse_stale_step1,
+                      leave_one_stimulus_out=a.leave_one_stimulus_out,
+                      rsa_class=a.rsa_class, datafolder=a.datafolder)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,17 @@
 # colab_gpu/ — GPU acceleration for RSA and regression
 
+## Beta omissions: steps 1 and 11.2
+
+[`colab_leave_one_stimulus_out.ipynb`](colab_leave_one_stimulus_out.ipynb) runs
+leave-one-stimulus-out Mahalanobis maps and their cross-participant similarity.
+Build one participant ZIP per cohort member with
+`tools/create_package.py --leave_one_stimulus_out --rsa_class all`, upload the
+packages into one Drive folder, set the notebook paths and run all cells.
+The builder also copies the notebook beside the packages. The workflow uses
+float64 PyTorch, stages one participant at a time, checkpoints every omission
+to Drive and restores results with `tools/unpack_results.py`.
+See [package and notebook instructions](../../docs/colab_stimulus_omission.md).
+
 ## Dog–human RSA: step 16.2
 
 `colab_rsa_cross_species.ipynb` computes the complete dog-by-human searchlight

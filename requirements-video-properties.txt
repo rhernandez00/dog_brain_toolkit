@@ -1,0 +1,8 @@
+numpy>=1.24
+opencv-python>=4.8
+pandas>=2.0
+scipy>=1.10
+statsmodels>=0.14
+matplotlib>=3.7
+numba>=0.58
+nbformat>=5.9

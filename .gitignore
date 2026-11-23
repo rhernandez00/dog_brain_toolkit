@@ -32,3 +32,25 @@ Atlas/Hum/~$AAL_dictionary.xlsx
 /tests
 /tests
 /tests
+
+!/tests/
+!/tests/test_figure_utils.py
+
+# Keep the similarity regression tests available for review.
+!/tests/
+/tests/*
+!/tests/test_stimulus_contribution.py
+!/tests/test_nonfinite_similarity.py
+!/tests/test_unpack_stimulus_contribution.py
+!/tests/test_leave_one_stimulus_out.py
+!/tests/test_colab_stimulus_omission.py
+
+# Keep the Colab beta-omission handoff with its code and notebook.
+!/docs/
+/docs/*
+!/docs/colab_stimulus_omission.md
+!/docs/colab_joint_loo.md
+!/tests/test_joint_loo.py
+/node_modules
+/outputs
+/tests

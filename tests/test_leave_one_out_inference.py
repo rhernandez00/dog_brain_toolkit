@@ -47,7 +47,7 @@ class LeaveOneOutInferenceTests(unittest.TestCase):
             self.save(self.rnd.parent / 'mean' / f'{self.stem}_mean_{i:05d}.nii.gz', data)
         self.save(str(self.real) + '_mean.nii.gz', np.full((3, 3, 3), 20.))
         Path(str(self.real) + '_mean.json').write_text(json.dumps(
-            dict(participants_included=[1, 2], rsa_class='class_all')))
+            dict(participants_included=[1, 2], rsa_class='all', rsa_model=None)))
         mirror = patch('publication_report.mirror_results')
         self.mirror = mirror.start()
         self.addCleanup(mirror.stop)

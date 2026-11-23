@@ -401,6 +401,151 @@ def plot_slice2(project_dict, base_filename, figure_letter, slice_dict, data_map
             save_fig(fig,figure_folder,figure_fname, write_file)
 
 
+def plot_single_slice3(
+    background_map, thresholded_map, z_map, values_map, slice_type, slice_num,
+    axes, cmap_background, cmap_overlay, alpha=1.0, clear_background=False,
+    overlay_norm=None, flip_x=True, z_threshold=3.1, border_color='black',
+    border_width=1.2, show_border=True, transparent_outside=False,
+):
+    """Render one plane using the orientation corrections of plot_single_slice2.
+
+    All maps must be 3D arrays on the background's voxel grid. Nonzero finite
+    thresholded_map voxels mark significant clusters (binary or corrected Z);
+    None omits their border. Values determine colour, including valid zeros.
+    Opacity is clip(Z / z_threshold, 0, 1)**2; nonfinite Z or values are hidden.
+    As in plot_single_slice2, alpha controls anatomy and clear_background hides
+    it. flip_x corrects overlays only, before slicing, and applies to all maps.
+    Returns (background_plane, rgba_plane), before the display transpose.
+    """
+    background_map = np.asarray(background_map)
+    z_map = np.asarray(z_map, dtype=float)
+    values_map = np.asarray(values_map, dtype=float)
+    maps = {'background_map': background_map, 'z_map': z_map,
+            'values_map': values_map}
+    if thresholded_map is not None:
+        thresholded_map = np.asarray(thresholded_map)
+        maps['thresholded_map'] = thresholded_map
+    for name, volume in maps.items():
+        if volume.ndim != 3 or volume.shape != background_map.shape:
+            raise ValueError(f"{name} must be 3D with background shape {background_map.shape}; "
+                             f"got {volume.shape}")
+    if not np.isfinite(z_threshold) or z_threshold <= 0:
+        raise ValueError('z_threshold must be finite and greater than zero')
+    if slice_type not in ('x', 'y', 'z'):
+        raise ValueError("slice_type must be one of {'x', 'y', 'z'}")
+    axis = ('x', 'y', 'z').index(slice_type)
+    if not isinstance(slice_num, (int, np.integer)) or not 0 <= slice_num < background_map.shape[axis]:
+        raise ValueError(f"slice_num must be an integer in [0, {background_map.shape[axis]})")
+
+    # Flip before extracting any plane, including sagittal planes, as in v2.
+    if flip_x:
+        z_map = np.flip(z_map, axis=0)
+        values_map = np.flip(values_map, axis=0)
+        if thresholded_map is not None:
+            thresholded_map = np.flip(thresholded_map, axis=0)
+    background_plane = np.take(background_map, slice_num, axis=axis)
+    values_plane = np.take(values_map, slice_num, axis=axis)
+    z_plane = np.take(z_map, slice_num, axis=axis)
+    if overlay_norm is None:
+        finite_values = values_map[np.isfinite(values_map)]
+        overlay_norm = Normalize(finite_values.min(), finite_values.max()) if finite_values.size else Normalize(0, 1)
+    cmap_overlay = plt.get_cmap(cmap_overlay)
+    rgba_plane = cmap_overlay(overlay_norm(np.ma.masked_invalid(values_plane)))
+    opacity = np.clip(np.where(np.isfinite(z_plane), z_plane, 0) / z_threshold, 0, 1) ** 2
+    rgba_plane[..., 3] = np.where(np.isfinite(values_plane), opacity, 0)
+
+    axes.clear()
+    if not clear_background:
+        anatomy = np.array(background_plane, dtype=float, copy=True)
+        if transparent_outside:
+            anatomy[anatomy == 0] = np.nan
+        background_cmap = copy.copy(plt.get_cmap(cmap_background))
+        background_cmap.set_bad(alpha=0)
+        axes.imshow(anatomy.T, cmap=background_cmap, origin='lower', alpha=alpha,
+                    interpolation='nearest')
+    axes.imshow(rgba_plane.transpose(1, 0, 2), origin='lower', interpolation='nearest')
+    if show_border and thresholded_map is not None:
+        thresholded_plane = np.take(thresholded_map, slice_num, axis=axis).T
+        significant = np.isfinite(thresholded_plane) & (thresholded_plane != 0)
+        if significant.any():
+            # Padding closes contours at image edges, even for a fully filled plane.
+            height, width = significant.shape
+            axes.contour(np.arange(-1, width + 1), np.arange(-1, height + 1),
+                         np.pad(significant.astype(float), 1), levels=[0.5],
+                         colors=border_color, linewidths=border_width)
+            axes.set_xlim(-0.5, width - 0.5)
+            axes.set_ylim(-0.5, height - 0.5)
+    axes.axis('off')
+    return background_plane, rgba_plane
+
+
+def plot_slice3(
+    project_dict, base_filename, figure_letter, slice_dict, thresholded_map,
+    z_map, values_map, alpha=1.0, alphabetic_slides=False, write_file=True,
+    clear_background=False, figure_output_folder=None, background_file=None,
+    overlay_norm=None, *, z_threshold=3.1, border_color='black', border_width=1.2,
+    show_border=True, transparent_outside=False, flip_x=None, slice_labels=None,
+):
+    """Save slices like plot_slice2, with separate significance, Z and value maps.
+
+    thresholded_map supplies cluster borders only; it never masks the colour
+    overlay. z_map sets opacity to clip(Z / z_threshold, 0, 1)**2 (default 3.1).
+    values_map supplies colours using slice_dict['cmap'] and overlay_norm. All
+    maps are 3D arrays on the atlas grid; nonfinite Z/values are transparent.
+    A missing thresholded_map (None) simply omits borders.
+
+    Atlas selection, overlay-only X flip for dogs, plane transposes and naming
+    follow plot_slice2. Humans are not flipped. flip_x overrides this default.
+    clear_background hides anatomy; transparent_outside hides its zero voxels.
+    alpha is anatomy opacity, as in plot_slice2. Optional slice_labels replaces
+    numeric/alphabetic suffixes in x/y/z iteration order, e.g. ['A', 'B', 'C'].
+    project_dict may be None when figure_output_folder is provided.
+    """
+    specie = slice_dict['specie']
+    if specie not in ('D', 'H'):
+        raise ValueError(f'Unsupported species: {specie}')
+    if background_file is not None:
+        background_map = nib.load(background_file).get_fdata()
+    elif specie == 'D':
+        background_map = get_atlas(slice_dict['atlas_type'], 'D', 'Czeibert_brain2mm')
+    else:
+        atlas_file = Path(__file__).resolve().parent / 'Atlas' / 'Hum' / 'MNI152_T1_2mm_brain.nii.gz'
+        background_map = nib.load(atlas_file).get_fdata()
+    figure_folder = (figure_output_folder if figure_output_folder is not None else
+                     get_path('figures', project_dict, local_data=False, figure_letter=figure_letter))
+    planes = [(axis, num) for axis in ('x', 'y', 'z') for num in slice_dict.get(axis, [])]
+    if slice_labels is not None and len(slice_labels) != len(planes):
+        raise ValueError('slice_labels must have one label for every requested slice')
+    if flip_x is None:
+        flip_x = specie != 'H'
+    # One scale across all slices, rather than a different scale per plane.
+    if overlay_norm is None:
+        values = np.asarray(values_map, dtype=float)
+        finite_values = values[np.isfinite(values)]
+        overlay_norm = Normalize(finite_values.min(), finite_values.max()) if finite_values.size else Normalize(0, 1)
+
+    fig, axes = plt.subplots(1, 1, figsize=(8, 5))
+    try:
+        for index, (axis, num) in enumerate(planes):
+            plot_single_slice3(
+                background_map, thresholded_map, z_map, values_map, axis, num, axes,
+                'gray', slice_dict['cmap'], alpha, clear_background, overlay_norm,
+                flip_x, z_threshold, border_color, border_width, show_border,
+                transparent_outside,
+            )
+            if slice_labels is not None:
+                suffix = slice_labels[index]
+            elif alphabetic_slides:
+                suffix = chr(65 + index)
+            else:
+                suffix = f'{axis}_{num}'
+            save_fig(fig, str(figure_folder), f'{base_filename}_{suffix}.png', write_file)
+    finally:
+        # Keep draw-only figures available, matching plot_slice2's interactive use.
+        if write_file:
+            plt.close(fig)
+
+
 def plot_single_slice(atlas,data_map,slice_type,slice_num,axes,zero_transparent,cmap_background,cmap_overlay,alpha,vmin,vmax):
     '''
     Plot a single slice of the data_map on top of the atlas

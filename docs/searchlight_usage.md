@@ -211,9 +211,9 @@ upstream outputs already exist.
 | **11.2** | Participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` | Correlates each participant's pairwise maps with the average of all other participants. |
 | **11.3** | Average leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map` | Averages step 11.2 with equal participant weight; writes mean/std and JSON provenance. |
 | **11.13** | Paired class difference | `calculate_group_level_difference` | Subtracts `--target_class` from `--rsa_class` in each participant's step-11.2 maps, then averages participants equally. Writes mean/std and JSON under `class_<rsa_class>/leave-one-out/[run-wise/]class_<target_class>/mean/`. Requires complete maps for both classes; `--min_percentage_available` controls participant completeness. |
-| **11.15** | Permuted paired class difference | `calculate_group_level_difference_rnd` | Independently samples one available participant permutation per class from `RSA_same_rnd` (step 11.4), subtracts target from source within participant, and averages participants equally. Repeats `--reps_group` times; writes mean/std and sampled-file JSON under the step-11.13 hierarchy in `RSA_same_rnd`, with five-digit group indices. Reuses complete outputs unless `--replace_rnd_files` is set. `--shuffle_participants` randomizes the order of group permutation output indices for concurrent instances, preserving participant order and existing completeness checks. |
-| **11.4** | Permuted participant leave-one-out similarity | `calculate_leave_one_out_cross_participant_similarity` (`rnd=True`) | Shuffles held-out participant category labels for each of `--reps` maps; reference participants stay fixed. |
-| **11.5** | Permuted group leave-one-out similarity | `calculate_mean_leave_one_out_cross_participant_similarity_map_rnd` | Samples step 11.4 maps for `--reps_group` group mean/std maps. |
+| **11.15** | Permuted paired class difference | `calculate_group_level_difference_rnd` | Independently samples one available participant permutation per class from `RSA_same_rnd` (step 11.4 with `--legacy_loo_class_difference_inputs`), subtracts target from source within participant, and averages participants equally. Repeats `--reps_group` times; writes mean/std and sampled-file JSON under the step-11.13 hierarchy in `RSA_same_rnd`, with five-digit group indices. Reuses complete outputs unless `--replace_rnd_files` is set. `--shuffle_participants` randomizes the order of group permutation output indices for concurrent instances, preserving participant order and existing completeness checks. |
+| **11.4** | Joint participant label mappings | `loo_joint.Analysis.mappings` | Save one independent permutation per participant per group draw. |
+| **11.5** | Permuted group leave-one-out similarity | `loo_joint.Analysis.draw` | Rebuild peer references from all relabeled RDMs in the draw and save its mean and population SD. |
 | **11.6** | Leave-one-out voxelwise null | `calculate_leave_one_out_inference` | Population mean/std across step 11.5 group means. |
 | **11.7** | Leave-one-out z-maps | `calculate_leave_one_out_inference` | Z-scores the real 11.3 mean and permuted 11.5 means using 11.6. |
 | **11.8** | Leave-one-out cluster null | `calculate_leave_one_out_inference` | Positive-tail, 26-neighbour cluster sizes from permuted z-maps. |
@@ -286,7 +286,15 @@ it distinct from participant step `11.2`.
 Step **11.31** repeats participant leave-one-out similarity and equal participant
 averaging after excluding each unique `cat1`/`cat2` label in the selected class
 CSV from both target and peer RDMs. It supports Mahalanobis and correlation,
-preserving pooled or per-run input units. See [the Colab notebook and packager instructions](stimulus_contribution_colab.md).
+preserving pooled or per-run input units. Add `--save_participant_maps` to step
+`11.31` to also save each participant's leave-one-out cross-correlation map for
+every omitted label. Sessions are averaged within participant; runs stay
+separate. These NIfTI maps and JSON provenance files are saved under
+`leave-one-out/by_stim/run-XX/H-sub-XX/` (or `pooled/`, with `D-sub-XX` for dogs),
+using the same filenames as the group omission maps. The option defaults to
+off. Rerunning with it fills in missing participant maps even when group maps
+already exist; `--replace_file` overwrites existing outputs.
+See [the Colab notebook and packager instructions](stimulus_contribution_colab.md).
 
 Create a class containing every available comparison from a GLM config with
 `rsa_utils.create_rsa_class(config_path, rsa_class, dis_method, mah_fold='stim-wise')`.
@@ -382,41 +390,12 @@ Run after step 1, using the same class and folding as 11.2/11.3:
     --dataset EmoB --specie H --model basic `
     --steps_to_run 11.4 11.5 --rsa_class all `
     --dis_method mahalanobis --mah_fold run-wise --rsa_method kendall `
-    --reps 100 --reps_group 1000
+    --loo_seed 0 --reps_group 1000
 ```
 
-Step 11.4 permutes category labels of the held-out participant, using one
-label mapping across all voxels of each map. The other participants' RDMs and
-their class-pair selection remain fixed. For a sparse class definition, target
-permutations can require any pair among the labels in the class: those step-1
-pairwise maps must also exist. No RSA model file is required or loaded when
-running only steps 11.2 through 11.5.
+Both steps use the same seed and draw count. Step 11.4 records label permutations in `<group_stem>_joint.json` under the class-specific `RSA_same_rnd` leave-one-out folder. Step 11.5 applies each participant's mapping across all voxels and sessions, then reconstructs each peer mean from that draw. Sparse class definitions require all distance pairs among the selected labels. Each draw produces numbered mean and standard deviation NIfTIs and a JSON receipt in the existing `mean/` directory. Use `--replace_rnd_files` to replace an older generation.
 
-Outputs mirror 11.2/11.3 under `RSA_same_rnd`, keeping the class, task, mask,
-method and folding in the paths:
-
-```text
-results/RSA_same_rnd/<model>/class_<rsa_class>/leave-one-out/[run-wise/]
-  <specie>-sub-NN[_ses-SS_task-TASK_run-RR]/
-    <mask_type>-r-R_<dis_method>_<rsa_method>_0000.nii.gz
-  mean/
-    <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_mean_00000.nii.gz
-    <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_std_00000.nii.gz
-    <mask_type>-<specie>-r-R_<dis_method>_<rsa_method>_task-TASK_mean_00000.json
-```
-
-Participant indices run from zero to `--reps - 1`; group indices run from zero
-to `--reps_group - 1`. As in step 5, each group draw independently samples one
-available permutation per participant/session/run. As in 11.3, it averages
-sessions within runs, runs within participants, then participants equally.
-The std map is the population standard deviation across participant averages;
-the JSON records the sampled files. Participants need at least one permutation
-for every expected unit. Missing participants trigger a warning and obey
-`--min_percentage_available`; at least two complete participants are required.
-Both steps reuse existing outputs; use `--replace_rnd_files` to replace them.
-Both steps create permutation file numbers in randomized order and recheck
-outputs before calculating and before saving, so concurrent instances can skip
-work completed by another instance.
+For packaging, the Windows launcher, and local inference commands, see [the Colab workflow](colab_joint_loo.md). For the separate class-difference step 11.15, generate its legacy participant pools with `--steps_to_run 11.4 --legacy_loo_class_difference_inputs --reps 100` for each class.
 
 ### Regression inference
 
@@ -597,6 +576,105 @@ respective replacement flag when source maps have been changed in place.
 | `--dis_method` | `mahalanobis` | Pairwise similarity method (step 1). Also `pearson`, `correlation`, `euclidean`, `kendall`. |
 | `--rsa_method` | `kendall` | Method comparing similarity maps to the model (step 2). |
 | `--mah_fold` | `stim-wise` | Mahalanobis folding: `stim-wise`, `stim-wise-multiple-folds`, `stim-wise-all-runs`, or `run-wise`. `stim-wise-multiple-folds` uses EmoC `stim_file` labels and repeated metadata partitions, producing direct-subject maps for exact repeatable stimulus pairs. EmoC-only `stim-wise-all-runs` computes each run independently, collapses exemplars such as `DogA1`--`DogA4` to `DogA`, and uses their exemplar IDs as within-run cross-validation folds. Steps 2/4 retain the legacy direct model-output path for `stim-wise`; other folds use a fold-specific result directory (with run folders for `stim-wise-all-runs`) before steps 3/5 aggregate to the usual group paths. |
+
+### Leave-one-stimulus-out dissimilarity maps (step 1)
+
+Step **1** also supports **leave-one-stimulus-out dissimilarity maps**:
+
+```powershell
+& C:\ProgramData\anaconda3\python.exe searchlight.py `
+    --dataset EmoC --model basic_block --specie H `
+    --steps_to_run 1 --dis_method mahalanobis --mah_fold stim-wise `
+    --radius 4 --rsa_class all --leave_one_stimulus_out
+```
+
+For each selected participant, this repeats step 1 after excluding exactly
+one beta map from one session/run. The omitted stimulus is its exact GLM
+condition key, such as `DogA1`; other exemplars and that condition's betas
+from other runs remain available. Category means and noise covariance are
+recomputed from the retained observations. The original GLM indices are
+preserved when loading legacy FEAT `pe` files.
+
+For Mahalanobis `stim-wise`, step 1 derives every category pair from the GLM
+`stim_types`, as in ordinary step 1. `--rsa_class all` names the output directory;
+the class CSV selects the comparisons in step 11.2. The default output is:
+
+```text
+<datafolder>/<dataset>/results/RSA_same/<model>/class_<rsa_class>/
+  leave-one-out/by_stim/<specie>-sub-XX/run-N/<omitted_beta_condition>/
+    r-<radius>_<dis_method>_<cat1>_<cat2>.nii.gz
+```
+
+For example, omitting run-1 `DogA1` produces a map such as
+`EmoC/results/RSA_same/basic_block/class_all/leave-one-out/by_stim/H-sub-01/run-1/DogA1/r-4_mahalanobis_DogA_DogF.nii.gz`.
+If a run number occurs in multiple sessions, a `ses-XX` directory precedes
+`run-N`. Nondefault Mahalanobis folds add their fold name after the participant
+directory to keep results separate. `stim-wise-all-runs` and non-Mahalanobis
+methods write each analyzed run's maps inside
+`ses-XX_task-<task>_run-XX` subdirectories within the omission directory.
+
+Distances that lose enough observations to become undefined are saved as
+NaN. Crossnobis uses only partitions containing both compared conditions;
+at least two such partitions must remain. Remaining observations still
+contribute to the pooled covariance estimate. Ordinary step-1 calculations
+retain their existing strict fold-completeness checks.
+
+Existing maps are skipped; missing maps are filled in on a rerun.
+`--replace_file` recomputes them. The option supports steps **1** and **11.2**,
+individually or together; other steps read ordinary maps.
+`--participants_forced` and `--shuffle_participants` work as in
+ordinary step 1. Input beta files and normal step-1 outputs are preserved.
+
+### Cross-participant similarity of beta-omission maps (step 11.2)
+
+Use the same `--leave_one_stimulus_out` flag to compare the dissimilarity maps
+generated by step 1:
+
+```powershell
+& C:\ProgramData\anaconda3\python.exe C:\github\dog_brain_toolkit\searchlight.py `
+    --dataset EmoC --model basic-block --specie D --steps_to_run 11.2 `
+    --radius 4 --dis_method mahalanobis --mah_fold stim-wise `
+    --rsa_class all --rsa_method kendall --mask_type b_GreyMatter2mmB `
+    --leave_one_stimulus_out
+```
+
+The model must match the name used for step 1, including hyphens/underscores.
+For each omitted beta condition and omitted run, step 11.2 loads each
+participant's corresponding omission maps. It correlates each target RDM with
+the mean RDM of **the other participants with the same omission**. All class
+CSV comparisons remain in the RDM: beta removal already happened in step 1.
+With Mahalanobis `stim-wise`, beta-level CSV labels are first resolved to their
+GLM categories. Within-category pairs are discarded and duplicate category pairs
+are counted once; already-collapsed category CSVs are accepted unchanged.
+It averages the resulting correlations within participants and then equally
+across participants, writing one species map per omitted beta/run. For example:
+
+```text
+P:\userdata\raulh87\data\EmoC\results\RSA_same\basic-block\class_all\leave-one-out\by_stim\run-01\b_GreyMatter2mmB-D-r-4_kendall_DogA1.nii.gz
+```
+
+Here `run-01` identifies the run **from which `DogA1` was removed**, even when
+the Mahalanobis RDM pools several runs. Repeated omission sessions are averaged
+within each reference participant. Each target session is correlated separately
+and the resulting correlations are averaged within that target participant.
+For per-run input methods, reference comparisons stay within the same analyzed
+run number, and analyzed runs are averaged within participants before the group
+mean. Nondefault Mahalanobis folds add a fold directory below `by_stim`;
+non-Mahalanobis methods add their method name there.
+
+NaN/Inf values are ignored in means and correlations. At least two finite,
+nonconstant pairs are needed for a correlation; undefined values remain NaN
+inside the mask, with zero outside. Missing pair files and incompatible grids
+raise errors. Participants without that omitted beta/run are excluded with a
+warning; at least two participants and `--min_percentage_available` of the full
+cohort must remain. `--participants_forced` selects the target participants
+averaged into the output while retaining the full cohort as references.
+
+Each NIfTI has a JSON sidecar recording the inputs, included participants,
+omission and analysis parameters. Matching existing outputs are reused;
+`--replace_file` recomputes them. Changes to cohort selection or comparison
+parameters trigger recomputation. This mode writes the requested group map
+directly in step 11.2 and does not require a separate step 11.3 invocation.
 
 ### Searchlight / masking
 

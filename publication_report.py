@@ -65,7 +65,8 @@ def _region(value):
 
 def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
                  report_title=None, min_dist_mm=8.0, max_peaks_per_cluster=3,
-                 atlas_name=None, regression_model=None, group_metadata_path=None):
+                 atlas_name=None, regression_model=None, group_metadata_path=None,
+                 rsa_class=None, target_class=None):
     """Validate the CSV against its image and collect only supported statements."""
     import nibabel as nib
     import numpy as np
@@ -140,7 +141,15 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
                           ("corrected_map", corrected_map.name)]:
         if key in correction and correction[key] != expected:
             raise ValueError(f"Correction metadata disagrees with image: {key}")
-    for key, expected in [("dataset", dataset), ("specie", specie), ("rsa_model", rsa_model)]:
+    identity = [("dataset", dataset), ("specie", specie)]
+    if rsa_class is not None:
+        # Class-based LOO receipts record the class separately from rsa_model.
+        # The report's rsa_model remains the display label/contrast for exports.
+        identity += [("rsa_model", None), ("rsa_class", rsa_class),
+                     ("target_class", target_class)]
+    else:
+        identity.append(("rsa_model", rsa_model))
+    for key, expected in identity:
         if key in group_metadata and group_metadata[key] != expected:
             raise ValueError(f"Group metadata disagrees with report: {key}")
     if regression_model is not None:
@@ -274,6 +283,7 @@ def build_report(csv_path, corrected_map, *, dataset, specie, rsa_model,
         caption = (f"Regression searchlight RSA for {title} in {species_label} ({dataset}), "
                    f"controlling for the models specified by {regression_model}.")
     return dict(schema_version=1, dataset=dataset, specie=specie, rsa_model=rsa_model,
+                rsa_class=rsa_class, target_class=target_class,
                 regression_model=regression_model, title=title, caption=caption,
                 results_text=text, notes=notes, warnings=warnings, clusters=clusters,
                 n_clusters=int(n_clusters), n_voxels=n_voxels, n_subjects=n_subjects,

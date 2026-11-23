@@ -18,7 +18,7 @@ STEP_LABELS = {
     10: "Create tables",
     11.2: "Participant leave-one-out similarity",
     11.3: "Group leave-one-out similarity",
-    11.4: "Permuted participant leave-one-out similarity",
+    11.4: "Generate joint participant label mappings",
     11.5: "Permuted group leave-one-out similarity",
     15: "Multiple regression RSA",
 }

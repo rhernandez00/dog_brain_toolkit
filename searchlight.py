@@ -137,8 +137,8 @@ Steps possible:
     makes the human data satisfy the one-voxel-grid invariant. Dogs: copies the
     pe maps, which are already in Nitzsche space. Needs FSL, so humans are
     Linux-only. Run it once per dataset; afterwards the .feat can be deleted.
-1: Compute pairwise similarity maps between beta maps by participant
-2: Compute similarity between pairwise similarity maps and a model by participant
+1: Compute pairwise dissimilarity maps between beta maps by participant
+2: Compute similarity between pairwise dissimilarity maps and a model by participant
 3: Calculate group model similarity map
 4: Calculate rnd by repeating step 2 with permuted model
 4.5: Calculate the permutation distribution of each participant (and of each run, when the
@@ -169,10 +169,8 @@ std across maps. Save as nifti.
 11.2 Calculate By-participant leave-one-out-cross-participant similarity: calculate the similarity maps of each participant with all other participants.
 11.3 Calculate average cross-participant similarity map: Average the similarity maps obtained in step 11.2 across participants to get an overall representation.
 11.31 Repeat participant leave-one-out similarity and group averaging after removing each individual video; save separate maps per run under leave-one-out/by_stim.
-11.4 Repeat 11.2 with --reps category-label permutations of the held-out participant;
-    keep the other participants' reference RDMs fixed. Save under RSA_same_rnd.
-11.5 Make --reps_group group mean/std maps by sampling the step-11.4 permutations,
-    with the same equal participant weighting as 11.3. Save under RSA_same_rnd/.../mean.
+11.4 Save one label permutation per participant per group draw (--reps_group, --loo_seed).
+11.5 Rebuild peer references inside each draw and write the group mean/std.
 11.6 Estimate voxelwise null mean/std across the step-11.5 group means.
 11.7 Convert permuted and real (11.3) group means to z-maps using 11.6.
 11.8 Estimate the cluster-size null distribution from the permuted z-maps.
@@ -253,13 +251,14 @@ Input arguments:
 --min_dist_mm: Minimum distance between peaks in mm (default: 8.0)
 --atlas_type: Type of atlas to use in case of dogs (default: 'Nitzsche')
 --replace_file: Overwrite existing output files (default: False)
+--save_participant_maps: Step 11.31 only, save participant maps for each omitted stimulus (default: False)
 --replace_rnd_files: Overwrite existing rnd output files (default: False)
 --shuffle_participants: shuffle participants order in permutations (default: False)
 --keep_permutations: step 7.6 only, keep the step-4 permutation maps instead of deleting
     them once the participant has its z map (default: False)
 --skip_if_done: from step 2, checks if the result of step 8 exist (cluster_sizes_dict with a log that indicates that it was calculated using the same parameters and the 100% of the participants where available)
 
---participants_forced: List of participants to include (default: []); steps 11.2/11.4 select output participants only, retaining the full cohort as references
+--participants_forced: List of participants to include (default: []); steps 11.2/11.5 select output participants only, retaining the full cohort as references
 --verbose: Verbose output (default: False)
 --wait_time: Wait time between steps in seconds (default: 300)
 --overwrite_movement: Overwrite existing movement files (default: False)
@@ -318,6 +317,10 @@ def parse_arguments():
                         help='GLM model to use')
     parser.add_argument('--dis_method', type=str, default='mahalanobis',
                         help='Method for pairwise similarity calculation')
+    parser.add_argument('--leave_one_stimulus_out', action='store_true',
+                        help='Steps 1/11.2: compute or compare maps omitting one beta map from one run at a time')
+    parser.add_argument('--save_participant_maps', action='store_true',
+                        help='Step 11.31: save participant leave-one-out maps for each omitted stimulus (sessions averaged, runs separate)')
     parser.add_argument('--rsa_model', type=str, default=None, required=False,
                         help='RSA model to use')
     parser.add_argument('--model_specie', type=str, choices=['D', 'H'], default=None,
@@ -361,6 +364,9 @@ def parse_arguments():
                         help='Optional random seed for --shuffle_rois.')
     parser.add_argument('--reps', type=int, default=100,
                         help='Number of repetitions for permutations in individual run')
+    parser.add_argument('--legacy_loo_class_difference_inputs', action='store_true',
+                        help='Step 11.4: generate the participant-map pools required by 11.15')
+    parser.add_argument('--loo_seed', type=int, default=0, help='Seed for joint LOO label permutations')
     parser.add_argument('--reps_group', type=int, default=1000,
                         help='Number of repetitions for permutations in group analysis')
     parser.add_argument('--min_percentage_available', type=float, default=1.0,
@@ -393,7 +399,7 @@ def parse_arguments():
                               'the other reader of those maps, so pass this when step 5 has '
                               'not run yet for this model.'))
     parser.add_argument('--participants', '--participants_forced', dest='participants_forced', type=int, nargs='+', default=[],
-                        help='List of participants to include; for steps 11.2/11.4, select output '
+                        help='List of participants to include; for steps 11.2/11.5, select output '
                              'participants while retaining the full cohort as references')
     parser.add_argument('--verbose', action='store_true',
                         help='Verbose output')
@@ -423,6 +429,8 @@ def parse_arguments():
 def main():
     args = parse_arguments()
     steps_to_run = args.steps_to_run
+    if args.legacy_loo_class_difference_inputs and steps_to_run != [11.4]:
+        raise ValueError('Use --legacy_loo_class_difference_inputs with step 11.4 alone.')
     cross_species_only = bool(steps_to_run) and all(step in (16.2, 16.3, 16.4) for step in steps_to_run)
     model = args.model
     # mask_path = args.mask_path
@@ -436,6 +444,12 @@ def main():
         raise ValueError('--model_specie requires --rsa_model to name the model prefix.')
     rsa_method = args.rsa_method
     rsa_class = args.rsa_class
+    leave_one_stimulus_out = args.leave_one_stimulus_out
+    if leave_one_stimulus_out:
+        if not steps_to_run or any(step not in (1, 11.2) for step in steps_to_run):
+            raise ValueError('--leave_one_stimulus_out requires --steps_to_run 1 and/or 11.2; other steps read the ordinary maps.')
+        if not rsa_class:
+            raise ValueError('--leave_one_stimulus_out requires --rsa_class for its output directory and comparison pairs.')
     target_class = args.target_class
     difference_steps = (11.13, 11.15, 11.16, 11.17, 11.18, 11.19, '11.20')
     if any(step in difference_steps for step in steps_to_run) and (not rsa_class or not target_class):
@@ -788,8 +802,8 @@ def main():
                 )
             _write_marker(job_marker_dir, 0.5)
 
-        if step == 1: # compute pairwise similarity maps between beta maps by participant
-            print("### Step 1: Computing pairwise similarity maps ###")
+        if step == 1: # compute pairwise dissimilarity maps between beta maps by participant
+            print("### Step 1: Computing pairwise dissimilarity maps ###")
 
             # if mask is not b_greyMatter2mm or b_greyMatter2mmB, turn it into b_greyMatter2mmB
             if mask_type not in ['b_GreyMatter2mm', 'b_GreyMatter2mmB']:
@@ -804,6 +818,18 @@ def main():
                 # print(f"Shuffled participants order: {participants}")
             for sub_N in participants:
                 session_and_run_dict = rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
+                if leave_one_stimulus_out:
+                    from leave_one_stimulus_out import calculate_leave_one_stimulus_out_maps
+                    calculate_leave_one_stimulus_out_maps(
+                        datafolder=datafolder, dataset=dataset, sub_N=sub_N,
+                        session_and_run_dict=session_and_run_dict, specie=specie,
+                        model=model, stim_types=stim_types, mask=mask2, task=task,
+                        radius=radius, dis_method=dis_method, rsa_class=rsa_class,
+                        mah_fold=mah_fold, model_dict=model_dict,
+                        replace_file=replace_file, verbose=verbose,
+                        shuffle_runs=shuffle_runs,
+                    )
+                    continue
                 if mah_fold == 'run-wise-multiple-runs': # for each run, run
                     #once calculate_pairwise_similarity_maps2
                     print("Calculating pairwise similarity maps with run-wise folding for multiple runs...")
@@ -841,12 +867,10 @@ def main():
                 print(f"Finished sub-{sub_N:02d}...")
             print("#### Done computing pairwise similarity maps ####")
             _write_marker(job_marker_dir, 1)
-        if step == 'mask1': # Compute pairwise similarity between voxels of a roi:
-            print("### Step mask1: Computing pairwise similarity between voxels of a roi ###")
 
 
         if step == 2: # Compute similarity between pairwise similarity maps and a model by participant
-            print("### Step 2: Computing similarity between pairwise similarity maps and a model ###")
+            print("### Step 2: Computing similarity between pairwise dissimilarity maps and a model ###")
             if args.shuffle_participants:
                 np.random.shuffle(participants)
                 print(f"Shuffled participants order: {participants}")
@@ -1051,8 +1075,23 @@ def main():
             # if shuffle_participants is true, shuffle participants order
             
             rsa_utils.calculate_mean_model_cross_participant_similarity_map(datafolder, dataset, session_and_run_all_dict, specie=specie, model=model,task=task, radius=radius, rsa_model=rsa_model, rsa_class=rsa_class,rsa_method=rsa_method,dis_method=dis_method, replace_file=True, verbose=verbose, min_percentage_available=min_percentage_available, mask_type=mask_type)
-        if step in (11.2, 11.4):
-            print(f"### Step {step}: Calculating {'permuted ' if step == 11.4 else ''}leave-one-out cross-participant similarity ###")
+        if step in (11.4, 11.5) and not args.legacy_loo_class_difference_inputs:
+            from loo_joint import Analysis
+            cohort = sorted(loo_participants)
+            sessions = {s: rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, s)
+                        for s in cohort}
+            analysis = Analysis(datafolder, dataset, sessions, cohort, specie, mask, model, task,
+                                radius, rsa_class, dis_method, rsa_method, mah_fold, mask_type)
+            mappings = analysis.mappings(reps_group, args.loo_seed, prepare=step == 11.4,
+                                         replace=replace_rnd_files)
+            if step == 11.5:
+                analysis.targets = sorted(participants)
+                for index, mapping in enumerate(mappings):
+                    analysis.draw(index, mapping, replace=replace_rnd_files)
+            _write_marker(job_marker_dir, step)
+
+        if step == 11.2 or (step == 11.4 and args.legacy_loo_class_difference_inputs):
+            print(f"### Step {step}: Computing participant leave-one-out similarity maps ###")
             analysis_participants = list(loo_participants)
             if args.shuffle_participants:
                 np.random.shuffle(analysis_participants)
@@ -1070,29 +1109,28 @@ def main():
                 verbose=verbose, mah_fold=mah_fold, mask_type=mask_type,
                 replace_file=replace_file,
                 target_participants=participants_forced or None,
-                **(dict(rnd=True, reps=reps, replace_rnd_files=replace_rnd_files)
-                   if step == 11.4 else {}))
+                **(dict(rnd=True, reps=reps, replace_rnd_files=replace_rnd_files) if step == 11.4 else {}),
+                **(dict(leave_one_stimulus_out=True, stim_types=stim_types,
+                        model_dict=model_dict,
+                        min_percentage_available=min_percentage_available)
+                   if leave_one_stimulus_out else {}))
             print("### Done computing leave-one-out cross-participant similarity ###")
             _write_marker(job_marker_dir, step)
 
-        if step in (11.3, 11.5):
-            print(f"### Step {step}: Averaging {'permuted ' if step == 11.5 else ''}leave-one-out cross-participant similarity ###")
+        if step == 11.3:
+            print("### Step 11.3: Averaging leave-one-out cross-participant similarity ###")
             session_and_run_all_dict = {
                 sub_N: rsa_utils.get_session_and_run_dict(datafolder, dataset, specie, sub_N)
                 for sub_N in participants
             }
-            average = (rsa_utils.calculate_mean_leave_one_out_cross_participant_similarity_map_rnd
-                       if step == 11.5 else rsa_utils.calculate_mean_leave_one_out_cross_participant_similarity_map)
-            options = (dict(reps=reps, reps_group=reps_group, replace_rnd_files=replace_rnd_files)
-                       if step == 11.5 else dict(replace_file=replace_file))
-            average(
+            rsa_utils.calculate_mean_leave_one_out_cross_participant_similarity_map(
                 datafolder=datafolder, dataset=dataset,
                 session_and_run_all_dict=session_and_run_all_dict,
                 participants=participants, specie=specie, mask=mask, model=model,
                 task=task, radius=radius, rsa_class=rsa_class,
                 dis_method=dis_method, rsa_method=rsa_method,
                 verbose=verbose, mah_fold=mah_fold, mask_type=mask_type,
-                **options,
+                replace_file=replace_file,
                 min_percentage_available=min_percentage_available)
             print("### Done averaging leave-one-out cross-participant similarity ###")
             _write_marker(job_marker_dir, step)
@@ -1107,7 +1145,8 @@ def main():
                 task=task, radius=radius, rsa_class=rsa_class,
                 dis_method=dis_method, rsa_method=rsa_method,
                 verbose=verbose, mah_fold=mah_fold, mask_type=mask_type,
-                replace_file=replace_file, min_percentage_available=min_percentage_available)
+                replace_file=replace_file, min_percentage_available=min_percentage_available,
+                save_participant_maps=args.save_participant_maps)
             if result:
                 _write_marker(job_marker_dir, step)
         if step == 11.15:
@@ -1143,6 +1182,12 @@ def main():
                 _write_marker(job_marker_dir, step)
         if step in (11.6, 11.7, 11.8, 11.9, '11.10', 11.16, 11.17, 11.18, 11.19, '11.20'):
             print(f"### Step {step}: Leave-one-out inference ###")
+            if step == 11.6:
+                from loo_joint import validate_ensemble
+                group_args = (datafolder, dataset, specie, model, task, radius, rsa_class,
+                              dis_method, rsa_method, mah_fold, mask_type)
+                validate_ensemble(rsa_utils._loo_group_path(*group_args, rnd=True), reps_group,
+                                  observed=rsa_utils._loo_group_path(*group_args))
             result = rsa_utils.calculate_leave_one_out_inference(
                 step=str(step), datafolder=datafolder, dataset=dataset,
                 target_class=target_class if step in difference_steps else None,

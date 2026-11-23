@@ -19,22 +19,28 @@ everything written in the meantime.
 
 Usage
 -----
+    # selected models, each with its own manifest distance method and fold
+    python tools/bulk_check.py --dataset EmoC --specie D --radius 4 --steps 5
+    # defaults to EmoC/results/models_to_include.csv; override with --models_csv
+
     & "C:\\ProgramData\\anaconda3\\python.exe" tools\\bulk_check.py ^
-        --dataset EmoC --specie D --dis_method correlation --steps 5,7
+        --dataset EmoC --specie D --all_models --dis_method correlation --steps 5,7
 
     # every step of every mahalanobis model, both species
-    ... --dis_method mahalanobis --steps 0-10 --specie D
-    ... --dis_method mahalanobis --steps 0-10 --specie H
+    ... --all_models --dis_method mahalanobis --steps 0-10 --specie D
+    ... --all_models --dis_method mahalanobis --steps 0-10 --specie H
 
     # step 15 (multiple regression RSA) — needs the regression model
-    ... --dis_method correlation --specie H --steps 15 --regression_model visual_3
+    ... --all_models --dis_method correlation --specie H --steps 15 --regression_model visual_3
 
-Models come from the central ``rsa_models/_models.csv`` manifest (via
-``models_manifest.py``), filtered by ``--dis_method`` — and by ``--mah_fold`` too
-if you pass it, which only narrows anything for mahalanobis — then expanded over
-each row's ``groupings_possible``. That is the same selection the dashboard's
-rsa_model dropdown makes, so the two always agree on what exists.
-``--rsa_model`` restricts the run to one (repeatable, or comma-separated).
+Models default to the headerless list in ``EmoC/results/models_to_include.csv``.
+Use ``--models_csv PATH`` for another CSV (one column, optionally headed
+``model`` or ``rsa_model``), ``--rsa_model`` for explicit names (repeatable or
+comma-separated), or ``--all_models`` for the entire manifest. Each model's
+distance method and fold come from the dataset's central ``rsa_models/_models.csv``
+via ``models_manifest.py``. Optional ``--dis_method`` and ``--mah_fold`` restrict
+manifest matches; unknown or ambiguous selected names stop before probing.
+For the old whole-method battery, use ``--all_models --dis_method METHOD``.
 
 Matching the dashboard's parameter panel
 ----------------------------------------
@@ -74,7 +80,7 @@ for the decision even under ``--skip_checked``, so the delete never rests on a
 stale cache entry. Preview first with ``--delete_dry_run``, which counts the
 files and the bytes and removes nothing:
 
-    ... --dis_method mahalanobis --steps 4,5 --delete_step4 --delete_dry_run
+    ... --all_models --dis_method mahalanobis --steps 4,5 --delete_step4 --delete_dry_run
 
 Each purged participant folder keeps a ``step4_purged.json`` receipt, and
 ``pipeline_console.probe_step4`` reads it: no maps *and* a receipt reports DONE
@@ -84,9 +90,12 @@ happily offer to queue step 4 again.
 """
 
 import argparse
+import csv
 import json
 import os
+import shutil
 import sys
+import textwrap
 from datetime import datetime
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -98,6 +107,61 @@ for _p in (_REPO_ROOT, _THIS_DIR):
 import pipeline_console as pc          # noqa: E402  the probe logic
 import pipeline_dashboard as dash      # noqa: E402  importing does NOT start a server
 import models_manifest as mm           # noqa: E402  central _models.csv reader
+
+
+def read_model_csv(path):
+    """Read a one-column list (header optional), or a model/rsa_model column."""
+    with open(path, newline='', encoding='utf-8-sig') as stream:
+        rows = [row for row in csv.reader(stream) if any(c.strip() for c in row)]
+    if not rows:
+        raise ValueError(f'empty model list: {path}')
+    header = [c.strip().lower() for c in rows[0]]
+    columns = [i for i, c in enumerate(header) if c in ('model', 'rsa_model')]
+    column = columns[0] if columns else 0
+    if not columns and any(len(row) != 1 for row in rows):
+        raise ValueError('multi-column model CSV needs a model or rsa_model header')
+    names = []
+    for row in rows[1:] if columns else rows:
+        name = row[column].strip() if column < len(row) else ''
+        if name.lower().endswith('.csv'):
+            name = name[:-4]
+        if name and name not in names:
+            names.append(name)
+    if not names:
+        raise ValueError(f'no models in {path}')
+    return names
+
+
+def resolve_models(datafolder, dataset, names=None, dis_method=None, mah_fold=None):
+    """Resolve concrete models to (name, method, fold), using only the manifest.
+
+    Reject unknown or ambiguous names before any probes/cache writes/deletions.
+    Explicit method/fold options filter manifest entries, never override them.
+    """
+    dirs = mm.rsa_models_dirs(datafolder, dataset)
+    if not mm.manifest_path(dirs):
+        raise ValueError(f'no rsa_models/_models.csv found for {dataset}')
+    index = {}
+    for row in mm.load_rows(dirs):
+        method, fold = row['dis_method'], row['mah_fold'] or 'stim-wise'
+        if dis_method and method != mm.normalize_dis_method(dis_method):
+            continue
+        if mah_fold and mm.uses_fold(method) and fold != mah_fold:
+            continue
+        for grouping in row['groupings']:
+            name = mm.concrete_model_name(dirs, row['model'], grouping)
+            entry = (name, method, fold)
+            if entry not in index.setdefault(name, []):
+                index[name].append(entry)
+    out = []
+    for name in dict.fromkeys(names if names is not None else index):
+        entries = index.get(name, [])
+        if not entries:
+            raise ValueError(f'model {name!r} not in _models.csv with the requested filters')
+        if len(entries) > 1:
+            raise ValueError(f'ambiguous model {name!r}: {entries}; select --dis_method/--mah_fold')
+        out.append(entries[0])
+    return out
 
 
 def parse_steps(spec):
@@ -164,37 +228,60 @@ _MARK = {
 }
 
 
-def print_summary_table(models, steps, verdicts):
-    """Model x step matrix of verdicts, printed at the end of a run.
+def print_summary_table(models, steps, verdicts, details=None):
+    """Print one readable terminal table per step, without probing again.
 
-    ``verdicts`` is ``{rsa_model: {step: verdict}}``, built up alongside the
-    per-step prints above so this costs no extra probing — it just lays out
-    results already computed."""
-    name_w = min(max((len(m) for m, _ in models), default=5), 42)
-    col_w = 4
-    print(pc.bold("Summary"))
-    header = f"{'model':<{name_w}}" + ''.join(f"{s:>{col_w}}" for s in steps)
-    print(header)
-    print('-' * len(header))
-    counts = {v: 0 for v in _MARK}
-    for rsa_model, _ in models:
-        row = verdicts.get(rsa_model, {})
-        name = rsa_model if len(rsa_model) <= name_w else rsa_model[:name_w - 1] + '…'
-        cells = []
-        for step in steps:
-            v = row.get(step)
-            mark, style = _MARK.get(v, ('.', pc.grey))
-            if v in counts:
-                counts[v] += 1
-            cells.append(style(f"{mark:>{col_w}}"))
-        print(f"{name:<{name_w}}" + ''.join(cells))
-    print('-' * len(header))
-    legend = '  '.join(style(f"{mark}={verdict}") for verdict, (mark, style) in _MARK.items())
-    print(legend)
-    totals = '  '.join(style(f"{verdict}:{counts[verdict]}")
-                        for verdict, (mark, style) in _MARK.items() if counts[verdict])
-    if totals:
-        print(totals)
+    Keep full model names and explanations by wrapping cells to terminal width.
+    Full status words and ASCII borders also work in redirected, uncoloured logs.
+    """
+    details = details or {}
+    width = max(80, shutil.get_terminal_size((120, 24)).columns)
+    model_w = min(max((len(m) for m, _, _ in models), default=5), max(18, width // 3))
+    method_w = max(6, max((len(d) for _, d, _ in models), default=6))
+    widths = [max(5, model_w), min(method_w, 18), 11]
+    widths.append(max(16, width - sum(widths) - 13))
+    border = '+' + '+'.join('-' * (w + 2) for w in widths) + '+'
+
+    def print_row(cells, style=None):
+        wrapped = [textwrap.wrap(str(c), w, break_on_hyphens=False) or ['']
+                   for c, w in zip(cells, widths)]
+        for i in range(max(map(len, wrapped))):
+            line = [f"{parts[i] if i < len(parts) else '':<{w}}"
+                    for parts, w in zip(wrapped, widths)]
+            if style:
+                line[2] = style(line[2])
+            print('| ' + ' | '.join(line) + ' |')
+
+    print(pc.bold('RESULTS'))
+    for step in steps:
+        print(pc.bold(f"Step {step}: {pc.STEP_LABELS.get(step, '')}"))
+        print(border)
+        print_row(['Model', 'Method', 'Status', 'Files / details'])
+        print(border)
+        counts = {v: 0 for v in _MARK}
+        unchecked = 0
+        for model, method, _ in models:
+            verdict = verdicts.get(model, {}).get(step)
+            result = details.get(model, {}).get(step, {})
+            if verdict in counts:
+                counts[verdict] += 1
+            else:
+                unchecked += 1
+            summary = result.get('summary', '')
+            if result.get('source'):
+                summary += f" [{result['source']}]"
+            style = _MARK.get(verdict, ('', pc.grey))[1]
+            print_row([model, method, verdict or 'NOT CHECKED', summary], style)
+        print(border)
+        totals = [f"{counts[pc.DONE]}/{len(models)} complete"]
+        totals.extend(f"{counts[v]} {v.lower()}" for v in counts
+                      if v != pc.DONE and counts[v])
+        if unchecked:
+            totals.append(f'{unchecked} not checked')
+        print('  |  '.join(totals))
+        print()
+    print('DONE = all expected outputs present; PARTIAL = some present;')
+    print('MISSING = no outputs found; UNKNOWN = could not determine; N/A = not applicable.')
     print()
 
 
@@ -318,7 +405,13 @@ def main():
     p.add_argument('--dataset', default=D['dataset'])
     p.add_argument('--model', default=D['model'], help='GLM model (default: %(default)s)')
     p.add_argument('--specie', default=D['specie'], choices=['D', 'H'])
-    p.add_argument('--dis_method', default=D['dis_method'])
+    p.add_argument('--dis_method', help='Optional manifest distance-method filter; '
+                   'default: resolve each model\'s own method from _models.csv')
+    p.add_argument('--models_csv', default=os.path.join(
+        dash.DATAFOLDER, 'EmoC', 'results', 'models_to_include.csv'),
+        help='Model selection CSV (header optional; default: %(default)s)')
+    p.add_argument('--all_models', action='store_true',
+                   help='Use all manifest models instead of --models_csv')
     p.add_argument('--mah_fold',
                    help='Restrict to one Mahalanobis fold (mahalanobis only; '
                         'default: every fold of the method). Also the fold written '
@@ -370,10 +463,10 @@ def main():
         p.error('--steps includes 15, which needs --regression_model '
                 '(e.g. --regression_model visual_3)')
 
-    def make_params(rsa_model, mah_fold, regression_model=None):
+    def make_params(rsa_model, dis_method, mah_fold, regression_model=None):
         return dash.params_from_inputs(
             dataset=args.dataset, model=args.model, rsa_model=rsa_model,
-            specie=args.specie, dis_method=args.dis_method, mah_fold=mah_fold,
+            specie=args.specie, dis_method=dis_method, mah_fold=mah_fold,
             rsa_method=args.rsa_method, radius=args.radius,
             z_threshold=args.z_threshold, mask_type=args.mask_type,
             reps=args.reps, reps_group=args.reps_group,
@@ -381,24 +474,25 @@ def main():
         )
 
     only = parse_models(args.rsa_model)
-    registry = registry_models(dash.DATAFOLDER, args.dataset, args.dis_method,
-                               args.mah_fold)
-    if only:
-        # keep the manifest's fold for a named model when it knows it
-        folds = dict(registry)
-        models = [(m, args.mah_fold or folds.get(m, D['mah_fold'])) for m in only]
-    else:
-        models = registry
+    try:
+        names = only or (None if args.all_models else read_model_csv(args.models_csv))
+        models = resolve_models(dash.DATAFOLDER, args.dataset, names,
+                                args.dis_method, args.mah_fold)
+    except (OSError, ValueError) as exc:
+        p.error(str(exc))
     if not models:
         p.error(f'no model with dis_method={args.dis_method!r}'
                 + (f' / mah_fold={args.mah_fold!r}' if args.mah_fold else '')
                 + f' in the _models.csv of {args.dataset} — nothing to check')
 
-    scope = args.dis_method + (f' / {args.mah_fold}' if args.mah_fold else '')
+    scope = (args.dis_method or 'per-model distance methods') + (f' / {args.mah_fold}' if args.mah_fold else '')
     if args.regression_model:
         scope += f' / reg {args.regression_model}'
     print(f"{len(models)} model(s) x {len(steps)} step(s) — {args.dataset} / "
           f"{args.specie} / {scope}")
+    effective_radius = make_params(*models[0])['radius']
+    print(f"GLM: {args.model} | Species: {args.specie} | Radius: {effective_radius} | "
+          f"RSA: {args.rsa_method} | Group permutations expected: {args.reps_group}")
     print(f"cache: {dash.CACHE_PATH}")
     shared = [s for s in steps if dash.SHARED_STEPS and s in dash.SHARED_STEPS]
     if shared:
@@ -411,9 +505,9 @@ def main():
         if args.delete_dry_run:
             print("  --delete_dry_run — counting only, nothing is removed")
     if args.dry_run:
-        for i, (m, fold) in enumerate(models, 1):
-            print(f"  [{i}/{len(models)}] {m}  (mah_fold={fold} -> "
-                  f"{', '.join(folds_to_write(args.dis_method, fold))})")
+        for i, (m, method, fold) in enumerate(models, 1):
+            print(f"  [{i}/{len(models)}] {m}  (dis_method={method}, mah_fold={fold} -> "
+                  f"{', '.join(folds_to_write(method, fold))})")
         return
     print()
 
@@ -422,15 +516,17 @@ def main():
     n_purged_files = n_purged_bytes = n_purged_models = 0
     seen_shared = {}   # shared signature -> result already probed in this run
     verdicts = {}      # rsa_model -> {step: verdict}, for the summary table
+    details = {}       # rsa_model -> {step: result}, including cached/shared summaries
 
-    for i, (rsa_model, csv_fold) in enumerate(models, 1):
+    for i, (rsa_model, dis_method, csv_fold) in enumerate(models, 1):
         # probed with the regression model, since step 15 cannot resolve its
         # output path without one; the fan-out below decides which signatures
         # the result is then filed under
-        probe_params = make_params(rsa_model, csv_fold, args.regression_model)
+        probe_params = make_params(rsa_model, dis_method, csv_fold, args.regression_model)
         cache = dash.load_cache()
-        print(f"[{i}/{len(models)}] {rsa_model}")
+        print(f"[{i}/{len(models)}] {rsa_model} (dis_method={dis_method}, mah_fold={csv_fold})")
         row = verdicts.setdefault(rsa_model, {})
+        detail_row = details.setdefault(rsa_model, {})
         step5 = None   # step 5's result, the evidence --delete_step4 acts on
 
         for step in steps:
@@ -441,6 +537,7 @@ def main():
                     n_skipped += 1
                     print(f"  step {step}: already checked ({hit['verdict']}) — skipped")
                     row[step] = hit['verdict']
+                    detail_row[step] = dict(hit, source='cached')
                     continue
 
             ssig = dash.shared_signature(probe_params, step)
@@ -450,12 +547,14 @@ def main():
                 r = seen_shared[ssig]
                 print(f"  step {step}: {r['verdict']} — {r['summary']}  [shared, reused]")
                 row[step] = r['verdict']
+                detail_row[step] = dict(r, source='shared')
                 continue
 
             r = dash.run_probe(probe_params, step, verbose=args.verbose)
             n_probes += 1
             print(f"  step {step}: {r['verdict']} — {r['summary']}")
             row[step] = r['verdict']
+            detail_row[step] = r
             if step == 5:
                 step5 = r
             if ssig:
@@ -463,9 +562,9 @@ def main():
                 # shows this result, so no need to repeat it per fold below
                 seen_shared[ssig] = dash.store_step(cache, probe_params, step, r)
                 continue
-            for fold in folds_to_write(args.dis_method, csv_fold):
+            for fold in folds_to_write(dis_method, csv_fold):
                 for reg in regressions_to_write(args.regression_model, step):
-                    dash.store_step(cache, make_params(rsa_model, fold, reg), step, r)
+                    dash.store_step(cache, make_params(rsa_model, dis_method, fold, reg), step, r)
 
         if args.delete_step4:
             if row.get(5) != pc.DONE:
@@ -494,9 +593,10 @@ def main():
                     n_probes += 1
                     print(f"  step 4 re-checked: {r4['verdict']} — {r4['summary']}")
                     row[4] = r4['verdict']
-                    for fold in folds_to_write(args.dis_method, csv_fold):
+                    detail_row[4] = r4
+                    for fold in folds_to_write(dis_method, csv_fold):
                         for reg in regressions_to_write(args.regression_model, 4):
-                            dash.store_step(cache, make_params(rsa_model, fold, reg),
+                            dash.store_step(cache, make_params(rsa_model, dis_method, fold, reg),
                                             4, r4)
 
         # save per model, so an interrupt keeps everything done so far
@@ -511,7 +611,9 @@ def main():
         print(f"step 4 purge: {n_purged_files} map(s) in {n_purged_models} model(s), "
               f"{verb} {human_bytes(n_purged_bytes)}")
     print()
-    print_summary_table(models, steps, verdicts)
+    print(f"{args.dataset} | Species {args.specie} | Radius {effective_radius} | "
+          f"GLM {args.model} | RSA {args.rsa_method}")
+    print_summary_table(models, steps, verdicts, details)
 
 
 if __name__ == '__main__':
